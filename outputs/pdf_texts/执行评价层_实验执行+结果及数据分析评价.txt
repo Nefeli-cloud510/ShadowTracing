@@ -1,0 +1,1181 @@
+--- PAGE 1 ---
+执⾏评价层_实验执⾏+结果及数据分析评价
+12.实验执⾏算法（已有⼩闭环，基于⼩闭环继续设计）
+模块职责与边界
+代码块
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                            上层（推理层）                                     │ 
+│   中央进程控制者  →  实验规划者  →  实验协议（含已构造好的特征列表）               │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                      │ 
+                                      ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                       实验执⾏模块（ Harness ）                                  │ 
+│                                                                              │ 
+│   职责：接收实验协议  →  执⾏  →  输出确定性结果                                   │ 
+│   特征已在协议中指定， Harness 直接使⽤                                        │ 
+│                                                                              │ 
+│   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐             
+        │ 
+│   │   实验编排器    │   │   数据质量     │   │   模型训练器    │                     │ 
+│   │   (Orchestra- │   │   检测器      │   │   (Model      │                     │ 
+│   │    tor)       │   │   (Data      │   │    Runner)   │                     │ 
+│   └──────────────┘   │    Quality)  │   └──────────────┘                  
+   │ 
+│                      └──────────────┘   ┌──────────────┐                
+     │ 
+│                                        │   实验产物      │                     │ 
+│                                        │   管理器       │                     │ 
+│                                        │   (Artifact   │                     │ 
+│                                        │    Manager)   │                     │ 
+│                                        └──────────────┘                    
+ │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                      │ 
+                                      ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+--- PAGE 2 ---
+│                            下层（数据层）                                     │ 
+│   已对⻬的时间序列数据（由数据层统⼀提供）                                     │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+执⾏层不包含逻辑推理，所有判断由上层（中央进程控制者、实验规划者）完成。执⾏层只负责“按
+协议执⾏”
+三、接⼝定义
+⼊参：ExperimentProtocol
+28
+29
+30
+--- PAGE 3 ---
+代码块{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "target": "SW Plasma Speed, km/s", 
+  "forecast_horizon_days": 3, 
+  "features": { 
+    "control": ["Scalar_B_lag1", "SW_Proton_Density_lag1"], 
+    "treatment": ["Scalar_B_lag1", "SW_Proton_Density_lag1", "DeltaDec_lag3"] 
+  }, 
+  "model": { 
+    "name": "ElasticNet", 
+    "parameters": {"alpha": 0.3, "l1_ratio": 0.5} 
+  }, 
+  "steps": [ 
+    {"step": 1, "action": "data_quality_check"}, 
+    {"step": 2, "action": "run_model", "parameters": {"features": "control", 
+"label": "baseline"}}, 
+    {"step": 3, "action": "run_model", "parameters": {"features": "treatment", 
+"label": "treatment"}}, 
+    {"step": 4, "action": "comparison", "parameters": {"baseline_label": 
+"baseline", "treatment_label": "treatment"}} 
+  ], 
+  "constraints": { 
+    "no_future_information": true, 
+    "target_immutable": true 
+  } 
+} 
+注意：features.control 和 features.treatment 中的特征名称必须已在数据层存在（由
+数据层统⼀提供，Harness只做读取和校验）。
+出参：ExperimentResult
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "status": "completed", 
+  "runs": [ 
+    { 
+      "run_id": "baseline", 
+      "name": "OMNI baseline", 
+      "prediction_artifact": "predictions/E03_baseline.csv", 
+      "metrics": {"RMSE": 46.2, "MAE": 35.1, "Pearson_r": 0.41, "Skill": 0.036} 
+    }, 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+--- PAGE 4 ---
+    { 
+      "run_id": "treatment", 
+      "name": "OMNI + Δ Dec", 
+      "prediction_artifact": "predictions/E03_treatment.csv", 
+      "metrics": {"RMSE": 42.8, "MAE": 32.7, "Pearson_r": 0.51, "Skill": 0.052} 
+    } 
+  ], 
+  "comparison": { 
+    "RMSE_delta": -3.4, 
+    "MAE_delta": -2.4, 
+    "Pearson_r_delta": 0.10, 
+    "Skill_delta": 0.016 
+  }, 
+  "visualizations": [ 
+    {"name": "prediction_vs_truth", "path": 
+"plots/E03_prediction_vs_truth.png"}, 
+    {"name": "scatter_plot", "path": "plots/E03_scatter.png"} 
+  ], 
+  "execution": { 
+    "duration_seconds": 82, 
+    "compute_seconds": 75, 
+    "status": "success" 
+  } 
+} 
+四、⽬录结构（基于你现有的 d:\Shadow-Tracing-simple）
+代码块
+d:\Shadow-Tracing-simple 
+│ 
+├──  main.py                              # 主⼊⼝ 
+│ 
+├──  config/ 
+│    ├──  experiment_config.json           # 当前实验配置 
+│    └──  round-config.json                # 轮次配置快照 
+│ 
+├──  core/ 
+│    ├──  __init__.py 
+│    ├──  harness.py                       # 实验执⾏⼊⼝（接收协议  →  执⾏  →  输出结
+果） 
+│    ├──  round_manager.py                 # 轮次管理（累计、摘要） 
+│    ├──  result.py                        # 结果处理 
+│    └──  schema.py                        # Pydantic 模型定义 
+│ 
+├──  data/ 
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+--- PAGE 5 ---
+│    ├──  loader.py                        # 数据加载（从原始⽂件读取） 
+│    └──  aligned_data.csv                 # 已对⻬的时间序列数据 
+│ 
+├──  models/ 
+│    └──  elasticnet_runner.py             # 模型训练与预测 
+│ 
+├──  outputs/ 
+│    └──  latest_metrics.json              # 最新⼀轮指标 
+│ 
+├──  results/ 
+│    ├──  summary.json                     # 总体摘要 
+│    ├──  round_01/ 
+│    │    ├──  config.json 
+│    │    ├──  metrics.json 
+│    │    └──  result.json 
+│    └──  round_02/ 
+│        ├──  config.json 
+│        ├──  metrics.json 
+│        └──  result.json 
+│ 
+└──  plots/                               # 可视化图像 
+    ├──  E03_prediction_vs_truth.png 
+    └──  E03_scatter.png 
+五、部署模式
+与完整架构保持⼀致：同进程部署。所有模块运⾏在同⼀个Python进程中，通过函数调⽤传递数据，
+使⽤Pydantic模型进⾏边界校验（ExperimentProtocol →Harness→
+ExperimentResult ），不拆分为微服务。
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+--- PAGE 6 ---
+六、与完整架构的对接点
+6.1对接实验规划者
+代码块
+# 在  main.py 或上层调⽤ 
+from core.harness import ExperimentHarness 
+from core.schema import ExperimentProtocol 
+ 
+def run_experiment(protocol: ExperimentProtocol) -> ExperimentResult: 
+    harness = ExperimentHarness(config) 
+    return harness.run(protocol) 
+6.2对接科学解释者
+代码块
+# 科学解释者读取  result 中的  metrics 和  visualizations 
+result = run_experiment(protocol) 
+performance_summary = { 
+    "pearson_r": result.runs[1].metrics["Pearson_r"], 
+    "rating": " 尚可 " if result.runs[1].metrics["Pearson_r"] >= 0.4 else " 不⾜ ", 
+    "change": result.comparison["Pearson_r_delta"] 
+} 
+七、与你现有⼩闭环的关系
+1
+2
+3
+4
+5
+6
+7
+1
+2
+3
+4
+5
+6
+7
+--- PAGE 7 ---
+、总结
+结果及数据分析评价
+⼀、完整架构中的位置
+代码块
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                            实验执⾏层（ Harness ）                               │ 
+│                         输出： ExperimentResult                               │ 
+│               （包含原始预测值、真实值、基础指标、图像路径）                      │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                      │ 
+                                      ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                     结果及数据分析评价模块                                      │ 
+│                                                                              │ 
+│   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   
+┌──────────────┐    │ 
+│   │   指标计算器    │→│  稳健性诊断    │→│  结果可视化    │→│  科学证据      │    │ 
+│   │   (Metric     │   │  (Robustness │   │  (Visual-    │   │  评价器       │    │ 
+│   │    Calc)      │   │   Check)    │   │   ization)   │   │  (Scientific │    │ 
+│   └──────────────┘   └──────────────┘   └──────────────┘   │   
+Evaluator) │    │ 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+--- PAGE 8 ---
+│         │                   │                   │          └──────────────┘  
+  │ 
+│         
+└──────────────────┴──────────────────┴─────────────────┘         
+  │ 
+│                                     │                                        │ 
+│                          输出： PerformanceEvaluation                        │ 
+│                          输出： ScientificEvaluation                         │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                      │ 
+                                      ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                            上层（推理层）                                     │ 
+│   双状态更新（ ExperimentalState + ScientificState ）                           │ 
+│   科学解释者（ LLM ，⽣成⾃然语⾔解读）                                          │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+⼆、各⼦模块职责与接⼝
+2.1⼦模块1：指标计算器（MetricCalculator）
+输⼊
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "runs": [ 
+    {"run_id": "baseline", "predictions": [380, 420, ...], "truth": [385, 410, 
+...]}, 
+    {"run_id": "treatment", "predictions": [375, 415, ...], "truth": [385, 
+410, ...]} 
+  ], 
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+1
+2
+3
+4
+5
+6
+7
+--- PAGE 9 ---
+  "comparison": {...} 
+} 
+输出
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "baseline_rmse": 46.2, 
+  "baseline_mae": 35.1, 
+  "baseline_pearson_r": 0.41, 
+  "baseline_skill": 0.036, 
+  "treatment_rmse": 42.8, 
+  "treatment_mae": 32.7, 
+  "treatment_pearson_r": 0.51, 
+  "treatment_skill": 0.052, 
+  "delta": { 
+    "rmse": -3.4, 
+    "mae": -2.4, 
+    "pearson_r": 0.10, 
+    "skill": 0.016 
+  } 
+} 
+2.2⼦模块2：稳健性诊断分析（RobustnessCheck）
+代码块
+{ 
+  "bootstrap": { 
+    "pearson_r_ci": [0.44, 0.58], 
+    "rmse_ci": [40.2, 45.6], 
+    "skill_ci": [0.028, 0.076], 
+    "stable": true, 
+    "n_iterations": 200 
+8
+9
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+1
+2
+3
+4
+5
+6
+7
+--- PAGE 10 ---
+  }, 
+  "time_slice": { 
+    "splits": [ 
+      {"fold": 1, "pearson_r": 0.49}, 
+      {"fold": 2, "pearson_r": 0.53}, 
+      {"fold": 3, "pearson_r": 0.47} 
+    ], 
+    "std_pearson_r": 0.025, 
+    "stable": true 
+  }, 
+  "overall": { 
+    "stable": true, 
+    "concern": " 最⼩样本量 128 ， bootstrap 置信区间较宽 " 
+  }, 
+  "recommendation": " 结果稳定，可继续推进 " 
+} 
+2.3⼦模块3：结果可视化（Visualization）
+⽣成图像已有代码写在模型程序中，直接使⽤就好
+2.4⼦模块4：科学证据评价器（ScientificEvaluator）
+输⼊（从假设树和指标计算器读取）
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+--- PAGE 11 ---
+代码块{ 
+  "hypotheses": [ 
+    {"id": "H1", "prediction_range": [0.02, 0.08], "support_before": 0.50}, 
+    {"id": "H2", "prediction_range": [-0.01, 0.01], "support_before": 0.35} 
+  ], 
+  "observed_delta_skill": 0.016 
+} 
+输出
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "hypothesis_assessments": [ 
+    { 
+      "hypothesis_id": "H1", 
+      "support_before": 0.50, 
+      "support_after": 0.52, 
+      "status": "partially_supported", 
+      "direction_matched": true, 
+      "magnitude_matched": false, 
+      "reason": " ⽅向⼀致（ positive ），但幅度（ 0.016 ）低于预期下限 0.02" 
+    }, 
+    { 
+      "hypothesis_id": "H2", 
+      "support_before": 0.35, 
+      "support_after": 0.58, 
+      "status": "supported", 
+      "direction_matched": true, 
+      "magnitude_matched": true, 
+      "reason": " ⽅向⼀致（ near_zero ），幅度（ 0.016 ）在预期范围 [-0.01,0.01] 附近 " 
+    } 
+  ], 
+  "evidence_summary": { 
+    "new_evidence_for": [ 
+      {"claim": "By 是 Δ Dec 预测信息的重要中介变量 ", "strength": "strong", "source": 
+"H2 ⽀持度 0.35 → 0.58"} 
+    ], 
+    "new_evidence_against": [ 
+      {"claim": " Δ Dec 的独⽴贡献不如预期显著 ", "strength": "moderate", "source": 
+"H1 幅度 0.016 低于预期 0.02"} 
+    ], 
+    "remaining_uncertainties": [ 
+1
+2
+3
+4
+5
+6
+7
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+--- PAGE 12 ---
+      {"id": "U03", "question": " Δ Dec 的剩余贡献是否来⾃更⼤尺度 IMF 结构？ ", 
+"priority": "high"} 
+    ] 
+  }, 
+  "confidence_factors": { 
+    "evidence_strength": "direct_support", 
+    "explanatory_coverage": "partial", 
+    "parsimony": "minimal_assumptions", 
+    "theoretical_compatibility": "compatible", 
+    "testability": "current_data_testable", 
+    "distinctiveness": "distinct" 
+  }, 
+  "shap_analysis": { 
+    "top_features": [ 
+      {"feature": "By_lag1", "importance": 0.45}, 
+      {"feature": " Δ Dec_lag3", "importance": 0.12} 
+    ] 
+  } 
+} 
+三、整体数据流
+代码块
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                         完整数据流                                            │ 
+├───────────────────────────────────────────────────────────────
+──────────────┤ 
+│                                                                              │ 
+│   Harness                                                                    │ 
+│      │                                                                        
+│ 
+│      ▼                                                                        
+│ 
+│   
+┌───────────────────────────────────────────────────────────────
+──────┐    │ 
+│   │   Step 1: 指标计算器                                                 │    │ 
+│   │   输⼊ : ExperimentResult （原始预测 + 真实值）                           │    │ 
+│   │   输出 : PerformanceMetrics （ RMSE/MAE/Pearson-r/Skill + Δ ）           │    │ 
+│   
+└─────────────────────────┬─────────────────────────────────────
+──────┘    │ 
+│                             │                                                │ 
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+--- PAGE 13 ---
+│                             ├───────────────────────┐                    
+    │ 
+│                             ▼                        ▼                        
+│ 
+│   ┌───────────────────────────────────────┐   
+┌──────────────────────────┐   │ 
+│   │   Step 2a: 稳健性诊断                   │   │   Step 2b: 可视化⽣成      │   │ 
+│   │   输⼊ : PerformanceMetrics + 原始数据    │   │   输⼊ : 预测值 + 真实值      │   │ 
+│   │   输出 : RobustnessReport               │   │   输出 : 图像⽂件路径        │   │ 
+│   └─────────────────┬─────────────────────┘   
+└──────────┬───────────────┘   │ 
+│                     │                                     │                   │ 
+│                     └────────────────┬───────────────────┘            
+       │ 
+│                                      ▼                                       │ 
+│   
+┌───────────────────────────────────────────────────────────────
+───────┐   │ 
+│   │   Step 3: 科学证据评价器                                              │   │ 
+│   │   输⼊ : PerformanceMetrics + RobustnessReport + Visualizations        │   │ 
+│   │        + Hypothesis Tree 状态                                         │   │ 
+│   │   输出 : ScientificEvaluation                                         │   │ 
+│   
+└─────────────────────────┬─────────────────────────────────────
+───────┘   │ 
+│                             │                                                │ 
+│                             ▼                                                │ 
+│   
+┌───────────────────────────────────────────────────────────────
+───────┐   │ 
+│   │   双状态更新                                                          │   │ 
+│   │   ExperimentalState: best_rmse, best_model, best_features...         │   │ 
+│   │   ScientificState: support_scores, evidence, uncertainties...        │   │ 
+│   
+└─────────────────────────┬─────────────────────────────────────
+───────┘   │ 
+│                             │                                                │ 
+│                             ▼                                                │ 
+│   
+┌───────────────────────────────────────────────────────────────
+───────┐   │ 
+│   │   科学解释者（ LLM ）                                                   │   │ 
+│   │   输⼊ : PerformanceMetrics + RobustnessReport + Visualizations       │   │ 
+│   │        + ScientificEvaluation + Hypothesis Tree                      │   │ 
+│   │   输出 : ⾃然语⾔科学解释报告                                           │   │ 
+│   
+└───────────────────────────────────────────────────────────────
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+--- PAGE 14 ---
+───────┘   │ 
+│                                                                              │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+四、与完整架构的对接接⼝
+4.1对接Harness（输⼊）
+代码块
+# 评价模块的⼊⼝ 
+def evaluate_experiment(experiment_result: ExperimentResult) -> 
+EvaluationResult: 
+    """ 
+    接收 Harness 输出的 ExperimentResult ，完成全部评价流程 
+    """ 
+    metrics = calculate_metrics(experiment_result) 
+    robustness = check_robustness(metrics, experiment_result) 
+    visualizations = generate_visualizations(experiment_result) 
+    scientific = evaluate_scientific(metrics, robustness, visualizations) 
+     
+    return EvaluationResult( 
+        metrics=metrics, 
+        robustness=robustness, 
+        visualizations=visualizations, 
+        scientific=scientific 
+    ) 
+4.2对接双状态更新（输出）
+代码块
+def update_states(evaluation: EvaluationResult, hypothesis_tree: 
+HypothesisTree): 
+    """ 
+    将评价结果写⼊双状态 
+    """ 
+    # 实验状态更新 
+    experimental_state.update({ 
+        "best_rmse": evaluation.metrics.treatment_rmse, 
+        "best_pearson_r": evaluation.metrics.treatment_pearson_r, 
+        "best_experiment_id": evaluation.metrics.experiment_id, 
+        "converged": evaluation.robustness.overall.stable and 
+evaluation.metrics.treatment_pearson_r >= 0.6 
+45
+46
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+--- PAGE 15 ---
+    }) 
+     
+    # 科学状态更新 
+    for assessment in evaluation.scientific.hypothesis_assessments: 
+        hypothesis_tree.update_support( 
+            assessment.hypothesis_id, 
+            assessment.support_after, 
+            assessment.reason 
+        ) 
+4.3对接科学解释者（LLM输⼊）
+代码块
+def prepare_for_interpreter(evaluation: EvaluationResult) -> dict: 
+    """ 
+    准备科学解释者所需的输⼊ 
+    """ 
+    return { 
+        "experiment_id": evaluation.metrics.experiment_id, 
+        "performance": { 
+            "pearson_r": evaluation.metrics.treatment_pearson_r, 
+            "rating": " 尚可 " if evaluation.metrics.treatment_pearson_r >= 0.4 
+else " 不⾜ ", 
+            "change": evaluation.metrics.delta.pearson_r 
+        }, 
+        "robustness": evaluation.robustness.overall.stable, 
+        "hypothesis_assessments": evaluation.scientific.hypothesis_assessments, 
+        "visualizations": evaluation.visualizations, 
+        "remaining_uncertainties": 
+evaluation.scientific.evidence_summary.remaining_uncertainties 
+    } 
+五、⽬录结构更新
+在 d:\Shadow-Tracing-simple 基础上，增加评价模块⽬录：
+代码块
+d:\Shadow-Tracing-simple 
+│ 
+├──  main.py 
+│ 
+├──  core/ 
+│    ├──  harness.py                      # 实验执⾏ 
+11
+12
+13
+14
+15
+16
+17
+18
+19
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+1
+2
+3
+4
+5
+6
+--- PAGE 16 ---
+│    ├──  round_manager.py                # 轮次管理 
+│    ├──  result.py                       # 结果处理 
+│    └──  schema.py                       # 所有 Pydantic 模型定义 
+│ 
+├──  evaluation/                         # 新增：评价模块 
+│    ├──  init.py 
+│    ├──  metric_calculator.py            # 指标计算器 
+│    ├──  robustness_check.py             # 稳健性诊断 
+│    ├──  visualizer.py                   # 可视化⽣成 
+│    └──  scientific_evaluator.py         # 科学证据评价器 
+│ 
+├──  models/ 
+│    └──  elasticnet_runner.py 
+│ 
+├──  results/ 
+│    └──  round_{n}/ 
+│        ├──  config.json 
+│        ├──  prediction.csv 
+│        ├──  metrics.json                # 指标计算器输出 
+│        ├──  robustness.json             # 稳健性诊断输出 
+│        ├──  scientific.json             # 科学证据评价输出 
+│        └──  plots/                      # 可视化图像 
+│            ├──  prediction_vs_truth.png 
+│            └──  scatter_plot.png 
+│ 
+└──  config/ 
+    └──  system_config.yaml 
+六、评价结果汇总输出
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+  "metrics": { 
+    "treatment_pearson_r": 0.51, 
+    "rating": " 尚可 ", 
+    "baseline_pearson_r": 0.41, 
+    "delta_pearson_r": 0.10 
+  }, 
+  "robustness": { 
+    "stable": true, 
+    "bootstrap_ci": [0.44, 0.58] 
+  }, 
+  "scientific": { 
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+--- PAGE 17 ---
+    "hypothesis_assessments": [...], 
+    "remaining_uncertainties": [...] 
+  }, 
+  "visualizations": { 
+    "prediction_vs_truth": "results/round_02/plots/prediction_vs_truth.png", 
+    "scatter_plot": "results/round_02/plots/scatter_plot.png" 
+  } 
+} 
+七、总结
+15
+16
+17
+18
+19
+20
+21
+22
+--- PAGE 18 ---
+稳健性诊断模块完整落地⽅案
+稳健性诊断模块位于指标计算器和科学解释者之间，核⼼任务是回答：“这个实验结果到底靠不靠
+谱？是不是随机波动？”
+⼀、模块定位
+代码块
+实验执⾏  →  指标计算器  →  【稳健性诊断】  →  科学解释者  →  双状态更新 
+                              │ 
+                              ▼ 
+                    如果结果不稳定：调整策略 / 重新实验 
+                    如果结果稳定：继续推进 
+⼆、稳健性诊断的四个维度
+三、各维度的具体⽅法
+D1:时间泛化性（TimeSliceCross-Validation）
+核⼼逻辑：把时间序列切成多段，⽤不同时间段分别验证。如果某段验证时性能突然特别差，说明模
+型可能过拟合了那段数据的时间特征。⼩样本数据（196天）适合⽤3-5折时序划分，每折逐渐扩⼤训
+练集、固定验证集规模（窗⼝滚动法），或采⽤逐年划分验证。参考交叉验证的稳健性实践。
+代码块
+def check_temporal_generalization(predictions, truth, n_splits=5): 
+1
+2
+3
+4
+5
+1
+--- PAGE 19 ---
+    """ 
+    时间切⽚交叉验证 
+    """ 
+    # 按时间顺序分成 n_splits 块 
+    # 每种划分：前 k 块训练，第 k+1 块验证 
+    # 计算每折的 Pearson-r 
+     
+    fold_results = [] 
+    for fold in range(n_splits): 
+        val_start = fold * len(data) // n_splits 
+        val_end = (fold + 1) * len(data) // n_splits 
+        # 训练 : 0 -> val_start, 验证 : val_start -> val_end 
+        ... 
+        fold_results.append(pearson_r) 
+     
+    # 输出 
+    return { 
+        "mean_r": 0.51, 
+        "std_r": 0.025, 
+        "min_r": 0.47, 
+        "max_r": 0.53, 
+        "stable": std_r < 0.05,          # 波动⼩于 0.05 算稳定 
+        "conclusion": "在不同时间划分下， Pearson-r 稳定在 0.47-0.53 之间，模型泛化性良
+好。 " 
+    } 
+D2:统计显著性（Bootstrap）
+核⼼逻辑：对原始数据有放回地重采样，每次重采样都重新训练和评估。如果多次重采样后，增益的
+⽅向（正/负）⾼度⼀致，说明结果不是随机噪⾳。参考Efron&Tibshirani(1993)的经典bootstrap⽅
+法，适⽤于估计预测误差的置信区间。
+代码块
+def check_statistical_significance(predictions, truth, n_iterations=200): 
+    """ 
+    Bootstrap 重采样检验 
+    """ 
+    # 从原始数据中有放回采样 
+    # 每次计算 RMSE 和 Pearson-r 
+    # 统计 95% 置信区间 
+     
+    boot_results = [] 
+    for i in range(n_iterations): 
+        indices = np.random.choice(len(data), len(data), replace=True) 
+        boot_results.append(compute_metrics(indices)) 
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+--- PAGE 20 ---
+     
+    # 计算置信区间 
+    ci_lower_r = np.percentile(r_values, 2.5) 
+    ci_upper_r = np.percentile(r_values, 97.5) 
+     
+    # 判断⽅向⼀致性 
+    directions_consistent = all(r > 0 for r in r_values)  # 或全部 <0 
+     
+    # 输出 
+    return { 
+        "pearson_r": {"ci_95": [0.44, 0.58], "mean": 0.51}, 
+        "rmse": {"ci_95": [40.2, 45.6], "mean": 42.8}, 
+        "direction_consistent": True,    # 所有 bootstrap 样本的 r 都 >0 
+        "conclusion": "95% 置信区间不跨越 0 ，增益具有统计意义。 " 
+    } 
+综合诊断报告
+代码块
+{ 
+  "experiment_id": "E03", 
+  "round_id": 2, 
+   
+  "temporal_generalization": { 
+    "status": "pass", 
+    "mean_r": 0.51, 
+    "std_r": 0.025, 
+    "conclusion": " 不同时间段上 Pearson-r 波动⼩于 0.05 ，泛化性良好 " 
+  }, 
+   
+  "statistical_significance": { 
+    "status": "pass", 
+    "ci_95": [0.44, 0.58], 
+    "direction_consistent": true, 
+    "conclusion": "95% 置信区间不跨越 0 ，增益具有统计意义 " 
+  }, 
+   
+  "overall": { 
+    "stable": true, 
+    "recommendation": " 结果通过稳健性检验，可推进下⼀轮 " 
+  } 
+} 
+处理“不稳健”时的应对策略
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+--- PAGE 21 ---
+总结
+
+--- PAGE 22 ---
+
+--- PAGE 23 ---
+

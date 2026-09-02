@@ -1,0 +1,94 @@
+--- PAGE 1 ---
+⼈⼯控制层
+①科研负责⼈Scientist――科学问题及约束输⼊
+前端界⾯：和llm的对话界⾯，llm系统提⽰词：请输⼊科学问题
+信息流链条：⼈⼯输⼊科学问题、边界→后端本地动态⽂档存储→后续需要调⽤写⼊qwen提⽰词中
+ "payload":{
+ "research_question":{question_input},
+ "target":{target_input},
+ "question_type":{type_input}
+ },
+以上部分通过⽤⼾输⼊完整的科学问题后，由qwen理解后规范填写完成json⽂件各部分
+ "evaluation":{
+ "primary_metric":"RMSE",
+ "secondary_metrics":[
+ "MAE",
+ "Pearson_r",
+ "Skill"
+ ]
+ },
+约束部分在⽤⼾输⼊完科学问题后可以由qwen主动询问，⽤⼾⼆次输⼊后这部分也模块化存⼊json⽂
+档。总之就是严格遵守json格式下的内容，缺哪⼀块qwen主动询问
+ "constraints":{
+ "no_future_information":true,
+ "validation_feedback_allowed":true,
+ "final_test_blind":true
+ }
+ }
+}
+这部分可以设计是否的问题，由⽤⼾回答后写⼊{True/False}
+科学问题及约束存储json模板
+{ 
+  "schema_version": "1.0", 
+  "message_type": "scientific_task", 
+  "task_id": "ST001", 
+1
+2
+3
+4
+--- PAGE 2 ---
+  "producer": "human_pi", 
+ 
+  "payload": { 
+    "research_question": {question_input}, 
+    "target": {target_input}, 
+    "question_type":{type_input} 
+    }, 
+ 
+    "evaluation": { 
+      "primary_metric": "RMSE", 
+      "secondary_metrics": [ 
+        "MAE", 
+        "Pearson_r", 
+      ] 
+    }, 
+ 
+    "constraints": { 
+      "no_future_information": true, 
+      "validation_feedback_allowed": true, 
+      "final_test_blind": true 
+    } 
+  } 
+} 
+②科研负责⼈——审核结果与异常
+各个环节随时打断停⽌，这部分可以设计⼀个实验进程仪表，⽤⼾可以清楚看到⽬前依照总体思路图
+的规划进展到了哪⼀步，然后每⼀步都留出⼀个stop的处理，每完成⼀步都询问⽤⼾是否采纳该⽅
+案，是否进⾏下⼀步，同时留出⼀个作出统⼀下⼀步决策后不再询问的选项按钮，每⼀步选择都要写
+⼊⽇志
+③科研负责⼈——最终决策判断
+信息流：是否进⼊下⼀轮＋改进建议→写⼊⽇志
+每⼀个round完成后，给出科学解释和实验数值指标的详细报告后，由⽤⼾决定是否进⼊下⼀轮，并且
+qwen要主动提问能否给出专业改进建议，⽤⼾提出后要记⼊⽇志
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27

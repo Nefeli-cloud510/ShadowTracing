@@ -1,0 +1,195 @@
+{
+  "llm_roles": {
+    "central_controller": {
+      "role": "central_controller",
+      "model": "qwen3.8-max",
+      "client_available": true,
+      "calls": 2,
+      "remote_success_calls": 0,
+      "fallback_calls": 2,
+      "history": [
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:13:07.200185",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "CentralControllerLLMResponse"
+        },
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:33:59.728491",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "CentralControllerLLMResponse"
+        }
+      ]
+    },
+    "scientific_interpreter": {
+      "role": "scientific_interpreter",
+      "model": "qwen3.8-max",
+      "client_available": true,
+      "calls": 2,
+      "remote_success_calls": 0,
+      "fallback_calls": 2,
+      "history": [
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T22:59:32.468725",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "ScientificInterpreterLLMResponse"
+        },
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T23:20:24.933996",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "ScientificInterpreterLLMResponse"
+        }
+      ]
+    },
+    "hypothesis_proposer": {
+      "role": "hypothesis_proposer",
+      "model": "qwen3.8-max",
+      "client_available": true,
+      "calls": 2,
+      "remote_success_calls": 0,
+      "fallback_calls": 2,
+      "history": [
+        {
+          "role": "hypothesis_proposer",
+          "timestamp": "2026-09-01T23:04:04.465310",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "HypothesisProposerResponse"
+        },
+        {
+          "role": "hypothesis_proposer",
+          "timestamp": "2026-09-01T23:24:56.948199",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "HypothesisProposerResponse"
+        }
+      ]
+    },
+    "scientific_questioner": {
+      "role": "scientific_questioner",
+      "model": "qwen3.8-max",
+      "client_available": true,
+      "calls": 2,
+      "remote_success_calls": 0,
+      "fallback_calls": 2,
+      "history": [
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:08:35.818759",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "ScientificQuestionerResponse"
+        },
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:29:28.431592",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "APITimeoutError('Request timed out.')",
+          "response_model": "ScientificQuestionerResponse"
+        }
+      ]
+    },
+    "experiment_planner": {
+      "role": "experiment_planner",
+      "model": "qwen3.8-max",
+      "client_available": true,
+      "calls": 4,
+      "remote_success_calls": 0,
+      "fallback_calls": 4,
+      "history": [
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T22:54:57.853697",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "6 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='在模型训练前运行...或共线性诊断。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='对 baseline_controls_on...otstrap 置信区间。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='计算 DeltaDec 在给...nditional importance。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='若数据具有时间字...c 增量的稳定性。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value='生成假设映射表，...lity 的支持程度。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.5\n  Input should be a valid dictionary [type=dict_type, input_value='将触发源标签写入... stability_bootstrap。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 4249
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T22:54:57.853697",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "6 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='在模型训练前运行...或共线性诊断。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='对 baseline_controls_on...otstrap 置信区间。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='计算 DeltaDec 在给...nditional importance。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='若数据具有时间字...c 增量的稳定性。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value='生成假设映射表，...lity 的支持程度。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.5\n  Input should be a valid dictionary [type=dict_type, input_value='将触发源标签写入... stability_bootstrap。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 4249
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:17:38.511332",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "5 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='在现有协议中先运...正则参数建议。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='在基线模型上加入...control 增量记录。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='按 By 与 Np 的条件...定条件下有效。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='对时间段进行切分...间窗口内稳定。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value='将结果映射回已测...持或削弱信号。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 1144
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:17:38.511332",
+          "model": "qwen3.8-max",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "5 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='在现有协议中先运...正则参数建议。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='在基线模型上加入...control 增量记录。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='按 By 与 Np 的条件...定条件下有效。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='对时间段进行切分...间窗口内稳定。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value='将结果映射回已测...持或削弱信号。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 1144
+        }
+      ]
+    }
+  },
+  "rag": {
+    "configured": true,
+    "attempts": 2,
+    "successful_attempts": 2,
+    "history": [
+      {
+        "timestamp": "2026-09-01T23:04:03.920901",
+        "query": "下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 DeltaDec 的贡献是否独立于 By？ DeltaDec 的增益是否跨时间段稳定？ human_feedback: 下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。",
+        "max_results": 3,
+        "endpoint": "https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/api/v1/indices/knowledge/search",
+        "agent_id": "aid-01640e2221b04890b0ba201d359f51ba",
+        "attempted": true,
+        "success": true,
+        "result_count": 3,
+        "error": null
+      },
+      {
+        "timestamp": "2026-09-01T23:24:56.455063",
+        "query": "U_LLM_R02_03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 DeltaDec 的贡献是否独立于 By？ DeltaDec 的增益是否跨时间段稳定？ 上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。 优先关注未解决不确定性: DeltaDec 的贡献是否独立于 By？",
+        "max_results": 3,
+        "endpoint": "https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/api/v1/indices/knowledge/search",
+        "agent_id": "aid-01640e2221b04890b0ba201d359f51ba",
+        "attempted": true,
+        "success": true,
+        "result_count": 3,
+        "error": null
+      }
+    ]
+  }
+}

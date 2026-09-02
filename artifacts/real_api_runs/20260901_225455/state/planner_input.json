@@ -1,0 +1,296 @@
+{
+  "task_id": "ST_REAL_API_20260901_225455",
+  "source_round_id": 2,
+  "next_round_id": 3,
+  "source_experiment_id": "E_R02_03",
+  "scientific_question": "DeltaDec 是否提供可重复验证的 Vsw 预测增量信息",
+  "target": "Vsw",
+  "evaluation_summary": {
+    "experiment_id": "E_R02_03",
+    "round_id": 2,
+    "baseline_pearson_r": 0.15180751393903436,
+    "treatment_pearson_r": 0.14096297170130354,
+    "delta_pearson_r": -0.01084454223773082,
+    "delta_rmse": 0.9924699755376309,
+    "key_findings": [],
+    "robustness_recommendation": "可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。",
+    "stable": true
+  },
+  "unresolved_uncertainties": [
+    {
+      "uncertainty_id": "U01",
+      "question": "DeltaDec 的贡献是否独立于 By？",
+      "priority": "high",
+      "priority_score": 0.9,
+      "status": "active",
+      "resolution_status": "partially_resolved",
+      "related_hypotheses": [
+        "H_deltadec_independent_gain",
+        "H_deltadec_null_competition",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ]
+    },
+    {
+      "uncertainty_id": "U02",
+      "question": "DeltaDec 的增益是否跨时间段稳定？",
+      "priority": "medium",
+      "priority_score": 0.6,
+      "status": "active",
+      "related_hypotheses": [
+        "H_deltadec_independent_gain",
+        "H_deltadec_null_competition",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ]
+    },
+    {
+      "uncertainty_id": "U_LLM_R02_03",
+      "question": "U01 的领先假设是否经得起更简单验证？",
+      "priority": "medium",
+      "priority_score": 0.6,
+      "status": "active",
+      "resolution_status": "partially_resolved",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ]
+    }
+  ],
+  "active_hypotheses": [
+    {
+      "hypothesis_id": "H_deltadec_null_competition",
+      "statement": "DeltaDec 对 Vsw 的观测增益主要来自与 By 的伴随相关，而非独立信息。",
+      "status": "observing",
+      "support_score": 0.3617
+    },
+    {
+      "hypothesis_id": "H_deltadec_independent_gain",
+      "statement": "DeltaDec 对 Vsw 提供可检验的独立增量信息。",
+      "status": "observing",
+      "support_score": 0.3322
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_by",
+      "statement": "DeltaDec 对 Vsw 的作用可能通过 By 中介路径体现。",
+      "status": "observing",
+      "support_score": 0.3249
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_bz",
+      "statement": "DeltaDec 对 Vsw 的作用可能通过 Bz 中介路径体现。",
+      "status": "observing",
+      "support_score": 0.3249
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_np",
+      "statement": "DeltaDec 对 Vsw 的作用可能通过 Np 中介路径体现。",
+      "status": "observing",
+      "support_score": 0.3249
+    }
+  ],
+  "recent_hypothesis_assessments": [
+    {
+      "hypothesis_id": "H_deltadec_null_competition",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_null_competition 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    },
+    {
+      "hypothesis_id": "H_deltadec_independent_gain",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_independent_gain 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_by",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_via_by 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_bz",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_via_bz 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    },
+    {
+      "hypothesis_id": "H_deltadec_via_np",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_via_np 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    },
+    {
+      "hypothesis_id": "H_deltadec_temporal_stability",
+      "support_before": 0.5,
+      "support_after": 0.475,
+      "status": "partially_supported",
+      "direction_matched": "partial",
+      "magnitude_matched": "partial",
+      "reason": "H_deltadec_temporal_stability 预期效应为 near_zero，观测到的增量为 -0.0108；direction_matched=partial, magnitude_matched=partial。"
+    }
+  ],
+  "recent_disagreement_updates": [
+    {
+      "uncertainty_id": "U_LLM_R02_03",
+      "resolution_status": "partially_resolved",
+      "compared_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "narrowed": true,
+      "leading_hypothesis_id": "H_deltadec_null_competition",
+      "unresolved_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "support_span_before": 0.095,
+      "support_span_after": 0.0,
+      "summary": "U_LLM_R02_03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved"
+    }
+  ],
+  "recent_reasoning_traces": [
+    {
+      "trace_id": "IE001",
+      "stage": "scientific_interpreter",
+      "summary": "H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。",
+      "related_hypotheses": [
+        "H_deltadec_null_competition"
+      ],
+      "related_uncertainties": [
+        "U01",
+        "U02"
+      ],
+      "support_delta": -0.0338,
+      "priority_delta": 0.0
+    },
+    {
+      "trace_id": "LIE_INT_001",
+      "stage": "scientific_interpreter",
+      "summary": "H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。",
+      "related_hypotheses": [
+        "H_deltadec_null_competition"
+      ],
+      "related_uncertainties": [
+        "U01"
+      ],
+      "support_delta": 0.0236,
+      "priority_delta": 0.0
+    },
+    {
+      "trace_id": "RAGP001",
+      "stage": "rag_project",
+      "summary": "iority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验证？\", \"priority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "RAGP002",
+      "stage": "rag_project",
+      "summary": "ort_span_after\": 0.095, \"summary\": \"U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved\"}], \"recent_reasoning_traces\": [{\"trace_",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "RAGL001",
+      "stage": "rag_literature",
+      "summary": "LHAASO DeltaDec may provide early information about heliospheric structure. A key uncertainty is whether the predictive gain on Vsw is independent",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "HP0201",
+      "stage": "hypothesis_proposer",
+      "summary": "围绕 By 扩展条件路径或机制分支。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "HP0202",
+      "stage": "hypothesis_proposer",
+      "summary": "围绕 DeltaDec 扩展条件路径或机制分支。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "SQ0201",
+      "stage": "scientific_questioner",
+      "summary": "U_LLM_R02_03 仍未完全解决，应继续设计区分性验证。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    }
+  ],
+  "recent_human_feedback": [],
+  "data_dictionary_summary": {
+    "dictionary_id": "DICT_REAL_API_DEMO",
+    "dataset_name": "real_api_demo",
+    "time_column": "TIME",
+    "target_candidates": [
+      "Vsw"
+    ],
+    "feature_candidates": [
+      "By",
+      "Bz",
+      "Np",
+      "DeltaDec"
+    ]
+  },
+  "planning_constraints": {
+    "no_future_information": true,
+    "validation_feedback_allowed": true,
+    "final_test_blind": true,
+    "max_rounds": 10,
+    "max_experiments_per_round": 3,
+    "resource_budget": {
+      "token_budget": 100000,
+      "max_time_seconds_per_round": 300,
+      "max_candidates": 3
+    }
+  },
+  "planner_guidance": [
+    "上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。",
+    "优先关注未解决不确定性: DeltaDec 的贡献是否独立于 By？",
+    "最近分歧状态: U_LLM_R02_03 -> partially_resolved, leading=H_deltadec_null_competition",
+    "上一轮程序解释重点: H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。",
+    "rag_project:iority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验证？\", \"priority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验",
+    "rag_literature:LHAASO DeltaDec may provide early information about heliospheric structure. A key uncertainty is whether the predictive gain on Vsw is independent",
+    "rag_external:WFCTA布局(左图)和广角切伦科夫望远镜(右图)。35数据处理流程图。374-2KM2A占空比随时间变化图。384-3WCDA-1占空比随时间变化图。394-4Gaisser宇宙线分成分能谱。394-5G4KM2A中ED(左)和MD(右)的结构图。414-6G4WCDA中探测器结构图。424-7实验对Gaisser模型5种成分的触发后的能量分布图。左图是KM2A-1/2的结果。右图是WCDA-1的结果。图中不同颜色代表不同的宇宙线组分。434-8前峰面平面近似(左图)和锥面近似(右图)的示意图。444-9Nfit>15， 锥面近似下的理想探测器ED25的时间残差分布。484-10在Nfit>15， 理想探测器时间标定结果。左图是锥面近似下的ED25每个ED标定值分布。右图是每个ED的标定值与其相对于阵列中心的距离的关系。484-11时间标定方案的检验。左图是模拟中每个ED预设的时间偏差。右图是迭代2次过后的标定结果与预设值的差别的分布。49山东大学博上学位论文[empty]-XVI-4-1233ED时间标定结果。左图，中图和右图分别是2018年5月19日，8月5日和10月5日的结果。504-13左图是模拟中原初方位角分布。中图和右图分别是2018年5月19日和8月5日数据标定前后，重建方位角的分布。",
+    "proposer_focus:By 可能构成下一轮假设扩展条件。",
+    "proposer_focus:DeltaDec 可能构成下一轮假设扩展条件。",
+    "proposer_literature:LHAASO DeltaDec may provide early information about heliospheric structure. A key uncertainty is whether the predictive gain on Vsw is independent",
+    "questioner_project:iority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验证？\", \"priority\": \"medium\"}, {\"uncertainty_id\": \"U_LLM_R02_03\", \"question\": \"U01 的领先假设是否经得起更简单验",
+    "questioner_literature:LHAASO DeltaDec may provide early information about heliospheric structure. A key uncertainty is whether the predictive gain on Vsw is independent"
+  ],
+  "generated_at": "2026-09-01T23:24:56.443022"
+}

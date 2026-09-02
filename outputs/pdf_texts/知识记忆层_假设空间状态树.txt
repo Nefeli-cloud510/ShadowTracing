@@ -1,0 +1,726 @@
+--- PAGE 1 ---
+模块4_假设空间状态树
+⑦假设空间状态树
+规则设计:
+⼀、假设空间状态树的定义与职责
+1.1什么是假设空间状态树
+假设空间状态树是系统关于“当前存在哪些科学解释、各⾃有多可靠、哪些已被排除、哪些待验证”
+的完整结构化表⽰。它不是假设提出者的输出快照，⽽是跨轮次持续维护、随实验证据动态演化的系
+统核⼼状态。
+1.2职责边界
+1.3与假设提出者/科学解释者的关系
+⼆、假设树数据结构（完整版）
+2.1假设节点（HypothesisNode）
+代码块
+--- PAGE 2 ---
+{ 
+  "hypothesis_id": "H1b-i", 
+  "statement": " Δ Dec 的预测信息主要通过 IMF 的 By 分量传递 ", 
+  "level": 3, 
+  "parent_id": "H1b", 
+  "children_ids": ["H1b-i-linear", "H1b-i-nonlinear"], 
+  "status": "active", 
+  "support_score": 0.62, 
+  "support_history": [ 
+    {"round": 0, "score": 0.40, "event": " 初始化 "}, 
+    {"round": 1, "score": 0.45, "event": " 质询后调整 "}, 
+    {"round": 2, "score": 0.62, "event": " 实验 E03 验证 "} 
+  ], 
+  "activation_condition": " ⽗假设⽀持度 ≥ 0.40", 
+  "activated_at": 2, 
+  "evidence_items": [ 
+    { 
+      "id": "EVI-001", 
+      "type": "observational_data", 
+      "description": "LHAASO 观测到 Δ Dec 与 By 存在约 3.31 天时间滞后 ", 
+      "source": "LHAASO_2021", 
+      "added_at": 0, 
+      "support_weight": 0.20 
+    }, 
+    { 
+      "id": "EVI-002", 
+      "type": "experimental_result", 
+      "description": " 实验 E03 验证了 By 的中介作⽤， Pearson-r 提升 0.10", 
+      "source": " 实验 E03", 
+      "added_at": 2, 
+      "support_weight": 0.15 
+    } 
+  ], 
+  "evidence_against": [], 
+  "critiques": [ 
+    { 
+      "id": "CRT-001", 
+      "content": "By 可能只是代表更⼤尺度 IMF 结构的代理变量 ", 
+      "from": "科学质询者 ", 
+      "added_at": 1, 
+      "resolved": false 
+    } 
+  ], 
+  "predictions": [ 
+    { 
+      "experiment_id": "E03", 
+      "metric": "Pearson_r", 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+--- PAGE 3 ---
+      "expected_direction": "positive", 
+      "expected_range": [0.05, 0.15], 
+      "actual_value": 0.10, 
+      "matched": true 
+    } 
+  ], 
+  "falsification_conditions": [ 
+    " 控制 By 后 Δ Dec 的增量贡献持续 <0.01 且置信区间跨越零 " 
+  ], 
+  "alternative_explanations": [ 
+    "By 只是更⼤尺度 IMF 结构的代理变量 ", 
+    " 观测到的 Δ Dec-By 关联源于共同太阳源驱动 " 
+  ], 
+  "pruned_at": null, 
+  "prune_reason": null, 
+  "created_at": 0, 
+  "updated_at": 2 
+} 
+2.2假设树整体状态（HypothesisTreeState）
+代码块
+{ 
+  "tree_id": "HT_ST001", 
+  "task_id": "ST_20260831_100000", 
+  "current_round": 2, 
+  "root_question": " Δ Dec 是否包含能够提前改善 Vsw 预测的信息？ ", 
+  "active_hypotheses": ["H0", "H1", "H1b", "H1b-i"], 
+  "pruned_hypotheses": ["H1a"], 
+  "pending_hypotheses": ["H1b-ii", "H1b-iii"], 
+  "latest_update": { 
+    "round": 2, 
+    "event": " 实验验证 ", 
+    "description": " 实验 E03 验证了 H1b-i ，⽀持度从 0.45 提升⾄ 0.62" 
+  }, 
+  "tree_summary": { 
+    "total_nodes": 6, 
+    "active_count": 4, 
+    "pruned_count": 1, 
+    "pending_count": 1 
+  } 
+} 
+三、假设⽣命周期的完整状态机
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+--- PAGE 4 ---
+3.1状态定义
+3.2状态转换图
+代码块
+                    ┌─────────────────────────────────────┐ 
+                    │                                      │ 
+                    ▼                                      │ 
+┌───────┐      ┌──────────┐     ⽗假设⽀持度 ≥ 0.40    ┌────────┐ 
+│  draft │────►│  pending  │───────────────────────►│  active │ 
+└───────┘      └──────────┘                         └────────┘
+                    │                                    │ 
+                    │  ⽗假设剪枝                          │  实验证据持续削弱 
+                    ▼                                    ▼ 
+               ┌────────┐     连续 3 轮下降           ┌──────────┐ 
+               │  pruned │◄───────────────────────│ observing │ 
+               └────────┘                         └──────────┘ 
+                    ▲                                    │ 
+                    │                                    │  ⽀持度 ≥ 0.70 且持续 
+                    │  ⽤⼾⼿动恢复                        ▼ 
+                    │                               ┌──────────┐ 
+                    └──────────────────────────────│ converged │ 
+                                                    └──────────┘ 
+3.3状态转换规则表
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+--- PAGE 5 ---
+四、假设树⽣成规则（从科学问题开始）
+4.1通⽤分层结构
+4.2假设提出者的输出→假设树节点
+假设提出者⽣成的结构化假设直接映射为假设树节点：
+代码块
+假设提出者输出： 
+{ 
+  "hypothesis_id": "H1b-i", 
+  "statement": "...", 
+  "level": 3, 
+  "parent_id": "H1b", 
+  "activation_condition": " ⽗假设⽀持度 ≥ 0.40", 
+  "initial_support": 0.40, 
+  ... 
+} 
+ 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+--- PAGE 6 ---
+         ↓  映射为 
+ 
+假设树节点： 
+{ 
+  "hypothesis_id": "H1b-i", 
+  "level": 3, 
+  "parent_id": "H1b", 
+  "status": "pending",          ←  尚未激活 
+  "support_score": 0.40, 
+  "activation_condition": " ⽗假设⽀持度 ≥ 0.40", 
+  ... 
+} 
+4.3假设进⼊假设树的完整流程
+代码块
+科学问题输⼊ 
+        │ 
+        ▼ 
+假设提出者⽣成假设树结构（全部假设，状态为  draft ） 
+        │ 
+        ▼ 
+科学质询者批判  →  修正⽀持度判断 
+        │ 
+        ▼ 
+程序计算初始⽀持度（按证据类型加权） 
+        │ 
+        ▼ 
+所有假设进⼊假设树（状态根据⽗假设状态设定） 
+        │ 
+        ├──  第 1 层：始终激活（ active ） 
+        ├──  第 2 层：若 H ₁ ⽀持度 ≥ 0.40 →  active ；否则  pending 
+        └──  第 3 层：若 H ₁ b ⽀持度 ≥ 0.40 →  active ；否则  pending 
+五、假设⽀持度的完整更新流程
+5.1⽀持度更新三步⾛
+代码块
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                       Step 1 ：实验前（科学质询者）                            │ 
+│                                                                              │ 
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+1
+2
+3
+--- PAGE 7 ---
+│   科学质询者输出六个维度的类型判断：                                           │ 
+│   • evidence_strength     →  direct_support / indirect / none / contradiction │ 
+│   • explanatory_coverage  →  full / partial / has_exceptions                │ 
+│   • parsimony             →  minimal / needs_new_mechanism / multiple      │ 
+│   • theoretical_compatibility →  compatible / partial / requires_revision   │ 
+│   • testability           →  current_data / needs_new_data / infeasible    │ 
+│   • distinctiveness       →  distinct / partial_overlap / high_overlap     │ 
+│                                                                              │ 
+│   程序按规则计算  →  更新⽀持度                                                 │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                    │ 
+                                    ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                       Step 2 ：实验后（科学解释者）                            │ 
+│                                                                              │ 
+│   科学解释者判断⽅向匹配程度：                                                 │ 
+│   • ⽅向是否⼀致？                                                           │ 
+│   • 幅度是否在预测范围内？                                                   │ 
+│   • 预测区间的精密度如何？                                                   │ 
+│                                                                              │ 
+│   程序按规则计算  →  ⽀持度  × Factor_direction × Factor_magnitude × 
+Factor_precision │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+                                    │ 
+                                    ▼ 
+┌───────────────────────────────────────────────────────────────
+──────────────┐ 
+│                       Step 3 ：状态更新                                      │ 
+│                                                                              │ 
+│   根据更新后的⽀持度判断状态转换：                                             │ 
+│   • ⽀持度 ≥ 0.70 且持续两轮  →  converged                                      │ 
+│   • ⽀持度 <0.40 且连续 3 轮下降  →  observing                                   │ 
+│   • ⽀持度 <0.20 →  pruned                                                   │ 
+│   • 其他  →  保持  active                                                     │ 
+└───────────────────────────────────────────────────────────────
+──────────────┘ 
+5.2⽀持度更新中涉及的不同⻆⾊职责
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+--- PAGE 8 ---
+5.3⽀持度变化结果的影响范围
+⽀持度变化后，系统需要更新：
+•
+假设树中该节点的状态和颜⾊
+•
+假设树中⽗假设/⼦假设的激活状态
+•
+实验规划者的候选实验⽣成范围
+•
+前端的假设树可视化
+六、假设树重构与剪枝规则
+6.1剪枝触发条件（程序⾃动执⾏）
+6.2剪枝后处理
+1. 节点状态变为 pruned 
+2. 记录 pruned_at 和 prune_reason 
+3. 所有⼦假设⼀并剪枝（记录 prune_reason: " ⽗假设剪枝，继承剪枝 " ）
+4. 从 active_hypotheses 列表中移除
+5. 加⼊ pruned_hypotheses 列表
+6. 剪枝记录存⼊审计链
+7. 前端假设树渲染为红⾊
+6.3剪枝不删除⽽是标记的原因
+--- PAGE 9 ---
+1.科学可追溯：评委可以看到“这个假设被考虑过但被排除了”
+2. ⼈类PI可恢复：如果⽤⼾认为剪枝判断有误，可⼿动恢复
+3. 审计完整性：完整的假设树保留了科研过程的全部历史
+4. 学习价值：被剪枝的假设及其原因可作为后续研究的参考
+七、实验规划者与假设树的交互
+7.1活跃假设查询接⼝
+实验规划者在⽣成候选实验前，需要从假设树中查询当前活跃假设：
+代码块
+GET /hypothesis_tree/active 
+ 
+返回： 
+{ 
+  "active_hypotheses": [ 
+    {"id": "H0", "statement": "...", "support_score": 0.30, "level": 1}, 
+    {"id": "H1", "statement": "...", "support_score": 0.50, "level": 1}, 
+    {"id": "H1b", "statement": "...", "support_score": 0.45, "level": 2}, 
+    {"id": "H1b-i", "statement": "...", "support_score": 0.40, "level": 3} 
+  ], 
+  "minimum_required": 3, 
+  "current_active_count": 4, 
+  "generation_strategy": " 若活跃假设 <3 ，提前激活下⼀层或⽣成形态假设 " 
+} 
+7.2保证每轮⾄少3个活跃假设的机制
+.3实验规划者从假设树获取的信息
+1. 所有活跃假设及其预测（⽤于设计区分性实验）
+2. 各假设的预期结果差异（⽤于计算信息增益）
+3. 假设间的⽀持度差距（⽤于判断区分优先级）
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+--- PAGE 10 ---
+⼋、科学解释者与假设树的交互
+8.1科学解释者输⼊（来⾃假设树）
+代码块
+{ 
+  "experiment_id": "E03", 
+  "hypotheses_involved": ["H1", "H1b-i"], 
+  "expected_predictions": { 
+    "H1": {"direction": "positive", "range": [0.05, 0.15]}, 
+    "H1b-i": {"direction": "positive", "range": [0.02, 0.08]} 
+  }, 
+  "current_support_scores": { 
+    "H1": 0.50, 
+    "H1b-i": 0.40 
+  } 
+} 
+8.2科学解释者输出（更新假设树）
+代码块
+{ 
+  "experiment_id": "E03", 
+  "hypothesis_updates": [ 
+    { 
+      "hypothesis_id": "H1", 
+      "direction_matched": true, 
+      "magnitude_matched": true, 
+      "new_support": 0.52, 
+      "status_change": "active →  active" 
+    }, 
+    { 
+      "hypothesis_id": "H1b-i", 
+      "direction_matched": true, 
+      "magnitude_matched": true, 
+      "new_support": 0.62, 
+      "status_change": "active →  converged" 
+    } 
+  ], 
+  "evidence_to_add": [ 
+    {"hypothesis_id": "H1b-i", "type": "experimental_result", "description": 
+"..."} 
+  ] 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+--- PAGE 11 ---
+} 
+九、假设树审计链
+9.1每轮记录的内容
+代码块
+rounds/round_{n}/hypothesis_tree_snapshot.json 
+代码块
+{ 
+  "round": 2, 
+  "timestamp": "2026-08-31T16:00:00+08:00", 
+  "event": " 实验 E03 验证后更新 ", 
+  "hypotheses": [ 
+    { 
+      "id": "H1b-i", 
+      "support_before": 0.40, 
+      "support_after": 0.62, 
+      "status_before": "active", 
+      "status_after": "converged", 
+      "reason": " 实验 E03 验证了预测，⽅向 / 幅度均匹配 " 
+    } 
+  ], 
+  "pruned": [], 
+  "newly_activated": [], 
+  "triggered_by": "科学解释者分析结果  →  程序执⾏更新 " 
+} 
+9.2跨轮次追溯能⼒
+⼗、假设树与前端交互
+22
+1
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+--- PAGE 12 ---
+10.1前端展⽰内容
+•
+树形结构展⽰（缩进/连线）
+•
+节点颜⾊：绿⾊（活跃/⽀持度≥0.70）、⻩⾊（活跃/0.40-0.69）、橙⾊（观察中/0.20-0.39）、
+红⾊（已剪枝/<0.20）、灰⾊（待激活）
+•
+节点点击展开详情：陈述、⽀持度、证据、预测、批判
+•
+剪枝动画/标注
+•
+跨轮次对⽐视图
+10.2前端API接⼝
+代码块
+GET /api/hypothesis_tree/current        →  当前完整的假设树 
+GET /api/hypothesis_tree/history        →  假设树变更历史 
+GET /api/hypothesis_tree/node/{id}      →  特定节点的详细信息 
+GET /api/hypothesis_tree/round/{n}      →  第 n 轮的假设树快照 
+⼗⼆、需要进⼀步明确的开放问题
+问题1：假设收敛的明确标准是什么？
+当某假设满⾜以下所有条件时，可标记为收敛（converged）：
+1. ⽀持度≥0.70（强⽀持）
+2. 连续两轮⽀持度稳定（变化幅度<0.05）
+3. 核⼼证伪条件未被触发
+4. 所有替代假设均已被剪枝或⽀持度远低于该假设（差距>0.20）
+5. ⼈类PI确认
+收敛不⾃动停⽌系统，⽽是向⼈类PI提议停⽌或继续验证。
+问题2：⽗假设⽀持度下降时，⼦假设如何处理？
+1
+2
+3
+4
+--- PAGE 13 ---
+问题3：⼦假设是否可独⽴于⽗假设获得⽀持度？
+可以，⼦假设⽀持度独⽴计算。但⽗假设被剪枝时所有⼦假设继承剪枝。
+代码块
+场景： H1b ⽀持度 0.45 ， H1b-i ⽀持度 0.62 （通过实验验证独⽴提升） 
+→  即使 H1b 被削弱， H1b-i 的⽀持度不会⾃动下降 
+→  但如果 H1b 被剪枝， H1b-i ⼀并剪枝（⽆论⽀持度多⾼） 
+问题4：假设树与假设账本的关系
+两者关系：假设树是假设账本的⼀个结构化视图。假设账本包含所有假设的完整数据，假设树描述这
+些假设之间的层级关系和当前状态。剪枝只是从假设树中移除节点（标记为pruned），假设账本保留
+完整历史。
+代码块
+科学问题输⼊ 
+        │ 
+        ▼ 
+假设提出者⽣成假设树（状态： draft ） 
+        │ 
+        ▼ 
+科学质询者批判（⽀持度类型判断） 
+        │ 
+        ▼ 
+程序初始化⽀持度  →  假设进⼊假设树 
+        │ 
+        ├──  第 1 层： active 
+        ├──  第 2 层：⽗假设 ≥ 0.40 →  active ；否则  pending 
+        └──  第 3 层：⽗假设 ≥ 0.40 →  active ；否则  pending 
+        │ 
+        ▼ 
+中央进程控制者检查活跃假设数量 
+        │ 
+        ├──  ≥ 3 →  进⼊实验规划 
+        └──  <3 →  提前激活下⼀层假设或⽣成形态假设 
+        │ 
+        ▼ 
+实验执⾏  →  获得真实结果 
+1
+2
+3
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+--- PAGE 14 ---
+        │ 
+        ▼ 
+科学解释者判断⽅向 / 幅度匹配 
+        │ 
+        ▼ 
+程序更新⽀持度（ ×Factor_direction × Factor_magnitude × Factor_precision ） 
+        │ 
+        ▼ 
+程序判断状态转换 
+        │ 
+        ├──  ⽀持度 ≥ 0.70 且持续 2 轮  →  converged 
+        ├──  ⽀持度 <0.40 且连续 3 轮下降  →  observing 
+        ├──  ⽀持度 <0.20 →  pruned （及⼦假设继承剪枝） 
+        └──  ⽗假设 pruned →  ⼦假设继承剪枝 
+        │ 
+        ▼ 
+前端假设树更新  →  ⼈类 PI 审查 
+        │ 
+        ▼ 
+进⼊下⼀轮实验规划（从活跃假设开始） 
+        │ 
+        ↺ 
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45

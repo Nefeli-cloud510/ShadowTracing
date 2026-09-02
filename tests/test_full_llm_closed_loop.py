@@ -1,0 +1,122 @@
+import unittest
+
+from core.central_controller_llm import CentralControllerLLM
+from core.control_unified import HumanControlService
+from core.planner_unified import PlannerOutputBuilder
+from core.scientific_interpreter_llm import ScientificInterpreterLLM
+from tests.test_llm_planner_integration import (
+    StubExperimentPlanner,
+    StubHypothesisProposer,
+    StubLLMGateway,
+    StubRAGService,
+    StubScientificInterpreterGateway,
+    StubScientificQuestioner,
+)
+from tests.test_system_audit_closure import SystemAuditClosureTest
+
+
+class FullLLMClosedLoopTest(SystemAuditClosureTest):
+    def _build_llm_control(self) -> HumanControlService:
+        return HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            run_shap=False,
+            planner_mode="llm",
+            planner_output_builder=PlannerOutputBuilder(
+                mode="llm",
+                central_controller=CentralControllerLLM(gateway=StubLLMGateway()),
+            ),
+            scientific_interpreter=ScientificInterpreterLLM(gateway=StubScientificInterpreterGateway()),
+            rag_service=StubRAGService(),
+            hypothesis_proposer=StubHypothesisProposer(),
+            scientific_questioner=StubScientificQuestioner(),
+            experiment_planner=StubExperimentPlanner(),
+        )
+
+    def _run_two_rounds(self) -> dict[str, object]:
+        control = self._build_llm_control()
+
+        initial_review = control.request_experiment_selection_review()
+        round1 = control.approve_and_execute_candidate(
+            human_notes="round1 llm_mode 批准执行",
+            auto_continue=False,
+        )
+        after_round1 = control.record_round_decision(
+            round_id=round1["protocol"].round_id,
+            decision="adjust",
+            human_feedback="下一轮继续关注 By 与 Np 条件路径，并保持验证型方案",
+            data_dictionary=self.dictionary,
+        )
+
+        round2 = control.approve_and_execute_candidate(
+            human_notes="round2 llm_mode 批准执行",
+            auto_continue=False,
+        )
+        after_round2 = control.record_round_decision(
+            round_id=round2["protocol"].round_id,
+            decision="continue",
+            data_dictionary=self.dictionary,
+        )
+
+        return {
+            "initial_review": initial_review,
+            "round1": round1,
+            "after_round1": after_round1,
+            "round2": round2,
+            "after_round2": after_round2,
+        }
+
+    def test_full_llm_mode_two_round_closure(self) -> None:
+        payload = self._run_two_rounds()
+
+        self.assertEqual(payload["initial_review"]["status"], "awaiting_human_review")
+        self.assertEqual(payload["round1"]["review"]["status"], "awaiting_round_decision")
+        self.assertEqual(payload["round2"]["review"]["status"], "awaiting_round_decision")
+
+        self.assertTrue(
+            any(trace["stage"] == "scientific_interpreter" for trace in payload["round1"]["review"]["reasoning_traces"])
+        )
+        self.assertTrue(
+            any(trace["stage"] == "scientific_interpreter" for trace in payload["round2"]["review"]["reasoning_traces"])
+        )
+
+        self.assertEqual(payload["after_round1"]["planner_output"].planner_mode, "llm")
+        self.assertEqual(payload["after_round2"]["planner_output"].planner_mode, "llm")
+        self.assertTrue(
+            any("rag_project:" in note for note in payload["after_round1"]["planner_input"].planner_guidance)
+        )
+        self.assertTrue(
+            any("questioner_gap:" in note for note in payload["after_round1"]["planner_input"].planner_guidance)
+        )
+        self.assertTrue(
+            any("Np" in trace.summary for trace in payload["after_round1"]["planner_input"].recent_reasoning_traces)
+        )
+
+        self.assertTrue(
+            any(note == "planner_refinement:llm_experiment_planner" for note in payload["round1"]["protocol"].notes)
+        )
+        self.assertTrue(
+            any(step.action == "planner_hypothesis_focus" for step in payload["round1"]["protocol"].steps)
+        )
+        self.assertTrue(
+            any(note == "planner_refinement:llm_experiment_planner" for note in payload["round2"]["protocol"].notes)
+        )
+
+        uncertainties = self.repository.load_uncertainties()
+        self.assertTrue(any("Np 条件下成立" in record.question for record in uncertainties.records))
+
+        decision_log = self.repository.load_decision_log()
+        decision_types = [entry.decision_type for entry in decision_log.decisions]
+        self.assertGreaterEqual(decision_types.count("scientific_interpreter_applied"), 2)
+        self.assertGreaterEqual(decision_types.count("planner_output_generated"), 2)
+        self.assertGreaterEqual(decision_types.count("planner_output_applied"), 2)
+
+        candidate_set = self.repository.load_candidate_experiments()
+        self.assertTrue(candidate_set.candidates)
+        self.assertTrue(
+            any("llm_controller_selected" in candidate.design.notes for candidate in candidate_set.candidates)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

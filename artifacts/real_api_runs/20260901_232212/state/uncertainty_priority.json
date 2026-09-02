@@ -1,0 +1,64 @@
+{
+  "last_updated": "2026-09-01T23:25:09.832409",
+  "current_round": 3,
+  "queue": [
+    {
+      "uncertainty_id": "U01",
+      "question": "DeltaDec 的贡献是否独立于 By？",
+      "priority_score": 0.9,
+      "status": "active",
+      "estimated_resolution_round": 1
+    },
+    {
+      "uncertainty_id": "U_LLM_R03_07",
+      "question": "DeltaDec 对 Vsw 的增量预测是否在控制 By 的动态相位（如 By 过零点前/后 6 小时）时呈现方向性反转？即：其符号与效应大小是否依赖于 By 的演化阶段而非静态值？",
+      "priority_score": 0.9,
+      "status": "active",
+      "estimated_resolution_round": 4
+    },
+    {
+      "uncertainty_id": "U_LLM_R03_09",
+      "question": "DeltaDec 的预测增益是否特异于 Vsw 的某类动力学子集（如激波驱动高速流、CIR 相关中速流、或静稳低速流）？若增益仅存在于一类流型中，其‘独立性’需重新定义为‘流型条件独立’。",
+      "priority_score": 0.9,
+      "status": "active",
+      "estimated_resolution_round": 4
+    },
+    {
+      "uncertainty_id": "U02",
+      "question": "DeltaDec 的增益是否跨时间段稳定？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 1
+    },
+    {
+      "uncertainty_id": "U03",
+      "question": "DeltaDec 对 Vsw 的预测作用是否在 By 与 Np 的联合条件空间中呈现非线性或阈值效应（例如仅在 By > 0 且 Np < 5/cm³ 时显著）？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    },
+    {
+      "uncertainty_id": "U04",
+      "question": "DeltaDec 的负向 ΔPearson r 是否源于其与 Vsw 的物理关系具有方向性延迟（如 DeltaDec 表征上游扰动，而 Vsw 响应滞后多个时间尺度）？当前是否隐含零滞后假设？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    },
+    {
+      "uncertainty_id": "U05",
+      "question": "RAG 提及的‘IMF-related variables’是否包含除 By 外的 IMF 分量（如 Bz、Bx）或其导出量（如 ε-参数、dΦ/dt）？若 DeltaDec 实际编码的是 IMF 总体动态而非单一 By，当前 By 控制是否不充分？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    },
+    {
+      "uncertainty_id": "U06",
+      "question": "是否存在未被观测的混杂变量 Z（如地磁活动指数 Kp 或 Dst 的前导值），使得 DeltaDec-Vsw 关联实为 Z→DeltaDec 与 Z→Vsw 的伪相关？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 4
+    }
+  ],
+  "resolved": [],
+  "deprecated": []
+}

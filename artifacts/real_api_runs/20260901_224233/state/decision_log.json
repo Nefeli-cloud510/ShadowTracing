@@ -1,0 +1,266 @@
+{
+  "schema_version": "1.0",
+  "message_type": "decision_log",
+  "task_id": "ST_REAL_API_20260901_224233",
+  "created_at": "2026-09-01T22:42:33.567296",
+  "decisions": [
+    {
+      "decision_id": "D001",
+      "timestamp": "2026-09-01T22:42:36.225415",
+      "round_id": 1,
+      "phase": "experiment_planning",
+      "step": "experiment_selection",
+      "decision_type": "experiment_selection_requested",
+      "made_by": "system",
+      "summary": "系统请求 human_pi 审批候选实验 E_R01_01",
+      "details": {
+        "candidate_id": "E_R01_01",
+        "utility_score": 0.2395
+      }
+    },
+    {
+      "decision_id": "D002",
+      "timestamp": "2026-09-01T22:44:56.917883",
+      "round_id": 1,
+      "phase": "experiment_planning",
+      "step": "experiment_selection",
+      "decision_type": "experiment_approved",
+      "made_by": "human_pi",
+      "summary": "用户批准实验 E_R01_01",
+      "details": {
+        "candidate_id": "E_R01_01",
+        "utility_score": 0.2395,
+        "notes": "real api round1 批准执行",
+        "auto_continue": false
+      }
+    },
+    {
+      "decision_id": "D003",
+      "timestamp": "2026-09-01T22:44:56.917911",
+      "round_id": 1,
+      "phase": "experiment_planning",
+      "step": "protocol_generation",
+      "decision_type": "protocol_generated",
+      "made_by": "system",
+      "summary": "已为 E_R01_01 生成执行协议",
+      "details": {
+        "protocol_path": "config/latest_protocol.json",
+        "scientific_objective": "DeltaDec 的贡献是否独立于 By？",
+        "refinement_types": [
+          "llm_experiment_planner"
+        ]
+      }
+    },
+    {
+      "decision_id": "D004",
+      "timestamp": "2026-09-01T22:47:00.744053",
+      "round_id": 1,
+      "phase": "result_analysis",
+      "step": "scientific_interpreter",
+      "decision_type": "scientific_interpreter_applied",
+      "made_by": "system",
+      "summary": "科学解释者已为 E_R01_01 生成解释增强",
+      "details": {
+        "experiment_id": "E_R01_01",
+        "enhancement_count": 2,
+        "enhancement_ids": [
+          "IE001",
+          "LIE_INT_001"
+        ]
+      }
+    },
+    {
+      "decision_id": "D005",
+      "timestamp": "2026-09-01T22:47:00.747952",
+      "round_id": 1,
+      "phase": "decision_making",
+      "step": "round_review",
+      "decision_type": "round_review_requested",
+      "made_by": "system",
+      "summary": "系统请求 human_pi 对 round 1 作出下一步决策",
+      "details": {
+        "experiment_id": "E_R01_01",
+        "evaluation_summary": {
+          "experiment_id": "E_R01_01",
+          "round_id": 1,
+          "baseline_pearson_r": 0.1709373397818764,
+          "treatment_pearson_r": 0.15116389127661262,
+          "delta_pearson_r": -0.019773448505263774,
+          "delta_rmse": 0.8855881347460866,
+          "remaining_uncertainties": [
+            {
+              "uncertainty_id": "U01",
+              "question": "DeltaDec 的贡献是否独立于 By？",
+              "priority": "high"
+            },
+            {
+              "uncertainty_id": "U02",
+              "question": "DeltaDec 的增益是否跨时间段稳定？",
+              "priority": "medium"
+            },
+            {
+              "uncertainty_id": "U01",
+              "question": "DeltaDec 的贡献是否独立于 By？",
+              "description": "U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved",
+              "priority": "medium"
+            }
+          ],
+          "key_findings": [],
+          "robustness_recommendation": "可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。",
+          "stable": true
+        },
+        "hypothesis_assessments": [
+          {
+            "hypothesis_id": "H_deltadec_independent_gain",
+            "support_before": 0.5,
+            "support_after": 0.38,
+            "status": "weakened",
+            "direction_matched": false,
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_independent_gain 预期效应为 positive，观测到的增量为 -0.0198；direction_matched=False, magnitude_matched=partial。"
+          },
+          {
+            "hypothesis_id": "H_deltadec_null_competition",
+            "support_before": 0.5,
+            "support_after": 0.475,
+            "status": "partially_supported",
+            "direction_matched": "partial",
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_null_competition 预期效应为 near_zero，观测到的增量为 -0.0198；direction_matched=partial, magnitude_matched=partial。"
+          },
+          {
+            "hypothesis_id": "H_deltadec_via_by",
+            "support_before": 0.5,
+            "support_after": 0.475,
+            "status": "partially_supported",
+            "direction_matched": "partial",
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_via_by 预期效应为 near_zero，观测到的增量为 -0.0198；direction_matched=partial, magnitude_matched=partial。"
+          },
+          {
+            "hypothesis_id": "H_deltadec_via_bz",
+            "support_before": 0.5,
+            "support_after": 0.475,
+            "status": "partially_supported",
+            "direction_matched": "partial",
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_via_bz 预期效应为 near_zero，观测到的增量为 -0.0198；direction_matched=partial, magnitude_matched=partial。"
+          },
+          {
+            "hypothesis_id": "H_deltadec_via_np",
+            "support_before": 0.5,
+            "support_after": 0.475,
+            "status": "partially_supported",
+            "direction_matched": "partial",
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_via_np 预期效应为 near_zero，观测到的增量为 -0.0198；direction_matched=partial, magnitude_matched=partial。"
+          },
+          {
+            "hypothesis_id": "H_deltadec_temporal_stability",
+            "support_before": 0.5,
+            "support_after": 0.38,
+            "status": "weakened",
+            "direction_matched": false,
+            "magnitude_matched": "partial",
+            "reason": "H_deltadec_temporal_stability 预期效应为 positive，观测到的增量为 -0.0198；direction_matched=False, magnitude_matched=partial。"
+          }
+        ],
+        "disagreement_updates": [
+          {
+            "uncertainty_id": "U01",
+            "compared_hypotheses": [
+              "H_deltadec_independent_gain",
+              "H_deltadec_null_competition",
+              "H_deltadec_via_by",
+              "H_deltadec_via_bz",
+              "H_deltadec_via_np",
+              "H_deltadec_temporal_stability"
+            ],
+            "support_span_before": 0.22,
+            "support_span_after": 0.095,
+            "narrowed": true,
+            "resolution_status": "partially_resolved",
+            "leading_hypothesis_id": "H_deltadec_null_competition",
+            "unresolved_hypotheses": [
+              "H_deltadec_independent_gain",
+              "H_deltadec_null_competition",
+              "H_deltadec_via_by",
+              "H_deltadec_via_bz",
+              "H_deltadec_via_np",
+              "H_deltadec_temporal_stability"
+            ],
+            "summary": "U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved"
+          }
+        ],
+        "reasoning_traces": [
+          {
+            "trace_id": "IE001",
+            "round_id": 1,
+            "source": "scientific_interpreter_llm",
+            "stage": "scientific_interpreter",
+            "summary": "H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。",
+            "related_hypotheses": [
+              "H_deltadec_independent_gain"
+            ],
+            "related_uncertainties": [
+              "U01",
+              "U02"
+            ],
+            "support_delta": -0.1147,
+            "priority_delta": 0.0,
+            "created_at": "2026-09-01T22:47:00.737804"
+          },
+          {
+            "trace_id": "LIE_INT_001",
+            "round_id": 1,
+            "source": "scientific_interpreter_llm",
+            "stage": "scientific_interpreter",
+            "summary": "H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。",
+            "related_hypotheses": [
+              "H_deltadec_independent_gain"
+            ],
+            "related_uncertainties": [
+              "U01"
+            ],
+            "support_delta": 0.0236,
+            "priority_delta": 0.0,
+            "created_at": "2026-09-01T22:47:00.737891"
+          }
+        ]
+      }
+    },
+    {
+      "decision_id": "D006",
+      "timestamp": "2026-09-01T22:47:00.751547",
+      "round_id": 1,
+      "phase": "decision_making",
+      "step": "round_review",
+      "decision_type": "round_adjusted",
+      "made_by": "human_pi",
+      "summary": "用户批准 round 1 进入下一轮，但要求调整后续方向",
+      "details": {
+        "human_feedback": "下一轮继续关注 By 与 Np 条件路径，并保持验证型方案",
+        "auto_continue": false
+      }
+    }
+  ],
+  "human_feedback": [
+    {
+      "feedback_id": "F001",
+      "timestamp": "2026-09-01T22:47:00.751569",
+      "phase": "decision_making",
+      "round_number": 1,
+      "feedback_type": "改进建议",
+      "content": "下一轮继续关注 By 与 Np 条件路径，并保持验证型方案",
+      "implemented_in_round": 2,
+      "status": "recorded",
+      "related_experiment_id": "E_R01_01",
+      "linked_reasoning_trace_ids": [
+        "IE001",
+        "LIE_INT_001"
+      ],
+      "context_summary": "linked_traces=IE001,LIE_INT_001; assessment:H_deltadec_independent_gain->weakened"
+    }
+  ],
+  "stop_history": []
+}

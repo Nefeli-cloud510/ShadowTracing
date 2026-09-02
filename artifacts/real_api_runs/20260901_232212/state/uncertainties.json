@@ -1,0 +1,837 @@
+{
+  "task_id": "ST_REAL_API_20260901_232212",
+  "current_round": 3,
+  "last_updated": "2026-09-01T23:25:09.832205",
+  "records": [
+    {
+      "uncertainty_id": "U01",
+      "question": "DeltaDec 的贡献是否独立于 By？",
+      "description": "DeltaDec 的贡献是否独立于 By？",
+      "related_hypotheses": [
+        "H_deltadec_independent_gain",
+        "H_deltadec_null_competition",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "high",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.45
+      },
+      "created_at_round": 0,
+      "created_by": "real_api_demo",
+      "resolution_status": "partially_resolved",
+      "resolving_experiment": "E_R02_01",
+      "history": [
+        {
+          "round": 1,
+          "event": "disagreement_evaluation",
+          "source": "E_R01_01",
+          "description": "U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved"
+        },
+        {
+          "round": 1,
+          "event": "evaluation_writeback",
+          "source": "E_R01_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 1,
+          "event": "evaluation_writeback",
+          "source": "E_R01_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 1,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 1,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "需要保守解释当前结果。"
+        },
+        {
+          "round": 2,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "若 E_R02_01 在 By > 0 且 Np < 5/cm³ 区域观测到显著 DeltaDec 增益，而其他区域无增益，则支持 H_deltadec_via_by 或 H_deltadec_independent_gain；若增益仅出现在 By 高值区间且随 Np 降低单调增强，则强化 H_deltadec_null_competition（即 DeltaDec 信号实为 By 强化态的代理）；零增益全域分布将削弱所有三者，但尤其冲击 H_deltadec_independent_gain。"
+        },
+        {
+          "round": 2,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "H_deltadec_null_competition 当前支持度为 0.40，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 2,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "未解决不确定性 U01 仍为下一轮核心分歧点，应要求解释层说明其与候选实验的区分关系。"
+        },
+        {
+          "round": 2,
+          "event": "evaluation_writeback",
+          "source": "E_R02_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 2,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "H_deltadec_null_competition 当前支持度为 0.41，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 2,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "需要保守解释当前结果。"
+        },
+        {
+          "round": 3,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "若 E_R03_01 观测到 DeltaDec 增量效应在 By 过零点前后发生符号反转（如正→负或显著增强→消失），则表明 DeltaDec 对 Vsw 的作用依赖 By 的演化状态，支持 By 作为动态中介变量，而非简单共线性混杂；该结果将直接削弱 H_deltadec_null_competition（静态伴随相关），并为 H_deltadec_via_by 提供首个可验证的时序机制证据。"
+        },
+        {
+          "round": 3,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "H_deltadec_null_competition 当前支持度为 0.37，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 3,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "未解决不确定性 U01 仍为下一轮核心分歧点，应要求解释层说明其与候选实验的区分关系。"
+        }
+      ],
+      "alternative_resolutions": [],
+      "notes": "U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved | H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | 需要保守解释当前结果。 | 若 E_R02_01 在 By > 0 且 Np < 5/cm³ 区域观测到显著 DeltaDec 增益，而其他区域无增益，则支持 H_deltadec_via_by 或 H_deltadec_independent_gain；若增益仅出现在 By 高值区间且随 Np 降低单调增强，则强化 H_deltadec_null_competition（即 DeltaDec 信号实为 By 强化态的代理）；零增益全域分布将削弱所有三者，但尤其冲击 H_deltadec_independent_gain。 | H_deltadec_null_competition 当前支持度为 0.40，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | 未解决不确定性 U01 仍为下一轮核心分歧点，应要求解释层说明其与候选实验的区分关系。 | H_deltadec_null_competition 当前支持度为 0.41，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | 若 E_R03_01 观测到 DeltaDec 增量效应在 By 过零点前后发生符号反转（如正→负或显著增强→消失），则表明 DeltaDec 对 Vsw 的作用依赖 By 的演化状态，支持 By 作为动态中介变量，而非简单共线性混杂；该结果将直接削弱 H_deltadec_null_competition（静态伴随相关），并为 H_deltadec_via_by 提供首个可验证的时序机制证据。 | H_deltadec_null_competition 当前支持度为 0.37，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+    },
+    {
+      "uncertainty_id": "U02",
+      "question": "DeltaDec 的增益是否跨时间段稳定？",
+      "description": "DeltaDec 的增益是否跨时间段稳定？",
+      "related_hypotheses": [
+        "H_deltadec_independent_gain",
+        "H_deltadec_null_competition",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "medium",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.65
+      },
+      "created_at_round": 0,
+      "created_by": "real_api_demo",
+      "resolving_experiment": "E_R02_01",
+      "history": [
+        {
+          "round": 1,
+          "event": "evaluation_writeback",
+          "source": "E_R01_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 1,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 1,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "需要保守解释当前结果。"
+        },
+        {
+          "round": 2,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "H_deltadec_null_competition 当前支持度为 0.40，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 2,
+          "event": "evaluation_writeback",
+          "source": "E_R02_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 2,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "H_deltadec_null_competition 当前支持度为 0.41，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        },
+        {
+          "round": 2,
+          "event": "scientific_interpreter",
+          "source": "scientific_interpreter_llm",
+          "description": "需要保守解释当前结果。"
+        },
+        {
+          "round": 3,
+          "event": "planner_interpretation",
+          "source": "planner_output",
+          "description": "H_deltadec_null_competition 当前支持度为 0.37，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+        }
+      ],
+      "alternative_resolutions": [],
+      "notes": "H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | 需要保守解释当前结果。 | H_deltadec_null_competition 当前支持度为 0.40，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | H_deltadec_null_competition 当前支持度为 0.41，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 | H_deltadec_null_competition 当前支持度为 0.37，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。"
+    },
+    {
+      "uncertainty_id": "U03",
+      "question": "DeltaDec 对 Vsw 的预测作用是否在 By 与 Np 的联合条件空间中呈现非线性或阈值效应（例如仅在 By > 0 且 Np < 5/cm³ 时显著）？",
+      "description": "U03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "medium",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.35
+      },
+      "created_at_round": 2,
+      "created_by": "scientific_questioner_llm",
+      "resolution_status": "partially_resolved",
+      "resolving_experiment": "E_R02_01",
+      "history": [
+        {
+          "round": 2,
+          "event": "disagreement_evaluation",
+          "source": "E_R02_01",
+          "description": "U03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved"
+        },
+        {
+          "round": 2,
+          "event": "evaluation_writeback",
+          "source": "E_R02_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        },
+        {
+          "round": 2,
+          "event": "evaluation_writeback",
+          "source": "E_R02_01",
+          "description": "remaining uncertainty retained after experiment evaluation"
+        }
+      ],
+      "alternative_resolutions": [],
+      "notes": "U03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved"
+    },
+    {
+      "uncertainty_id": "U04",
+      "question": "DeltaDec 的负向 ΔPearson r 是否源于其与 Vsw 的物理关系具有方向性延迟（如 DeltaDec 表征上游扰动，而 Vsw 响应滞后多个时间尺度）？当前是否隐含零滞后假设？",
+      "description": "DeltaDec 的负向 ΔPearson r 是否源于其与 Vsw 的物理关系具有方向性延迟（如 DeltaDec 表征上游扰动，而 Vsw 响应滞后多个时间尺度）？当前是否隐含零滞后假设？",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "medium",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.65
+      },
+      "created_at_round": 2,
+      "created_by": "scientific_questioner_llm",
+      "history": [],
+      "alternative_resolutions": [],
+      "notes": "generated_from_scientific_questioner_llm"
+    },
+    {
+      "uncertainty_id": "U05",
+      "question": "RAG 提及的‘IMF-related variables’是否包含除 By 外的 IMF 分量（如 Bz、Bx）或其导出量（如 ε-参数、dΦ/dt）？若 DeltaDec 实际编码的是 IMF 总体动态而非单一 By，当前 By 控制是否不充分？",
+      "description": "RAG 提及的‘IMF-related variables’是否包含除 By 外的 IMF 分量（如 Bz、Bx）或其导出量（如 ε-参数、dΦ/dt）？若 DeltaDec 实际编码的是 IMF 总体动态而非单一 By，当前 By 控制是否不充分？",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "medium",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.35
+      },
+      "created_at_round": 2,
+      "created_by": "scientific_questioner_llm",
+      "history": [],
+      "alternative_resolutions": [],
+      "notes": "generated_from_scientific_questioner_llm"
+    },
+    {
+      "uncertainty_id": "U_LLM_R03_07",
+      "question": "DeltaDec 对 Vsw 的增量预测是否在控制 By 的动态相位（如 By 过零点前/后 6 小时）时呈现方向性反转？即：其符号与效应大小是否依赖于 By 的演化阶段而非静态值？",
+      "description": "DeltaDec 对 Vsw 的增量预测是否在控制 By 的动态相位（如 By 过零点前/后 6 小时）时呈现方向性反转？即：其符号与效应大小是否依赖于 By 的演化阶段而非静态值？",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "high",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.35
+      },
+      "created_at_round": 3,
+      "created_by": "scientific_questioner_llm",
+      "history": [],
+      "alternative_resolutions": [],
+      "notes": "generated_from_scientific_questioner_llm"
+    },
+    {
+      "uncertainty_id": "U_LLM_R03_09",
+      "question": "DeltaDec 的预测增益是否特异于 Vsw 的某类动力学子集（如激波驱动高速流、CIR 相关中速流、或静稳低速流）？若增益仅存在于一类流型中，其‘独立性’需重新定义为‘流型条件独立’。",
+      "description": "DeltaDec 的预测增益是否特异于 Vsw 的某类动力学子集（如激波驱动高速流、CIR 相关中速流、或静稳低速流）？若增益仅存在于一类流型中，其‘独立性’需重新定义为‘流型条件独立’。",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "high",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.45
+      },
+      "created_at_round": 3,
+      "created_by": "scientific_questioner_llm",
+      "history": [],
+      "alternative_resolutions": [],
+      "notes": "generated_from_scientific_questioner_llm"
+    },
+    {
+      "uncertainty_id": "U06",
+      "question": "是否存在未被观测的混杂变量 Z（如地磁活动指数 Kp 或 Dst 的前导值），使得 DeltaDec-Vsw 关联实为 Z→DeltaDec 与 Z→Vsw 的伪相关？",
+      "description": "是否存在未被观测的混杂变量 Z（如地磁活动指数 Kp 或 Dst 的前导值），使得 DeltaDec-Vsw 关联实为 Z→DeltaDec 与 Z→Vsw 的伪相关？",
+      "related_hypotheses": [
+        "H_deltadec_null_competition",
+        "H_deltadec_independent_gain",
+        "H_deltadec_via_by",
+        "H_deltadec_via_bz",
+        "H_deltadec_via_np",
+        "H_deltadec_temporal_stability"
+      ],
+      "disagreement": {
+        "H_deltadec_null_competition": {
+          "hypothesis_id": "H_deltadec_null_competition",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3729,
+          "rationale_trigger": "competition_bootstrap",
+          "source_summary": "为避免只保留单一路径，生成与 By 相关的竞争解释假设。"
+        },
+        "H_deltadec_independent_gain": {
+          "hypothesis_id": "H_deltadec_independent_gain",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3293,
+          "rationale_trigger": "task_bootstrap",
+          "source_summary": "根据 scientific task 中的主变量绑定，先生成 DeltaDec 对 Vsw 的独立增量假设。"
+        },
+        "H_deltadec_via_by": {
+          "hypothesis_id": "H_deltadec_via_by",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 By，生成中介路径假设。"
+        },
+        "H_deltadec_via_bz": {
+          "hypothesis_id": "H_deltadec_via_bz",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Bz，生成中介路径假设。"
+        },
+        "H_deltadec_via_np": {
+          "hypothesis_id": "H_deltadec_via_np",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.3249,
+          "rationale_trigger": "mediator_bootstrap",
+          "source_summary": "根据 research question 中的候选中介变量 Np，生成中介路径假设。"
+        },
+        "H_deltadec_temporal_stability": {
+          "hypothesis_id": "H_deltadec_temporal_stability",
+          "expected": "near_zero",
+          "status": "observing",
+          "support_score": 0.2888,
+          "rationale_trigger": "stability_bootstrap",
+          "source_summary": "根据任务/不确定性中的时间稳定性信号，生成 DeltaDec 的稳健性假设。"
+        }
+      },
+      "status": "active",
+      "priority": "medium",
+      "priority_factors": {
+        "hypothesis_count": 6,
+        "support_gap": 0.0841,
+        "expected_information_gain": 1.0,
+        "estimated_cost": 0.35
+      },
+      "created_at_round": 3,
+      "created_by": "scientific_questioner_llm",
+      "history": [],
+      "alternative_resolutions": [],
+      "notes": "generated_from_scientific_questioner_llm"
+    }
+  ],
+  "priority_queue": {
+    "last_updated": "2026-09-01T23:25:09.832409",
+    "current_round": 3,
+    "queue": [
+      {
+        "uncertainty_id": "U01",
+        "question": "DeltaDec 的贡献是否独立于 By？",
+        "priority_score": 0.9,
+        "status": "active",
+        "estimated_resolution_round": 1
+      },
+      {
+        "uncertainty_id": "U_LLM_R03_07",
+        "question": "DeltaDec 对 Vsw 的增量预测是否在控制 By 的动态相位（如 By 过零点前/后 6 小时）时呈现方向性反转？即：其符号与效应大小是否依赖于 By 的演化阶段而非静态值？",
+        "priority_score": 0.9,
+        "status": "active",
+        "estimated_resolution_round": 4
+      },
+      {
+        "uncertainty_id": "U_LLM_R03_09",
+        "question": "DeltaDec 的预测增益是否特异于 Vsw 的某类动力学子集（如激波驱动高速流、CIR 相关中速流、或静稳低速流）？若增益仅存在于一类流型中，其‘独立性’需重新定义为‘流型条件独立’。",
+        "priority_score": 0.9,
+        "status": "active",
+        "estimated_resolution_round": 4
+      },
+      {
+        "uncertainty_id": "U02",
+        "question": "DeltaDec 的增益是否跨时间段稳定？",
+        "priority_score": 0.6,
+        "status": "active",
+        "estimated_resolution_round": 1
+      },
+      {
+        "uncertainty_id": "U03",
+        "question": "DeltaDec 对 Vsw 的预测作用是否在 By 与 Np 的联合条件空间中呈现非线性或阈值效应（例如仅在 By > 0 且 Np < 5/cm³ 时显著）？",
+        "priority_score": 0.6,
+        "status": "active",
+        "estimated_resolution_round": 3
+      },
+      {
+        "uncertainty_id": "U04",
+        "question": "DeltaDec 的负向 ΔPearson r 是否源于其与 Vsw 的物理关系具有方向性延迟（如 DeltaDec 表征上游扰动，而 Vsw 响应滞后多个时间尺度）？当前是否隐含零滞后假设？",
+        "priority_score": 0.6,
+        "status": "active",
+        "estimated_resolution_round": 3
+      },
+      {
+        "uncertainty_id": "U05",
+        "question": "RAG 提及的‘IMF-related variables’是否包含除 By 外的 IMF 分量（如 Bz、Bx）或其导出量（如 ε-参数、dΦ/dt）？若 DeltaDec 实际编码的是 IMF 总体动态而非单一 By，当前 By 控制是否不充分？",
+        "priority_score": 0.6,
+        "status": "active",
+        "estimated_resolution_round": 3
+      },
+      {
+        "uncertainty_id": "U06",
+        "question": "是否存在未被观测的混杂变量 Z（如地磁活动指数 Kp 或 Dst 的前导值），使得 DeltaDec-Vsw 关联实为 Z→DeltaDec 与 Z→Vsw 的伪相关？",
+        "priority_score": 0.6,
+        "status": "active",
+        "estimated_resolution_round": 4
+      }
+    ],
+    "resolved": [],
+    "deprecated": []
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "round": 2,
+  "timestamp": "2026-08-23T23:19:41",
+  "mode": "local_mock",
+  "runner_script": "D:\\Shadow-Tracing-simple\\models\\elasticnet_runner.py",
+  "config": {
+    "window_size": 7,
+    "use_lag_feature": true,
+    "max_lag_day": 5,
+    "alpha": 0.3,
+    "l1_ratio": 0.7,
+    "reasoning": "当前R²为负且RMSE高于基线，表明模型未捕获有效时序模式；关闭lag特征但max_lag_day仍设为3无意义，故启用lag特征并扩大窗口和lag范围以增强时序依赖建模；降低alpha缓解过正则化，提高l1_ratio增强稀疏性以筛选关键滞后变量"
+  },
+  "metrics": {
+    "train_rmse": 133.0,
+    "test_rmse": 140.5,
+    "train_mae": 101.08,
+    "test_mae": 109.59,
+    "train_r2": 0.0,
+    "test_r2": -0.16,
+    "test_pearson_r": 0.18,
+    "baseline_test_rmse": 135.0,
+    "n_features": 70
+  },
+  "artifacts": {
+    "round_dir": "D:\\Shadow-Tracing-simple\\results\\round_02",
+    "config_snapshot": "D:\\Shadow-Tracing-simple\\results\\round_02\\config.json",
+    "metrics_snapshot": "D:\\Shadow-Tracing-simple\\results\\round_02\\metrics.json",
+    "latest_config": "D:\\Shadow-Tracing-simple\\config\\round-config.json",
+    "latest_metrics": "D:\\Shadow-Tracing-simple\\outputs\\elasticnet_metrics.json"
+  }
+}

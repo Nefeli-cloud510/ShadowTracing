@@ -1,0 +1,36 @@
+{
+  "last_updated": "2026-09-01T23:38:31.253014",
+  "current_round": 3,
+  "queue": [
+    {
+      "uncertainty_id": "U01",
+      "question": "DeltaDec 的贡献是否独立于 By？",
+      "priority_score": 0.9,
+      "status": "active",
+      "estimated_resolution_round": 1
+    },
+    {
+      "uncertainty_id": "U02",
+      "question": "DeltaDec 的增益是否跨时间段稳定？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 1
+    },
+    {
+      "uncertainty_id": "U_LLM_R02_03",
+      "question": "U01 的领先假设是否经得起更简单验证？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    },
+    {
+      "uncertainty_id": "U_LLM_R03_04",
+      "question": "U_LLM_R02_03 的领先假设是否经得起更简单验证？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 4
+    }
+  ],
+  "resolved": [],
+  "deprecated": []
+}

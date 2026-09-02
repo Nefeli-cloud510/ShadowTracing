@@ -1,0 +1,11 @@
+{
+  "train_rmse": 133.0,
+  "test_rmse": 140.5,
+  "train_mae": 101.08,
+  "test_mae": 109.59,
+  "train_r2": 0.0,
+  "test_r2": -0.16,
+  "test_pearson_r": 0.18,
+  "baseline_test_rmse": 135.0,
+  "n_features": 70
+}

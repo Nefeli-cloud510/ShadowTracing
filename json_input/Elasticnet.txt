@@ -1,0 +1,8 @@
+{
+  "window_size": 3,
+  "use_lag_feature": true,
+  "max_lag_day": 2,
+  "alpha": 0.425,
+  "l1_ratio": 0.575,
+  "reasoning": "当前R²偏低，本地策略建议缩短窗口、启用lag特征，并把正则参数向经验较优区域收缩。"
+}

@@ -1,0 +1,1105 @@
+--- PAGE 1 ---
+模块4_综合价值计算
+信息增益完整计算规则设计
+⼀、信息增益在系统中的位置
+信息增益⽤于实验价值评估环节，为每个候选实验计算其预期能提供多少"新信息"，作为综合价值
+U(E)的核⼼输⼊之⼀。
+代码块
+候选实验列表  E1, E2, E3 ... 
+        │ 
+        ▼ 
+┌───────────────────────────────────────────────┐ 
+│           信息增益计算（程序执⾏）               │ 
+│                                                │ 
+│   第⼀轮（⽆实验数据）：重叠⾯积近似法           │ 
+│   第⼀轮后（有实验数据）： KL 散度法              │ 
+└───────────────────────────────────────────────┘ 
+        │ 
+        ▼ 
+IG(E1), IG(E2), IG(E3) ... 
+        │ 
+        ▼ 
+综合价值  U(E) = α ·IG(E) + β ·PG(E) - γ ·Risk(E) - δ ·Cost(E) 
+        │ 
+        ▼ 
+选择  E* = argmax U(E) 
+⼆、先验预测的获取⽅式
+2.1谁来提供预测区间？
+由实验规划者（Qwen）提供，但程序负责"收紧"和"校验"。
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+--- PAGE 2 ---
+2.2预测范围的合理性校验规则
+--- PAGE 3 ---
+2.3预测区间→概率分布的转换
+代码块
+def prediction_to_distribution(lower, upper, method='normal'): 
+    """ 
+    将预测区间转换为概率分布 
+    """ 
+    mean = (lower + upper) / 2 
+    std = (upper - lower) / 4  # 假设 95% 置信区间，即  ±2 σ 
+     
+    if method == 'normal': 
+        return scipy.stats.norm(mean, std) 
+    else:  # uniform 
+        return scipy.stats.uniform(lower, upper - lower) 
+三、第⼀轮：重叠⾯积近似法（⽆实验数据）
+3.1核⼼思想
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+--- PAGE 4 ---
+在没有真实实验结果时，⽤各假设预测分布的重叠程度来近似信息增益：重叠越少→实验越能区分假
+设→信息增益越⾼。
+3.2计算公式
+对于任意两个假设H_i和H_j：
+Step1：计算分布重叠⾯积（KL散度的简化替代）
+代码块
+overlap(H_i, H_j) = ∫  min(P_i(x), P_j(x)) dx 
+其中P_i(x)和P_j(x)是两假设预测结果的概率密度函数。
+Step2：归⼀化重叠度
+代码块
+normalized_overlap(H_i, H_j) = overlap(H_i, H_j) / max( ∫ P_i(x)dx, ∫ P_j(x)dx) 
+注：归⼀化后的取值范围为[0,1]。
+Step3：计算假设对之间的信息增益
+代码块
+IG_pair(H_i, H_j) = 1 - normalized_overlap(H_i, H_j) 
+Step4：多假设场景（n>2）
+代码块
+IG(E) = (2 / (n*(n-1))) * Σ _{i<j} IG_pair(H_i, H_j) 
+即所有假设对信息增益的平均值。
+3.3算法实现（Python伪代码）
+代码块
+import numpy as np 
+from scipy.integrate import quad 
+from scipy.stats import norm 
+ 
+1
+1
+1
+1
+1
+2
+3
+4
+--- PAGE 5 ---
+def calculate_overlap_area(p1_mean, p1_std, p2_mean, p2_std): 
+    """ 
+    计算两个正态分布的重叠⾯积（ KL 散度近似） 
+    """ 
+    # 两分布的交叉点 
+    a = (p1_mean**2 - p2_mean**2) / (2 * (p1_mean - p2_mean)) 
+     
+    # 计算每个分布的另⼀半⾯积 
+    def min_pdf(x): 
+        return min(norm.pdf(x, p1_mean, p1_std),  
+                   norm.pdf(x, p2_mean, p2_std)) 
+     
+    # 数值积分求重叠⾯积 
+    overlap, _ = quad(min_pdf, -np.inf, np.inf) 
+    return overlap 
+ 
+def calculate_information_gain_round1(experiment, hypotheses): 
+    """ 
+    第⼀轮信息增益计算：重叠⾯积近似法 
+    """ 
+    n = len(hypotheses) 
+    if n < 2: 
+        return 0.5  # 只有 1 个假设，信息增益⽆法定义，取 0.5 
+     
+    total_ig = 0 
+    pair_count = 0 
+     
+    for i in range(n): 
+        for j in range(i+1, n): 
+            # 获取两假设的预测分布参数 
+            H_i = hypotheses[i] 
+            H_j = hypotheses[j] 
+             
+            # 将预测区间转换为分布 
+            mu_i = (H_i.lower + H_i.upper) / 2 
+            sigma_i = (H_i.upper - H_i.lower) / 4 
+             
+            mu_j = (H_j.lower + H_j.upper) / 2 
+            sigma_j = (H_j.upper - H_j.lower) / 4 
+             
+            # 计算重叠⾯积 
+            overlap = calculate_overlap_area(mu_i, sigma_i, mu_j, sigma_j) 
+             
+            # 归⼀化 
+            max_area = max(norm.pdf(mu_i, mu_i, sigma_i),  
+                          norm.pdf(mu_j, mu_j, sigma_j)) 
+            normalized_overlap = overlap / max_area 
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+--- PAGE 6 ---
+             
+            # 信息增益  = 1 - 归⼀化重叠 
+            ig_pair = 1 - min(normalized_overlap, 1.0) 
+            total_ig += ig_pair 
+            pair_count += 1 
+     
+    # 返回平均值 
+    return total_ig / pair_count if pair_count > 0 else 0.5 
+3.4⽰例计算
+假设候选实验E1涉及两个假设：
+代码块
+重叠⾯积  ≈  0.08 
+归⼀化重叠  ≈  0.08 / 0.15 ≈  0.53 
+IG_pair = 1 - 0.53 = 0.47 
+结论：E1的信息增益约为0.47（中等偏⾼）
+四、第⼀轮后：KL散度法（有真实实验结果）
+4.1核⼼思想
+实验执⾏后获得了真实观测结果Y_actual，此时可以真正计算后验分布，然后计算后验与先验之间的
+KL散度作为信息增益。
+4.2计算公式
+Step1：获取先验概率
+代码块
+P(H_i) = 假设⽀持度 _prior / Σ  所有假设⽀持度 _prior 
+52
+53
+54
+55
+56
+57
+58
+59
+1
+2
+3
+1
+--- PAGE 7 ---
+Step2：计算似然（实际结果在假设预测分布下的概率）
+代码块
+L(Y_actual | H_i) = P(Y_actual | H_i) ≈  PDF_i(Y_actual) 
+其中PDF_i是假设H_i的预测概率密度函数（正态分布）。
+Step3：计算后验概率（⻉叶斯更新）
+代码块
+P(H_i | Y_actual) = L(Y_actual | H_i) * P(H_i) / Σ _j L(Y_actual | H_j) * P(H_j) 
+Step4：计算KL散度（信息增益）
+代码块
+IG(E) = KL(P_posterior || P_prior) = Σ _i P(H_i|Y_actual) * log(P(H_i|Y_actual) 
+/ P(H_i)) 
+4.3算法实现（Python伪代码）
+代码块
+import numpy as np 
+from scipy.stats import norm 
+ 
+def calculate_information_gain_round_n(experiment, actual_result, hypotheses, 
+prior_supports): 
+    """ 
+    第 N 轮（ N ≥ 2 ）信息增益计算： KL 散度法 
+    """ 
+    # Step 1: 计算先验概率 
+    total_prior = sum(prior_supports) 
+    prior_probs = [s / total_prior for s in prior_supports] 
+     
+    # Step 2: 计算似然 
+    likelihoods = [] 
+    for h in hypotheses: 
+        # 将预测区间转换为分布 
+        mu = (h.lower + h.upper) / 2 
+        sigma = (h.upper - h.lower) / 4 
+        # 计算实际结果在该假设下的概率密度 
+        lik = norm.pdf(actual_result, mu, sigma) 
+1
+1
+1
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+--- PAGE 8 ---
+        likelihoods.append(lik) 
+     
+    # Step 3: 计算后验概率 
+    unnormalized_posterior = [lik * prior for lik, prior in zip(likelihoods, 
+prior_probs)] 
+    total_posterior = sum(unnormalized_posterior) 
+    posterior_probs = [p / total_posterior for p in unnormalized_posterior] 
+     
+    # Step 4: 计算 KL 散度（信息增益） 
+    ig = 0 
+    for post, prior in zip(posterior_probs, prior_probs): 
+        if post > 0 and prior > 0: 
+            ig += post * np.log(post / prior) 
+     
+    return ig, posterior_probs 
+4.4⽰例计算
+假设实验E1的实际结果为ΔSkill=0.016：
+代码块
+先验概率： P(H1)=0.59, P(H2)=0.41 
+后验概率： P(H1|Y)=0.42, P(H2|Y)=0.58 
+ 
+KL = 0.42*log(0.42/0.59) + 0.58*log(0.58/0.41) 
+   = 0.42*(-0.34) + 0.58*(0.35) 
+   = -0.143 + 0.203 
+   = 0.060 
+结论：该实验的信息增益约为0.060，说明它对假设区分没有特别⼤的贡献。
+五、完整的信息增益计算状态机
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+1
+2
+3
+4
+5
+6
+7
+--- PAGE 9 ---
+（3）⻛险评估定义程序
+⻛险评估完整计算规则
+⼀、⻛险在系统中的位置
+代码块
+候选实验  E1, E2, E3 ... 
+        │ 
+        ▼ 
+┌─────────────────────────────────────────────────────┐ 
+│               ⻛险评估（程序执⾏）                     │ 
+│                                                      │ 
+│   输⼊：实验⽅案  + 假设状态  + 数据状态  + 历史记录     │ 
+│   输出： Risk(E) ∈  [0, 1]                            │ 
+└─────────────────────────────────────────────────────┘ 
+        │ 
+        ▼ 
+综合价值  U(E) = α ·IG(E) + β ·PG(E) − γ ·Risk(E) − δ ·Cost(E) 
+        │ 
+        ▼ 
+选择  E* = argmax U(E) 
+⻛险在综合价值公式中作为惩罚项，⻛险越⾼，实验的优先级越低，避免系统选择⾼⻛险但⾼信息增
+益的实验。
+⼆、⻛险的四个维度（多重⻛险因⼦）
+参考OED⽂献中的鲁棒/⻛险感知OED思想，⻛险由以下四个维度综合评估【4†L9-L15】：
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+--- PAGE 10 ---
+三、各维度的具体计算规则
+D1:假设先验不确定性⻛险（权重0.35）
+核⼼逻辑：实验所依赖的假设⽀持度越低，实验失败或⽆法区分假设的⻛险越⾼。
+代码块
+D1 = 1 - ( 实验涉及的所有假设的平均⽀持度 ) 
+数据来源：假设树（hypothesis_tree.json ）中对应假设的 support_score 
+计算⽰例：
+代码块
+def calculate_hypothesis_risk(experiment, hypothesis_tree): 
+    """ 
+    计算假设先验不确定性⻛险 
+    """ 
+    involved_hypotheses = experiment['tested_hypotheses'] 
+    supports = [hypothesis_tree[h]['support_score'] for h in 
+involved_hypotheses] 
+    avg_support = sum(supports) / len(supports) 
+     
+    # ⽀持度越⾼，⻛险越低 
+    d1 = 1 - avg_support 
+     
+1
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+--- PAGE 11 ---
+    # 额外惩罚：如果假设间⽀持度差距过⼤（ >0.30 ） 
+    if max(supports) - min(supports) > 0.30: 
+        d1 = min(d1 + 0.10, 1.0) 
+     
+    return d1 
+D2:数据质量与可⽤性⻛险（权重0.25）
+核⼼逻辑：数据样本量不⾜、时间对⻬不准、存在泄露⻛险都会增加实验⻛险。
+代码块
+def calculate_data_risk(experiment, data_dictionary): 
+    """ 
+    计算数据质量与可⽤性⻛险 
+    """ 
+    # ⼦因⼦ 1 ：样本量⻛险 
+    n_samples = data_dictionary.get('sample_count', 196) 
+    sample_risk = 1 - min(n_samples / 200, 1.0) 
+     
+    # ⼦因⼦ 2 ：时间对⻬⻛险 
+    time_alignment_risk = 0.0 
+    if len(experiment['design'].get('data_sources', [])) > 1: 
+        # 多源数据存在时间对⻬⻛险 
+        time_alignment_risk = 0.5 
+     
+    # ⼦因⼦ 3 ：数据泄露⻛险 
+    leakage_risk = 0.0 
+    if experiment['constraints'].get('no_future_information', False) == False: 
+        leakage_risk = 0.5 
+    elif experiment['design'].get('uses_lagged_features', False): 
+        # 使⽤滞后特征时检查对⻬是否正确 
+        pass 
+     
+12
+13
+14
+15
+16
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+--- PAGE 12 ---
+    d2 = ( 
+        0.40 * sample_risk + 
+        0.30 * time_alignment_risk + 
+        0.30 * leakage_risk 
+    ) 
+     
+    return min(d2, 1.0) 
+D3:实验设计⻛险（权重0.25）
+核⼼逻辑：实验设计本⾝是否有缺陷——特征共线性、控制变量不⾜、可重复性差【3†L12-L18】。
+代码块
+def calculate_design_risk(experiment, data_dictionary, experiment_history): 
+    """ 
+    计算实验设计⻛险 
+    """ 
+    # ⼦因⼦ 1 ：特征共线性⻛险 
+    collinearity_risk = 0.0 
+    new_features = experiment['design'].get('treatment', []) 
+    existing_features = experiment['design'].get('control', []) 
+     
+    # 检查新特征是否与已有特征⾼度相关 
+    # 实际实现中可从数据字典读取相关系数 
+    for nf in new_features: 
+        for ef in existing_features: 
+            corr = data_dictionary.get_correlation(nf, ef) 
+            if corr > 0.8: 
+                collinearity_risk = max(collinearity_risk, 0.5) 
+            elif corr > 0.6: 
+                collinearity_risk = max(collinearity_risk, 0.3) 
+     
+    # ⼦因⼦ 2 ：控制变量不⾜⻛险 
+23
+24
+25
+26
+27
+28
+29
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+--- PAGE 13 ---
+    control_risk = 0.0 
+    if len(experiment['design'].get('control', [])) < 2: 
+        control_risk = 0.3 
+    if not experiment['design'].get('has_baseline', False): 
+        control_risk = 0.6 
+     
+    # ⼦因⼦ 3 ：可重复性⻛险 
+    reproducibility_risk = 0.0 
+    # 检查是否与历史实验⾼度相似 
+    for hist_exp in experiment_history: 
+        if is_similar(experiment, hist_exp): 
+            reproducibility_risk = 0.2 
+     
+    d3 = ( 
+        0.40 * collinearity_risk + 
+        0.30 * control_risk + 
+        0.30 * reproducibility_risk 
+    ) 
+     
+    return min(d3, 1.0) 
+D4:资源与执⾏⻛险（权重0.15）
+核⼼逻辑：实验消耗的资源超出预算或执⾏复杂度过⾼【5†L9-L15】。
+代码块
+def calculate_resource_risk(experiment, resource_budget, experiment_history): 
+    """ 
+    计算资源与执⾏⻛险 
+    """ 
+    # ⼦因⼦ 1 ：计算资源⻛险 
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+1
+2
+3
+4
+5
+--- PAGE 14 ---
+    compute_risk = 0.0 
+    estimated_tokens = experiment.get('estimated_tokens', 10000) 
+    remaining_tokens = resource_budget.get('max_tokens', 1000000) - 
+resource_budget.get('used_tokens', 0) 
+    if estimated_tokens > remaining_tokens * 0.5: 
+        compute_risk = 0.5 
+    if estimated_tokens > remaining_tokens * 0.8: 
+        compute_risk = 1.0 
+     
+    # ⼦因⼦ 2 ：执⾏复杂度⻛险 
+    complexity_risk = 0.0 
+    step_count = len(experiment.get('steps', [])) 
+    if step_count > 5: 
+        complexity_risk = 0.3 
+    if step_count > 10: 
+        complexity_risk = 0.7 
+     
+    # ⼦因⼦ 3 ：⼈⼒审核需求 
+    human_risk = 0.0 
+    if experiment.get('requires_human_approval', False): 
+        human_risk = 0.5 
+     
+    d4 = ( 
+        0.40 * compute_risk + 
+        0.35 * complexity_risk + 
+        0.25 * human_risk 
+    ) 
+     
+    return min(d4, 1.0) 
+四、综合⻛险评分
+代码块
+Risk(E) = w1·D1 + w2·D2 + w3·D3 + w4·D4 
+ 
+其中： 
+w1 = 0.35, w2 = 0.25, w3 = 0.25, w4 = 0.15 
+五、数据获取清单
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+1
+2
+3
+4
+--- PAGE 15 ---
+六、实现代码结构
+--- PAGE 16 ---
+src/risk/ 
+├──  __init__.py 
+├──  calculator.py          # 主计算函数 
+├──  dimensions/ 
+│    ├──  hypothesis_risk.py     # D1 
+│    ├──  data_risk.py           # D2 
+│    ├──  design_risk.py         # D3 
+│    └──  resource_risk.py       # D4 
+├──  utils/ 
+│    └──  data_fetcher.py        # 从各数据源获取所需参数 
+└──  tests/ 
+    └──  test_risk_calculator.py 
+（4）资源成本计算程序
+成本计算的三个核⼼维度
+各维度的权重之和为1.0，可在 system_config.yaml 中根据实际偏好调整（例如算⼒资源紧张时
+调⾼C2权重）。
+三、各维度的具体计算规则
+C1:LLMToken成本（权重0.50）
+核⼼逻辑：当前轮次的实验协议越复杂，涉及的假设越多，所需Token越多。
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+--- PAGE 17 ---
+估算⽅法
+估算 Token 总数  = 输⼊ Token 数  + 输出 Token 数
+•
+输⼊Token估算：基础提⽰词（~2k）+假设树状态（~1kper假设）+历史实验摘要（~0.5kper实
+验）+实验协议（~1k）
+•
+输出Token估算：候选实验列表（~1.5kper实验）
+预算检查与超预算处理
+如果估算的Token消耗超过剩余预算的30%，该实验会触发“⾼成本告警”，但仍可进⼊候选池。
+代码块
+def calculate_llm_cost(experiment, hypothesis_tree, budget): 
+    """ 
+    计算 LLM Token 成本 
+    """ 
+    # 1. 估算输⼊ Token 
+    input_tokens = 2000  # 基础系统提⽰词 
+     
+    # 假设树状态 
+    active_hypotheses = hypothesis_tree.get_active() 
+    for h in active_hypotheses: 
+        input_tokens += len(h['statement']) / 3  # 约 3 字符 1Token 
+        input_tokens += 200  # 元数据开销 
+     
+    # 历史实验 
+    # experiment_history 从全局状态读取 
+    for hist in experiment_history[-3:]:  # 只看最近 3 轮 
+        input_tokens += 300 
+     
+    # 实验设计 
+    input_tokens += len(str(experiment['design'])) / 3 
+     
+    # 2. 估算输出 Token 
+    output_tokens = 1500 * len(experiment['candidates'])  # 每个候选约 1500 Token 
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+--- PAGE 18 ---
+     
+    # 3. 汇总 
+    total_tokens = input_tokens + output_tokens 
+    return total_tokens 
+C2:Harness计算成本（权重0.35）
+核⼼逻辑：实验的数据量、模型复杂度、实验步骤数共同决定计算时⻓。
+基准时间估算
+代码块
+估算时间  = 基准时间  × 数据规模系数  × 模型系数  × 步骤系数 
+•
+基准时间：10 秒（基于ElasticNet+1000样本×20特征的经验值）
+•
+数据规模系数：max(1, ( 样本数 /1000) × ( 特征数 /20)) 
+•
+模型系数：ElasticNet:1.0,XGBoost:2.0,RF:2.5,LSTM:5.0
+•
+步骤系数：1 + ( 步骤数  - 1) × 0.2 
+代码块
+def calculate_compute_cost(experiment, data_dictionary): 
+    """ 
+    计算 Harness 计算成本（秒数） 
+    """ 
+    # 1. 获取数据规模 
+    n_samples = data_dictionary.get('sample_count', 1000) 
+24
+25
+26
+27
+1
+1
+2
+3
+4
+5
+6
+--- PAGE 19 ---
+    n_features = len(experiment['design'].get('treatment', [])) + \ 
+                  len(experiment['design'].get('control', [])) 
+     
+    # 2. 获取模型复杂度系数 
+    model = experiment['design'].get('model', 'ElasticNet') 
+    model_map = { 
+        'ElasticNet': 1.0, 
+        'RandomForest': 2.5, 
+        'XGBoost': 2.0, 
+        'LSTM': 5.0, 
+        'Transformer': 7.0 
+    } 
+    model_coeff = model_map.get(model, 1.0) 
+     
+    # 3. 计算步骤系数 
+    steps = len(experiment.get('steps', [])) 
+    step_coeff = 1 + (steps - 1) * 0.2 
+     
+    # 4. 计算数据规模系数 
+    data_coeff = max(1, (n_samples / 1000) * (max(n_features, 1) / 20)) 
+     
+    # 5. 基准时间 
+    base_time = 10  # 秒 
+     
+    estimated_seconds = base_time * data_coeff * model_coeff * step_coeff 
+     
+    # 6. 增加 XGBoost 的额外惩罚（调参开销） 
+    if model == 'XGBoost' and experiment['design'].get('tuning', False): 
+        estimated_seconds *= 1.5 
+     
+    return estimated_seconds 
+C3:⼈⼒审核成本（权重0.15）
+核⼼逻辑：某些实验（如第⼀轮、重⼤⽅向决策、异常检测）需要⼈类PI审核。
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+--- PAGE 20 ---
+四、汇总与归⼀化
+汇总公式
+代码块
+RawCost(E) = w1 × C1_normalized + w2 × C2_normalized + w3 × C3 
+归⼀化的⽅式是将每个维度的原始数值映射到0~1区间。对于C1（LLMToken成本），归⼀化⽅式为
+min( 估算 Token 数  / Token 预算上限 , 1.0) 。对于C2（计算成本），归⼀化⽅式为 min( 估算
+时间秒  / 时间预算上限 , 1.0) 。
+预算上限的值定义在 system_config.yaml 中。为避免单轮成本评估出现极端值，程序会对归⼀
+化后的值做平滑处理（例如设置最⼩值0.05或0.1，代表“即使最简单的实验也有基础成本”），并
+在综合价值计算中直接使⽤归⼀化后的Cost(E)。
+代码块
+def calculate_utility_cost(experiment, budget): 
+    """ 
+    计算最终的归⼀化成本 
+    """ 
+    # 获取预算上限 
+    token_budget = budget.get('max_tokens_per_round', 200000) 
+    time_budget = budget.get('max_time_seconds_per_round', 300) 
+     
+    # 1. C1: LLM 成本归⼀化 
+    c1_raw = calculate_llm_cost(experiment) 
+    c1_norm = min(c1_raw / token_budget, 1.0) 
+     
+    # 2. C2: 计算成本归⼀化 
+    c2_raw = calculate_compute_cost(experiment) 
+    c2_norm = min(c2_raw / time_budget, 1.0) 
+1
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+--- PAGE 21 ---
+     
+    # 3. C3: ⼈⼒成本（ 0 或 1 ） 
+    c3 = 1.0 if experiment.get('requires_human_review', False) else 0.0 
+     
+    # 4. 汇总 
+    w1 = 0.50  # LLM 成本权重 
+    w2 = 0.35  # 计算成本权重 
+    w3 = 0.15  # ⼈⼒成本权重 
+     
+    raw_cost = w1 * c1_norm + w2 * c2_norm + w3 * c3 
+    # 加上基础成本保护，避免 0 成本 
+    return max(raw_cost, 0.05) 
+数据来源清单
+七、前端与⽇志
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+--- PAGE 22 ---
+（5）性能增益评估程序
+性能增益回答的问题是：“做这个实验，预测精度能提升多少？”
+⼆、核⼼定义与计算公式
+2.1核⼼定义
+性能增益PG(E)=实验E预期能带来的预测性能提升幅度，归⼀化到[0,1]区间。
+其中：
+•
+RMSE_baseline ：当前最佳性能（已实现的最佳RMSE）
+•
+RMSE_predicted(E) ：实验E预期的RMSE
+•
+RMSE_ideal ：理论上限（不可达到，设为0或历史最低值）
+2.2计算流程（两阶段）
+实验前⽤于综合价值评估（选择实验），实验后⽤于审计和学习（更新预测模型）。
+三、第⼀轮的特殊处理
+3.1为什么第⼀轮⽆法计算PG
+--- PAGE 23 ---
+第⼀轮实验前没有任何历史数据，⽆法估算性能增益。因此在综合价值公式中，设置β =0 ：
+代码块
+U(E) = α ·IG(E) − γ ·Risk(E) − δ ·Cost(E) 
+3.2第⼀轮之后（β>0）
+从第⼆轮开始，PG可作为综合价值的组成部分。β 的值定义在 system_config.yaml 中。
+系统启动时的推荐配置（定义在 system_config.yaml 中）：
+代码块
+utility_weights: 
+  alpha: 0.50    # 信息增益权重 
+  beta: 0.20     # 性能增益权重（第⼀轮⾃动置 0 ） 
+  gamma: 0.20    # ⻛险权重 
+  delta: 0.10    # 成本权重 
+四、实验后：实际性能增益计算（确定性计算，⽤于审计和更新）
+4.1计算公式
+实验执⾏后，可直接从结果中计算实际性能增益：
+代码块
+def calculate_actual_performance_gain(experiment_result): 
+    """ 
+    实验后计算实际性能增益 
+    """ 
+    baseline_rmse = experiment_result['baseline_rmse'] 
+    current_rmse = experiment_result['current_rmse'] 
+     
+    # 防⽌除零 
+    if baseline_rmse <= 0: 
+        return 0.0 
+     
+    pg = (baseline_rmse - current_rmse) / baseline_rmse 
+     
+    # 如果性能变差， PG 为负值 
+    # 归⼀化到 [0,1] 区间（负值截断为 0 ） 
+1
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+--- PAGE 24 ---
+    return max(0.0, min(pg, 1.0)) 
+4.2实验后增益的⽤途
+实验后的性能增益⽤于：
+1. 更新系统对“性能提升”的认知，为后续预测提供参考
+2. 判断实验是否达到预期⽬标
+3. 作为审计链的⼀部分，记录每轮的实际增益
+七、数据来源清单
+16
+--- PAGE 25 ---
+⼋、实现代码结构
+代码块
+src/performance_gain/ 
+├──  __init__.py 
+├──  calculator.py          # 主计算函数 
+├──  predictor.py           # 实验前预测 
+├──  evaluator.py           # 实验后计算 
+├──  similarity.py          # 相似实验查找 
+1
+2
+3
+4
+5
+6
+--- PAGE 26 ---
+└──  utils.py               # 辅助函数 
+九、与综合价值公式的集成
+代码块
+def calculate_utility(experiment, state, config, experiment_history): 
+    """ 
+    计算实验的综合价值 
+    """ 
+    # 1. 获取各项指标 
+    ig = calculate_information_gain(experiment, state, experiment_history) 
+    risk = calculate_risk(experiment, state) 
+    cost = calculate_cost(experiment) 
+     
+    # 2. 性能增益（第⼀轮 β =0 ） 
+    current_round = state.get('current_round', 1) 
+    if current_round == 1: 
+        pg = 0.0 
+    else: 
+        pg = predict_performance_gain(experiment, state, experiment_history) 
+        pg = normalize_performance_gain(pg, config) 
+     
+    # 3. 获取权重 
+    weights = config.get('utility_weights', {}) 
+    alpha = weights.get('alpha', 0.50) 
+    beta = weights.get('beta', 0.20) 
+    gamma = weights.get('gamma', 0.20) 
+    delta = weights.get('delta', 0.10) 
+     
+    # 4. 计算综合价值 
+    utility = alpha * ig + beta * pg - gamma * risk - delta * cost 
+     
+    return { 
+        'utility': utility, 
+        'components': { 
+            'ig': ig, 
+            'pg': pg, 
+            'risk': risk, 
+            'cost': cost 
+        }, 
+        'weights': { 
+            'alpha': alpha, 
+            'beta': beta, 
+            'gamma': gamma, 
+            'delta': delta 
+7
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+--- PAGE 27 ---
+        } 
+    } 
+⼗⼆、何时完全不使⽤PG（在综合价值公式中设β=0）
+简化后，公式在不同轮次的实际表现：
+总之第⼀轮不⽤，第⼆轮后再计⼊性能增益
+41
+42

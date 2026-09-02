@@ -1,0 +1,263 @@
+{
+  "llm_roles": {
+    "central_controller": {
+      "role": "central_controller",
+      "model": "qwen-plus",
+      "client_available": true,
+      "calls": 4,
+      "remote_success_calls": 0,
+      "fallback_calls": 4,
+      "history": [
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:19:23.136553",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "2 validation errors for CentralControllerLLMResponse\nimpact_strength\n  Input should be a valid number, unable to parse string as a number [type=float_parsing, input_value='strong', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/float_parsing\nprotocol_notes\n  Input should be a valid list [type=list_type, input_value='必须实施 By 的强... ΔRMSE 变化方向。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type",
+          "response_model": "CentralControllerLLMResponse",
+          "response_chars": 1651
+        },
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:19:23.136553",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "2 validation errors for CentralControllerLLMResponse\nimpact_strength\n  Input should be a valid number, unable to parse string as a number [type=float_parsing, input_value='strong', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/float_parsing\nprotocol_notes\n  Input should be a valid list [type=list_type, input_value='必须实施 By 的强... ΔRMSE 变化方向。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type",
+          "response_model": "CentralControllerLLMResponse",
+          "response_chars": 1651
+        },
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:20:37.257499",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "2 validation errors for CentralControllerLLMResponse\nimpact_strength\n  Input should be a valid number, unable to parse string as a number [type=float_parsing, input_value='strong', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/float_parsing\nprotocol_notes\n  Input should be a valid list [type=list_type, input_value='必须执行 By 残差...ΔRMSE_by_controlled。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type",
+          "response_model": "CentralControllerLLMResponse",
+          "response_chars": 1720
+        },
+        {
+          "role": "central_controller",
+          "timestamp": "2026-09-01T23:20:37.257499",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "2 validation errors for CentralControllerLLMResponse\nimpact_strength\n  Input should be a valid number, unable to parse string as a number [type=float_parsing, input_value='strong', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/float_parsing\nprotocol_notes\n  Input should be a valid list [type=list_type, input_value='必须执行 By 残差...ΔRMSE_by_controlled。', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/list_type",
+          "response_model": "CentralControllerLLMResponse",
+          "response_chars": 1720
+        }
+      ]
+    },
+    "scientific_interpreter": {
+      "role": "scientific_interpreter",
+      "model": "qwen-plus",
+      "client_available": true,
+      "calls": 4,
+      "remote_success_calls": 0,
+      "fallback_calls": 4,
+      "history": [
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T23:18:40.173039",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "1 validation error for ScientificInterpreterLLMResponse\ninterpretation\n  Field required [type=missing, input_value={'experiment_id': 'E_R01_...rtainty_impact': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificInterpreterLLMResponse",
+          "response_chars": 513
+        },
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T23:18:40.173039",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "1 validation error for ScientificInterpreterLLMResponse\ninterpretation\n  Field required [type=missing, input_value={'experiment_id': 'E_R01_...rtainty_impact': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificInterpreterLLMResponse",
+          "response_chars": 513
+        },
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T23:19:56.179932",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "1 validation error for ScientificInterpreterLLMResponse\ninterpretation\n  Field required [type=missing, input_value={'experiment_id': 'E_R02_...及符号稳定性。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificInterpreterLLMResponse",
+          "response_chars": 830
+        },
+        {
+          "role": "scientific_interpreter",
+          "timestamp": "2026-09-01T23:19:56.179932",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "1 validation error for ScientificInterpreterLLMResponse\ninterpretation\n  Field required [type=missing, input_value={'experiment_id': 'E_R02_...及符号稳定性。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificInterpreterLLMResponse",
+          "response_chars": 830
+        }
+      ]
+    },
+    "hypothesis_proposer": {
+      "role": "hypothesis_proposer",
+      "model": "qwen-plus",
+      "client_available": true,
+      "calls": 2,
+      "remote_success_calls": 2,
+      "fallback_calls": 0,
+      "history": [
+        {
+          "role": "hypothesis_proposer",
+          "timestamp": "2026-09-01T23:18:46.467478",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": false,
+          "error": null,
+          "response_model": "HypothesisProposerResponse",
+          "response_chars": 908
+        },
+        {
+          "role": "hypothesis_proposer",
+          "timestamp": "2026-09-01T23:20:05.652032",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": false,
+          "error": null,
+          "response_model": "HypothesisProposerResponse",
+          "response_chars": 1053
+        }
+      ]
+    },
+    "scientific_questioner": {
+      "role": "scientific_questioner",
+      "model": "qwen-plus",
+      "client_available": true,
+      "calls": 4,
+      "remote_success_calls": 0,
+      "fallback_calls": 4,
+      "history": [
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:18:56.725033",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "4 validation errors for ScientificQuestionerResponse\nchallenge_points.0\n  Input should be a valid string [type=string_type, input_value={'id': 'CP01', 'descripti...信号不可泛化。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nchallenge_points.1\n  Input should be a valid string [type=string_type, input_value={'id': 'CP02', 'descripti...ltaDec 表观效应。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nproposed_uncertainties.0.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U03',... 的空间聚集性。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.1.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U04',...段及相位延迟。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificQuestionerResponse",
+          "response_chars": 2322
+        },
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:18:56.725033",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "4 validation errors for ScientificQuestionerResponse\nchallenge_points.0\n  Input should be a valid string [type=string_type, input_value={'id': 'CP01', 'descripti...信号不可泛化。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nchallenge_points.1\n  Input should be a valid string [type=string_type, input_value={'id': 'CP02', 'descripti...ltaDec 表观效应。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nproposed_uncertainties.0.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U03',... 的空间聚集性。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.1.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U04',...段及相位延迟。'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificQuestionerResponse",
+          "response_chars": 2322
+        },
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:20:17.376886",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "3 validation errors for ScientificQuestionerResponse\nproposed_uncertainties.0.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.1.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.2.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificQuestionerResponse",
+          "response_chars": 1793
+        },
+        {
+          "role": "scientific_questioner",
+          "timestamp": "2026-09-01T23:20:17.376886",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "3 validation errors for ScientificQuestionerResponse\nproposed_uncertainties.0.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.1.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nproposed_uncertainties.2.description\n  Field required [type=missing, input_value={'uncertainty_id': 'U_NEW...', 'priority': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+          "response_model": "ScientificQuestionerResponse",
+          "response_chars": 1793
+        }
+      ]
+    },
+    "experiment_planner": {
+      "role": "experiment_planner",
+      "model": "qwen-plus",
+      "client_available": true,
+      "calls": 4,
+      "remote_success_calls": 0,
+      "fallback_calls": 4,
+      "history": [
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:18:15.520228",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "5 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E1: 计算 baseline...R²(Vsw ~ By + Bz + Np)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E2: 计算 augmente...y + Bz + Np + DeltaDec)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E3: 计算 ΔR² = ...strap_type 分组统计', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E4: 对每个 boots... 0.002 判定为稳定', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value=\"Step_E5: 执行 mediatio...DE with bootstrapped SE\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 2041
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:18:15.520228",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "5 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E1: 计算 baseline...R²(Vsw ~ By + Bz + Np)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E2: 计算 augmente...y + Bz + Np + DeltaDec)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E3: 计算 ΔR² = ...strap_type 分组统计', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='Step_E4: 对每个 boots... 0.002 判定为稳定', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.4\n  Input should be a valid dictionary [type=dict_type, input_value=\"Step_E5: 执行 mediatio...DE with bootstrapped SE\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 2041
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:19:39.026254",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "4 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='Step 1: Fit baseline mod... and compute residuals.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='Step 2: Regress residual...DeltaDec, Np:DeltaDec).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='Step 3: Stratify By and ...eneity (Cochran’s Q).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='Step 4: Repeat Steps 1...rval overlap (α=0.05).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 1580
+        },
+        {
+          "role": "experiment_planner",
+          "timestamp": "2026-09-01T23:19:39.026254",
+          "model": "qwen-plus",
+          "client_available": true,
+          "used_fallback": true,
+          "error": "4 validation errors for ExperimentPlannerLLMResponse\nextra_steps.0\n  Input should be a valid dictionary [type=dict_type, input_value='Step 1: Fit baseline mod... and compute residuals.', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.1\n  Input should be a valid dictionary [type=dict_type, input_value='Step 2: Regress residual...DeltaDec, Np:DeltaDec).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.2\n  Input should be a valid dictionary [type=dict_type, input_value='Step 3: Stratify By and ...eneity (Cochran’s Q).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type\nextra_steps.3\n  Input should be a valid dictionary [type=dict_type, input_value='Step 4: Repeat Steps 1...rval overlap (α=0.05).', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/dict_type",
+          "response_model": "ExperimentPlannerLLMResponse",
+          "response_chars": 1580
+        }
+      ]
+    }
+  },
+  "rag": {
+    "configured": true,
+    "attempts": 2,
+    "successful_attempts": 2,
+    "history": [
+      {
+        "timestamp": "2026-09-01T23:18:45.640388",
+        "query": "下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 U01 before_span=0.220, after_span=0.095, leading=H_deltadec_null_competition, status=partially_resolved H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 H_deltadec_independent_gain 当前支持度为 0.58，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 DeltaDec 的贡献是否独立于 By？ DeltaDec 的增益是否跨时间段稳定？ human_feedback: 下一轮继续关注 By 与 Np 条件路径，并保持验证型方案 上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。",
+        "max_results": 3,
+        "endpoint": "https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/api/v1/indices/knowledge/search",
+        "agent_id": "aid-01640e2221b04890b0ba201d359f51ba",
+        "attempted": true,
+        "success": true,
+        "result_count": 3,
+        "error": null
+      },
+      {
+        "timestamp": "2026-09-01T23:20:05.126165",
+        "query": "U_LLM_R02_03 before_span=0.095, after_span=0.000, leading=H_deltadec_null_competition, status=partially_resolved H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 H_deltadec_null_competition 当前支持度为 0.39，结合上一轮表现，与上一轮正式评价一致，支持信号减弱。 DeltaDec 的贡献是否独立于 By？ DeltaDec 的增益是否跨时间段稳定？ 上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。 优先关注未解决不确定性: DeltaDec 的贡献是否独立于 By？",
+        "max_results": 3,
+        "endpoint": "https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/api/v1/indices/knowledge/search",
+        "agent_id": "aid-01640e2221b04890b0ba201d359f51ba",
+        "attempted": true,
+        "success": true,
+        "result_count": 3,
+        "error": null
+      }
+    ]
+  }
+}
