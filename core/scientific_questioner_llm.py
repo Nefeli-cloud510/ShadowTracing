@@ -26,6 +26,7 @@ class ScientificQuestionerLLM:
     SYSTEM_PROMPT = """你是“逐影 Shadow Tracing”的科学质询者。
 
 你的任务是识别当前闭环中的证据缺口、替代解释和仍需验证的问题，并输出结构化 JSON。
+所有变量名称必须严格来自 planner_input.data_dictionary_summary 中已有的字段，不允许发明数据表里不存在的新变量。
 不要直接修改状态文件，只给出 challenge_points、guidance_notes、proposed_uncertainties。"""
 
     def __init__(self, *, gateway: LLMGateway | None = None) -> None:
@@ -42,6 +43,8 @@ class ScientificQuestionerLLM:
             user_prompt=(
                 f"planner_input={planner_input.to_central_controller_payload()}\n"
                 f"rag_notes={rag_context.guidance_notes()}\n"
+                "allowed_fields="
+                f"{planner_input.data_dictionary_summary.feature_candidates + planner_input.data_dictionary_summary.target_candidates + [planner_input.data_dictionary_summary.time_column]}\n"
                 "请输出 challenge_points、guidance_notes、proposed_uncertainties。"
             ),
             response_model=ScientificQuestionerResponse,
@@ -56,12 +59,15 @@ class ScientificQuestionerLLM:
         uncertainties: list[ProposedUncertainty] = []
         challenges: list[str] = []
         notes: list[str] = []
+        focus_fields = planner_input.data_dictionary_summary.feature_candidates[:3]
+        target = planner_input.target
         if planner_input.evaluation_summary.stable is False:
-            challenges.append("上一轮结果稳定性不足，当前结论可能依赖特定时间窗或滞后设定。")
+            focus = focus_fields[0] if focus_fields else target
+            challenges.append(f"上一轮结果稳定性不足，需要继续检验 {focus} 对 {target} 的作用是否只在局部时间窗成立。")
             uncertainties.append(
                 ProposedUncertainty(
-                    question="上一轮增益是否只在局部时间窗口成立？",
-                    description="需要增加时间片或稳定性验证，避免把局部提升误判为普遍规律。",
+                    question=f"{focus} 对 {target} 的增益是否只在局部时间窗口成立？",
+                    description=f"需要围绕 {focus} 与 {target} 的关系增加时间片或稳定性验证，避免把局部提升误判为普遍规律。",
                     priority="high",
                 )
             )
@@ -72,18 +78,20 @@ class ScientificQuestionerLLM:
         if planner_input.recent_disagreement_updates:
             item = planner_input.recent_disagreement_updates[0]
             challenges.append(f"{item.uncertainty_id} 仍未完全解决，应继续设计区分性验证。")
+            focus = focus_fields[1] if len(focus_fields) > 1 else (focus_fields[0] if focus_fields else target)
             uncertainties.append(
                 ProposedUncertainty(
-                    question=f"{item.uncertainty_id} 的领先假设是否经得起更简单验证？",
-                    description=item.summary,
+                    question=f"{focus} 对 {target} 的领先解释是否经得起更简单验证？",
+                    description=f"需要使用现有字段中的 {focus} 与 {target} 设计更简单的区分性验证。",
                     priority="medium",
                 )
             )
         if not uncertainties:
+            focus = focus_fields[0] if focus_fields else target
             uncertainties.append(
                 ProposedUncertainty(
-                    question="当前主假设是否存在尚未显式建模的替代解释？",
-                    description="需要补充一个竞争性不确定性，避免闭环只沿单一路径收敛。",
+                    question=f"当前关于 {focus} 与 {target} 的主假设是否存在尚未显式建模的替代解释？",
+                    description=f"需要围绕现有字段 {focus} 与 {target} 补充一个竞争性不确定性，避免闭环只沿单一路径收敛。",
                     priority="medium",
                 )
             )

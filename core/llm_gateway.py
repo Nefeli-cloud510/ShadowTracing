@@ -28,12 +28,14 @@ class LLMGateway:
         base_url: str | None = None,
         temperature: float = 0.2,
         client: Any | None = None,
+        allow_fallback: bool = True,
     ) -> None:
         load_project_env()
         self.model = model or get_default_llm_model()
         self.api_key = api_key or get_dasyscope_api_key()
         self.base_url = base_url or get_dasyscope_base_url()
         self.temperature = temperature
+        self.allow_fallback = allow_fallback
         self.client = client or self._build_client()
 
     def is_available(self) -> bool:
@@ -49,8 +51,8 @@ class LLMGateway:
         temperature: float | None = None,
     ) -> SchemaModelT:
         if self.client is None:
-            if fallback_factory is None:
-                raise RuntimeError("LLM client is unavailable and no fallback_factory was provided.")
+            if fallback_factory is None or not self.allow_fallback:
+                raise RuntimeError("LLM client is unavailable for the real workflow.")
             return self._coerce_response(response_model, fallback_factory())
 
         try:
@@ -66,7 +68,7 @@ class LLMGateway:
             payload = _extract_json_payload(content)
             return response_model.model_validate(payload)
         except Exception:
-            if fallback_factory is None:
+            if fallback_factory is None or not self.allow_fallback:
                 raise
             return self._coerce_response(response_model, fallback_factory())
 

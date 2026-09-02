@@ -35,6 +35,7 @@ SchemaModelT = TypeVar("SchemaModelT")
 class StatePaths:
     root: Path
     task: Path
+    data_dictionary: Path
     hypothesis_tree: Path
     uncertainties: Path
     uncertainty_priority: Path
@@ -55,6 +56,7 @@ class UnifiedStateRepository:
         self.paths = StatePaths(
             root=self.state_dir,
             task=self.state_dir / "task.json",
+            data_dictionary=self.state_dir / "data_dictionary.json",
             hypothesis_tree=self.state_dir / "hypothesis_tree.json",
             uncertainties=self.state_dir / "uncertainties.json",
             uncertainty_priority=self.state_dir / "uncertainty_priority.json",
@@ -192,6 +194,8 @@ class UnifiedStateRepository:
 
         if overwrite or not self.paths.task.exists():
             self.save_task(task)
+        if data_dictionary is not None and (overwrite or not self.paths.data_dictionary.exists()):
+            self.save_data_dictionary(data_dictionary)
         if overwrite or not self.paths.hypothesis_tree.exists():
             self.save_hypothesis_tree(tree)
         if overwrite or not self.paths.uncertainties.exists():
@@ -217,6 +221,12 @@ class UnifiedStateRepository:
 
     def save_task(self, task: ScientificTask) -> None:
         self._save_model(self.paths.task, task)
+
+    def load_data_dictionary(self) -> DataDictionary:
+        return self._load_model(self.paths.data_dictionary, DataDictionary)
+
+    def save_data_dictionary(self, data_dictionary: DataDictionary) -> None:
+        self._save_model(self.paths.data_dictionary, data_dictionary)
 
     def load_hypothesis_tree(self) -> HypothesisTreeState:
         return self._load_model(self.paths.hypothesis_tree, HypothesisTreeState)

@@ -1,0 +1,121 @@
+{
+  "experiment_id": "E_R01_00",
+  "round_id": 1,
+  "task_id": "ST_LIVE_20260903_025637",
+  "target": "SW Plasma Speed, km/s",
+  "scientific_objective": "在不新增 p2_y中心值 的情况下，本轮基线性能表现如何？",
+  "forecast_horizon_days": 3,
+  "features": {
+    "target": "SW Plasma Speed, km/s",
+    "control": [
+      "Scalar B, nT",
+      "BY, nT (GSE)",
+      "BZ, nT (GSE)",
+      "BY, nT (GSM)",
+      "BZ, nT (GSM)",
+      "Kp*10 index"
+    ],
+    "treatment": [
+      "Scalar B, nT",
+      "BY, nT (GSE)",
+      "BZ, nT (GSE)",
+      "BY, nT (GSM)",
+      "BZ, nT (GSM)",
+      "Kp*10 index"
+    ],
+    "lags": {},
+    "notes": [
+      "baseline benchmark candidate"
+    ]
+  },
+  "model": {
+    "name": "ElasticNet",
+    "parameters": {
+      "window_size": 3,
+      "alpha": 0.3,
+      "l1_ratio": 0.5,
+      "use_lag_feature": false,
+      "max_lag_day": 0,
+      "random_state": 42,
+      "test_split_ratio": 0.2
+    }
+  },
+  "tested_hypotheses": [],
+  "target_uncertainties": [],
+  "disagreement_context": {},
+  "hypothesis_source_context": {},
+  "hypothesis_predictions": {},
+  "evaluation_metrics": [
+    "RMSE",
+    "MAE",
+    "Pearson_r",
+    "Skill"
+  ],
+  "steps": [
+    {
+      "step": 1,
+      "action": "planner_note_step",
+      "parameters": {
+        "note": "Precompute and archive aligned time series: LHAASO shadow metrics (hourly), ACE solar wind speed (1-min → 1-h avg), and magnetospheric indices (Kp, B-field components) on common UTC timestamps with nanosecond precision."
+      }
+    },
+    {
+      "step": 2,
+      "action": "planner_note_step",
+      "parameters": {
+        "note": "Validate temporal stationarity of LHAASO offset distribution over the candidate period (2021–2023) using Kwiatkowski–Phillips–Schmidt–Shin (KPSS) test (α=0.05)."
+      }
+    },
+    {
+      "step": 3,
+      "action": "planner_note_step",
+      "parameters": {
+        "note": "Log all timestamp alignment offsets >30s between LHAASO event reconstruction and ACE telemetry as metadata for uncertainty propagation in subsequent hypothesis-driven candidates."
+      }
+    },
+    {
+      "step": 4,
+      "action": "data_quality_check",
+      "parameters": {}
+    },
+    {
+      "step": 5,
+      "action": "run_model",
+      "parameters": {
+        "features": "control",
+        "label": "baseline"
+      }
+    },
+    {
+      "step": 6,
+      "action": "run_model",
+      "parameters": {
+        "features": "treatment",
+        "label": "treatment"
+      }
+    },
+    {
+      "step": 7,
+      "action": "comparison",
+      "parameters": {
+        "baseline_label": "baseline",
+        "treatment_label": "treatment"
+      }
+    }
+  ],
+  "constraints": {
+    "no_future_information": true,
+    "target_immutable": true
+  },
+  "source_candidate_id": "E_R01_00",
+  "requires_human_review": false,
+  "notes": [
+    "mapped_from_candidate:E_R01_00",
+    "no distinguishing insight provided",
+    "planner_refinement:llm_experiment_planner",
+    "llm_experiment_planner",
+    "All magnetic field and Kp features must be interpolated to LHAASO observation timestamps (UTC) using cubic spline; missing values beyond 2h gap imputed via forward-fill + linear interpolation.",
+    "LHAASO shadow offset must be computed relative to J2000 ecliptic north, corrected for geomagnetic cutoff rigidity drift using NMDB-adjusted cutoff model v2.1.",
+    "Baseline evaluation must report R², MAE, and directional accuracy (sign agreement of ΔVsw prediction vs. ACE/SWEPAM truth) at each target lead time."
+  ]
+}

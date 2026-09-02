@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from core.state_repository import UnifiedStateRepository
 from core.unified_schema import (
@@ -138,13 +141,6 @@ class CandidateExperimentGenerator:
                     treatment=control_base,
                     notes=["baseline benchmark candidate"],
                 ),
-                estimated_information_gain=EstimatedValue(value=0.2, rationale="baseline mainly serves calibration"),
-                estimated_performance_gain=EstimatedValue(
-                    value=_estimate_baseline_performance_gain(experiment_memory),
-                    rationale=_baseline_performance_gain_rationale(experiment_memory),
-                ),
-                estimated_risk=EstimatedValue(value=0.15, rationale="baseline benchmark risk is low"),
-                estimated_cost=EstimatedValue(value=0.15, rationale="baseline benchmark is cheap"),
                 requires_human_review=False,
                 novelty="benchmark",
             )
@@ -199,42 +195,59 @@ class CandidateExperimentGenerator:
             )
             candidate.design.notes.extend(_planning_notes(planning_context))
             candidate.design.notes.extend(_rationale_design_notes(record, rationale_context))
+            _annotate_candidate_estimates(
+                candidate=candidate,
+                task=task,
+                data_dictionary=data_dictionary,
+                hypothesis_tree=hypothesis_tree,
+                experiment_memory=experiment_memory,
+                current_round=uncertainty_state.current_round + 1,
+            )
             candidates.append(candidate)
 
         if len(candidates) < 3:
-            candidates.append(
-                CandidateExperiment(
-                    experiment_id=f"E_R{uncertainty_state.current_round + 1:02d}_S1",
-                    type="sensitivity_probe",
-                    purpose=f"test lag sensitivity of {primary_x}",
-                    scientific_question=f"{primary_x} 的时间滞后设定是否影响实验结论稳定性？",
-                    tested_hypotheses=_collect_hypothesis_ids(top_uncertainties, uncertainty_state),
-                    design=ExperimentDesign(
-                        target=target,
-                        control=control_base,
-                        treatment=_unique_preserve_order(control_base + [primary_x]),
-                        lags={primary_x: [1, 2, 3]},
-                        notes=["fallback sensitivity probe to ensure candidate diversity"],
-                    ),
-                    estimated_information_gain=EstimatedValue(value=0.55, rationale="sensitivity probe can reveal temporal robustness"),
-                    estimated_performance_gain=EstimatedValue(
-                        value=_estimate_performance_gain_from_text(
-                            text=f"{primary_x} lag sensitivity temporal robustness",
-                            primary_x=primary_x,
-                            experiment_memory=experiment_memory,
-                        ),
-                        rationale=_performance_gain_rationale_from_text(
-                            text=f"{primary_x} lag sensitivity temporal robustness",
-                            primary_x=primary_x,
-                            experiment_memory=experiment_memory,
-                        ),
-                    ),
-                    estimated_risk=EstimatedValue(value=0.45, rationale="multiple lag settings increase design uncertainty"),
-                    estimated_cost=EstimatedValue(value=0.35, rationale="additional lag variants add moderate cost"),
-                    requires_human_review=True,
-                    novelty="fallback candidate to satisfy minimum diversity",
-                )
+            fallback_candidate = CandidateExperiment(
+                experiment_id=f"E_R{uncertainty_state.current_round + 1:02d}_S1",
+                type="sensitivity_probe",
+                purpose=f"test lag sensitivity of {primary_x}",
+                scientific_question=f"{primary_x} 的时间滞后设定是否影响实验结论稳定性？",
+                tested_hypotheses=_collect_hypothesis_ids(top_uncertainties, uncertainty_state),
+                related_uncertainties=[item.uncertainty_id for item in top_uncertainties[:2]],
+                design=ExperimentDesign(
+                    target=target,
+                    control=control_base,
+                    treatment=_unique_preserve_order(control_base + [primary_x]),
+                    lags={primary_x: [1, 2, 3]},
+                    notes=["fallback sensitivity probe to ensure candidate diversity"],
+                ),
+                requires_human_review=True,
+                distinguishing_insight=(
+                    f"通过时滞敏感性实验，区分这些假设来源是否只是时间设定差异造成，"
+                    f"并继续检验 {primary_x} 的稳健性。"
+                ),
+                novelty="fallback candidate to satisfy minimum diversity",
             )
+            fallback_candidate.design.notes.append("hypothesis_triggers:fallback_sensitivity_probe")
+            _annotate_candidate_estimates(
+                candidate=fallback_candidate,
+                task=task,
+                data_dictionary=data_dictionary,
+                hypothesis_tree=hypothesis_tree,
+                experiment_memory=experiment_memory,
+                current_round=uncertainty_state.current_round + 1,
+            )
+            candidates.append(fallback_candidate)
+
+        for candidate in candidates:
+            if candidate.estimated_information_gain is None:
+                _annotate_candidate_estimates(
+                    candidate=candidate,
+                    task=task,
+                    data_dictionary=data_dictionary,
+                    hypothesis_tree=hypothesis_tree,
+                    experiment_memory=experiment_memory,
+                    current_round=uncertainty_state.current_round + 1,
+                )
 
         if experiment_memory:
             seen_ids = {entry.experiment_id for entry in experiment_memory.entries}
@@ -462,10 +475,308 @@ def _build_hypothesis_predictions(record: UncertaintyRecord, node_index: dict[st
         if node is None:
             continue
         disagreement = record.disagreement.get(hypothesis_id) if record.disagreement else None
+        expected_effect = disagreement.expected if disagreement is not None else _expected_from_node(node)
         predictions[hypothesis_id] = HypothesisPrediction(
-            expected_effect=(disagreement.expected if disagreement is not None else _expected_from_node(node)),
+            expected_effect=expected_effect,
+            expected_range=_expected_range_from_effect(
+                expected_effect=expected_effect,
+                support_score=getattr(node, "support_score", 0.5),
+            ),
         )
     return predictions
+
+
+def _annotate_candidate_estimates(
+    *,
+    candidate: CandidateExperiment,
+    task: ScientificTask,
+    data_dictionary: DataDictionary,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+    current_round: int,
+) -> None:
+    ig, ig_rationale = _formal_information_gain(candidate, current_round=current_round)
+    pg, pg_rationale = _formal_expected_performance_gain(
+        candidate=candidate,
+        experiment_memory=experiment_memory,
+        current_round=current_round,
+    )
+    risk, risk_rationale = _formal_risk_score(
+        candidate=candidate,
+        task=task,
+        data_dictionary=data_dictionary,
+        hypothesis_tree=hypothesis_tree,
+        experiment_memory=experiment_memory,
+    )
+    cost, cost_rationale = _formal_cost_score(
+        candidate=candidate,
+        task=task,
+        data_dictionary=data_dictionary,
+        hypothesis_tree=hypothesis_tree,
+        experiment_memory=experiment_memory,
+    )
+    candidate.estimated_information_gain = EstimatedValue(value=ig, rationale=ig_rationale)
+    candidate.estimated_performance_gain = EstimatedValue(value=pg, rationale=pg_rationale)
+    candidate.estimated_risk = EstimatedValue(value=risk, rationale=risk_rationale)
+    candidate.estimated_cost = EstimatedValue(value=cost, rationale=cost_rationale)
+
+
+def _expected_range_from_effect(*, expected_effect: str, support_score: float) -> list[float]:
+    confidence = min(max(support_score, 0.05), 0.95)
+    width = max(0.015, 0.08 - confidence * 0.04)
+    if expected_effect == "negative":
+        center = -max(0.02, 0.03 + confidence * 0.05)
+        return [round(center - width, 4), round(center + width, 4)]
+    if expected_effect == "near_zero":
+        return [round(-width, 4), round(width, 4)]
+    center = max(0.02, 0.03 + confidence * 0.05)
+    return [round(center - width, 4), round(center + width, 4)]
+
+
+def _formal_information_gain(
+    candidate: CandidateExperiment,
+    *,
+    current_round: int,
+) -> tuple[float, str]:
+    predictions = list(candidate.hypothesis_predictions.items())
+    if len(predictions) < 2:
+        fallback = 0.5 if candidate.tested_hypotheses else 0.18
+        return (
+            round(fallback, 4),
+            "候选实验涉及的可区分假设不足 2 个，按文档约定退化为中性信息增益估计。"
+            if candidate.tested_hypotheses
+            else "baseline/校准实验主要提供基线，不承担核心假设区分任务，因此信息增益记为较低值。",
+        )
+
+    pair_scores: list[float] = []
+    for index, (_, left) in enumerate(predictions):
+        for _, right in predictions[index + 1 :]:
+            overlap = _prediction_overlap(left.expected_range, right.expected_range)
+            pair_scores.append(1.0 - overlap)
+    ig = sum(pair_scores) / len(pair_scores)
+    rationale = (
+        "按 IG_pair(H_i,H_j)=1-overlap、IG(E)=avg(IG_pair) 计算；"
+        f"本候选共比较 {len(pair_scores)} 组假设预测区间，平均区分度为 {ig:.4f}。"
+    )
+    if current_round > 1:
+        rationale += " 当前仍用于实验前评估，待实验完成后再用后验 KL 散度做审计。"
+    return round(min(max(ig, 0.0), 1.0), 4), rationale
+
+
+def _prediction_overlap(left_range: list[float] | None, right_range: list[float] | None) -> float:
+    if not left_range or not right_range:
+        return 0.5
+    left_mu = (left_range[0] + left_range[1]) / 2
+    right_mu = (right_range[0] + right_range[1]) / 2
+    left_sigma = max(abs(left_range[1] - left_range[0]) / 4, EPSILON)
+    right_sigma = max(abs(right_range[1] - right_range[0]) / 4, EPSILON)
+    lower = min(left_mu - 4 * left_sigma, right_mu - 4 * right_sigma)
+    upper = max(left_mu + 4 * left_sigma, right_mu + 4 * right_sigma)
+    steps = 256
+    dx = (upper - lower) / steps
+    overlap = 0.0
+    for step in range(steps):
+        x = lower + (step + 0.5) * dx
+        overlap += min(_normal_pdf(x, left_mu, left_sigma), _normal_pdf(x, right_mu, right_sigma)) * dx
+    return min(max(overlap, 0.0), 1.0)
+
+
+def _normal_pdf(x: float, mean: float, sigma: float) -> float:
+    z = (x - mean) / max(sigma, EPSILON)
+    return math.exp(-0.5 * z * z) / (max(sigma, EPSILON) * math.sqrt(2 * math.pi))
+
+
+def _formal_expected_performance_gain(
+    *,
+    candidate: CandidateExperiment,
+    experiment_memory: ExperimentMemoryState | None,
+    current_round: int,
+) -> tuple[float, str]:
+    current_best_rmse = _current_best_rmse(experiment_memory)
+    if current_round <= 1 or current_best_rmse is None:
+        return (
+            0.0,
+            "第一轮或尚无历史实验结果时，按规则将 PG_expected 置为 0，不参与综合价值计算。",
+        )
+    predicted_after_rmse, similarity, historical_gain = _predict_after_rmse_from_history(
+        candidate=candidate,
+        current_best_rmse=current_best_rmse,
+        experiment_memory=experiment_memory,
+    )
+    pg_expected = (current_best_rmse - predicted_after_rmse) / max(current_best_rmse, EPSILON)
+    rationale = (
+        "按 PG_expected(E)=(RMSE_current_best-RMSE_predicted_after(E))/RMSE_current_best 计算；"
+        f"当前最优 RMSE={current_best_rmse:.4f}，历史相似度={similarity:.4f}，"
+        f"历史平均实际增益={historical_gain:.4f}，预测实验后 RMSE={predicted_after_rmse:.4f}。"
+    )
+    return round(min(max(pg_expected, 0.0), 1.0), 4), rationale
+
+
+def _predict_after_rmse_from_history(
+    *,
+    candidate: CandidateExperiment,
+    current_best_rmse: float,
+    experiment_memory: ExperimentMemoryState | None,
+) -> tuple[float, float, float]:
+    if experiment_memory is None:
+        return current_best_rmse, 0.0, 0.0
+
+    weighted_gain = 0.0
+    similarity_total = 0.0
+    fallback_gains: list[float] = []
+    for entry in experiment_memory.entries:
+        metrics = entry.metrics_snapshot
+        gain = _entry_actual_pg(metrics)
+        if gain is None:
+            continue
+        gain = max(gain, 0.0)
+        fallback_gains.append(gain)
+        similarity = _historical_similarity(candidate, entry)
+        if similarity <= 0.0:
+            continue
+        weighted_gain += similarity * gain
+        similarity_total += similarity
+
+    historical_gain = weighted_gain / similarity_total if similarity_total > 0 else (
+        sum(fallback_gains) / len(fallback_gains) if fallback_gains else 0.0
+    )
+    design_bonus = min(0.04, 0.01 * max(len(candidate.design.treatment) - len(candidate.design.control), 0))
+    lag_penalty = 0.01 * len(candidate.design.lags)
+    predicted_gain = min(max(historical_gain + design_bonus - lag_penalty, 0.0), 0.35)
+    predicted_after_rmse = max(current_best_rmse * (1.0 - predicted_gain), EPSILON)
+    normalized_similarity = min(similarity_total / max(len(fallback_gains), 1), 1.0) if fallback_gains else 0.0
+    return predicted_after_rmse, normalized_similarity, historical_gain
+
+
+def _entry_actual_pg(metrics) -> float | None:
+    if metrics is None:
+        return None
+    if metrics.pg_actual_signed is not None:
+        return metrics.pg_actual_signed
+    if metrics.baseline_rmse is None or metrics.treatment_rmse is None:
+        return None
+    return (metrics.baseline_rmse - metrics.treatment_rmse) / max(metrics.baseline_rmse, EPSILON)
+
+
+def _historical_similarity(candidate: CandidateExperiment, entry) -> float:
+    hypothesis_overlap = _jaccard_similarity(set(candidate.tested_hypotheses), set(entry.tested_hypotheses))
+    finding_overlap = _token_overlap(candidate.purpose, " ".join(entry.key_findings))
+    status_bonus = 0.1 if entry.status == "completed" else 0.0
+    return min(0.65 * hypothesis_overlap + 0.25 * finding_overlap + status_bonus, 1.0)
+
+
+def _jaccard_similarity(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 0.0
+    return len(left & right) / max(len(left | right), 1)
+
+
+def _token_overlap(left: str, right: str) -> float:
+    left_tokens = {token for token in left.lower().replace("、", " ").replace(",", " ").split() if token}
+    right_tokens = {token for token in right.lower().replace("、", " ").replace(",", " ").split() if token}
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+
+
+def _formal_risk_score(
+    *,
+    candidate: CandidateExperiment,
+    task: ScientificTask,
+    data_dictionary: DataDictionary,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+) -> tuple[float, str]:
+    node_index = hypothesis_tree.node_index()
+    supports = [
+        node_index[hypothesis_id].support_score
+        for hypothesis_id in candidate.tested_hypotheses
+        if hypothesis_id in node_index
+    ]
+    avg_support = sum(supports) / len(supports) if supports else 0.5
+    support_span = (max(supports) - min(supports)) if len(supports) >= 2 else 0.0
+    d1 = min(max(1.0 - avg_support + (0.1 if support_span > 0.30 else 0.0), 0.0), 1.0)
+
+    sample_risk = 1.0 - min(data_dictionary.total_samples / 200.0, 1.0)
+    multi_source_risk = 0.5 if len(task.payload.data_sources) > 1 else 0.0
+    leakage_risk = 0.5 if not task.payload.constraints.no_future_information else 0.0
+    d2 = min(0.4 * sample_risk + 0.3 * multi_source_risk + 0.3 * leakage_risk, 1.0)
+
+    control_risk = 0.6 if not candidate.design.control else (0.3 if len(candidate.design.control) < 2 else 0.0)
+    reproducibility_risk = 0.2 if _has_similar_history(candidate, experiment_memory) else 0.0
+    design_complexity_risk = min(0.2 * len(candidate.design.lags) + 0.1 * max(len(candidate.design.treatment) - 3, 0), 0.7)
+    d3 = min(0.4 * design_complexity_risk + 0.3 * control_risk + 0.3 * reproducibility_risk, 1.0)
+
+    budget = task.payload.constraints.resource_budget
+    token_budget = budget.token_budget if budget and budget.token_budget else 200000
+    time_budget = budget.max_time_seconds_per_round if budget and budget.max_time_seconds_per_round else 300
+    estimated_tokens = _estimate_llm_tokens(candidate, hypothesis_tree, experiment_memory)
+    compute_seconds = _estimate_compute_seconds(candidate, data_dictionary)
+    compute_risk = 1.0 if estimated_tokens > token_budget * 0.8 else (0.5 if estimated_tokens > token_budget * 0.5 else 0.0)
+    complexity_risk = min(compute_seconds / max(time_budget, 1), 1.0)
+    human_risk = 0.5 if candidate.requires_human_review else 0.0
+    d4 = min(0.4 * compute_risk + 0.35 * complexity_risk + 0.25 * human_risk, 1.0)
+
+    risk = min(0.35 * d1 + 0.25 * d2 + 0.25 * d3 + 0.15 * d4, 1.0)
+    rationale = (
+        "按 Risk(E)=0.35·D1+0.25·D2+0.25·D3+0.15·D4 计算；"
+        f"D1={d1:.4f}(支持度先验), D2={d2:.4f}(数据质量/对齐), "
+        f"D3={d3:.4f}(设计风险), D4={d4:.4f}(资源执行风险)。"
+    )
+    return round(risk, 4), rationale
+
+
+def _formal_cost_score(
+    *,
+    candidate: CandidateExperiment,
+    task: ScientificTask,
+    data_dictionary: DataDictionary,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+) -> tuple[float, str]:
+    budget = task.payload.constraints.resource_budget
+    token_budget = budget.token_budget if budget and budget.token_budget else 200000
+    time_budget = budget.max_time_seconds_per_round if budget and budget.max_time_seconds_per_round else 300
+    c1_raw = _estimate_llm_tokens(candidate, hypothesis_tree, experiment_memory)
+    c1 = min(c1_raw / max(token_budget, 1), 1.0)
+    c2_raw = _estimate_compute_seconds(candidate, data_dictionary)
+    c2 = min(c2_raw / max(time_budget, 1), 1.0)
+    c3 = 1.0 if candidate.requires_human_review else 0.0
+    cost = max(0.50 * c1 + 0.35 * c2 + 0.15 * c3, 0.05)
+    rationale = (
+        "按 Cost(E)=max(0.50·C1+0.35·C2+0.15·C3, 0.05) 计算；"
+        f"C1={c1:.4f}(token预算占比), C2={c2:.4f}(计算时间占比), C3={c3:.4f}(人工审核成本)。"
+    )
+    return round(min(cost, 1.0), 4), rationale
+
+
+def _estimate_llm_tokens(
+    candidate: CandidateExperiment,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+) -> float:
+    active_hypotheses = [node for node in hypothesis_tree.nodes if node.status in {"active", "converged"}]
+    input_tokens = 2000 + len(str(candidate.design.model_dump(mode="json"))) / 3
+    input_tokens += sum((len(node.statement) / 3) + 200 for node in active_hypotheses)
+    history_count = len(experiment_memory.entries[-3:]) if experiment_memory else 0
+    input_tokens += 300 * history_count
+    output_tokens = 1500
+    return input_tokens + output_tokens
+
+
+def _estimate_compute_seconds(candidate: CandidateExperiment, data_dictionary: DataDictionary) -> float:
+    n_samples = max(data_dictionary.total_samples, 1)
+    n_features = max(len(set(candidate.design.control + candidate.design.treatment)), 1)
+    step_count = max(len(candidate.design.lags), 1)
+    data_coeff = max(1.0, (n_samples / 1000.0) * (n_features / 20.0))
+    step_coeff = 1.0 + (step_count - 1) * 0.2
+    return 10.0 * data_coeff * step_coeff
+
+
+def _has_similar_history(candidate: CandidateExperiment, experiment_memory: ExperimentMemoryState | None) -> bool:
+    if experiment_memory is None:
+        return False
+    return any(_historical_similarity(candidate, entry) >= 0.6 for entry in experiment_memory.entries)
 
 
 def _estimate_performance_gain(

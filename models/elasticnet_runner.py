@@ -22,6 +22,7 @@ plt.switch_backend("Agg")
 class FileConfig(BaseModel):
     omni_file_path: Path
     lhaaso_file_path: Path
+    extra_file_paths: List[Path] = []
     time_column: str
     target_column: str
     feature_columns: List[str]
@@ -31,6 +32,9 @@ class FileConfig(BaseModel):
             raise FileNotFoundError(f"OMNI文件不存在 {self.omni_file_path}")
         if not self.lhaaso_file_path.exists():
             raise FileNotFoundError(f"LHAASO文件不存在 {self.lhaaso_file_path}")
+        for path in self.extra_file_paths:
+            if not path.exists():
+                raise FileNotFoundError(f"额外数据文件不存在 {path}")
 
 class TimeWindowConfig(BaseModel):
     window_size: int = Field(ge=1, le=196, description="滑动窗口天数，1~196")
@@ -68,8 +72,10 @@ def _read_table(file_path: Path) -> pd.DataFrame:
     suffix = file_path.suffix.lower()
     if suffix in {".xlsx", ".xls"}:
         return pd.read_excel(file_path)
-    if suffix in {".csv", ".txt"}:
-        return pd.read_csv(file_path, sep=r"\s+|,", engine="python")
+    if suffix == ".csv":
+        return pd.read_csv(file_path)
+    if suffix == ".txt":
+        return pd.read_csv(file_path, sep=r"\s+", engine="python")
     raise ValueError(f"暂不支持的文件格式: {file_path}")
 
 def _normalize_time_column(series: pd.Series) -> pd.Series:
@@ -89,17 +95,31 @@ def _normalize_time_column(series: pd.Series) -> pd.Series:
 
 def load_and_merge_data(cfg: ExperimentConfig):
     file_cfg = cfg.file_config
-    df_omni = _read_table(file_cfg.omni_file_path)
-    df_lhaaso = _read_table(file_cfg.lhaaso_file_path)
+    unique_sources: list[tuple[str, Path]] = []
+    seen_paths: set[str] = set()
+    for label, path in [
+        ("OMNI", file_cfg.omni_file_path),
+        ("LHAASO", file_cfg.lhaaso_file_path),
+        *[(path.stem, path) for path in file_cfg.extra_file_paths],
+    ]:
+        resolved = str(path.resolve())
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        unique_sources.append((label, path))
+    data_frames = [(label, _read_table(path)) for label, path in unique_sources]
 
-    if file_cfg.time_column not in df_omni.columns:
-        raise KeyError(f"OMNI数据缺少时间列: {file_cfg.time_column}")
-    if file_cfg.time_column not in df_lhaaso.columns:
-        raise KeyError(f"LHAASO数据缺少时间列: {file_cfg.time_column}")
+    normalized_frames: list[pd.DataFrame] = []
+    for label, frame in data_frames:
+        if file_cfg.time_column not in frame.columns:
+            raise KeyError(f"{label}数据缺少时间列: {file_cfg.time_column}")
+        next_frame = frame.copy()
+        next_frame[file_cfg.time_column] = _normalize_time_column(next_frame[file_cfg.time_column])
+        normalized_frames.append(next_frame)
 
-    df_omni[file_cfg.time_column] = _normalize_time_column(df_omni[file_cfg.time_column])
-    df_lhaaso[file_cfg.time_column] = _normalize_time_column(df_lhaaso[file_cfg.time_column])
-    df_merge = pd.merge(df_omni, df_lhaaso, on=file_cfg.time_column, how="inner")
+    df_merge = normalized_frames[0]
+    for frame in normalized_frames[1:]:
+        df_merge = pd.merge(df_merge, frame, on=file_cfg.time_column, how="inner")
 
     missing_features = [col for col in file_cfg.feature_columns if col not in df_merge.columns]
     if missing_features:

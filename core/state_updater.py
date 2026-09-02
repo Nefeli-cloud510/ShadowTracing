@@ -623,11 +623,49 @@ def _support_after_from_assessment(
     prediction,
     observed_delta: float,
 ) -> float:
-    direction_factor = {True: 1.15, "partial": 1.0, False: 0.8}[assessment.direction_matched]
-    magnitude_factor = {True: 1.05, "partial": 0.95, False: 0.85}[assessment.magnitude_matched]
-    precision_factor = _precision_factor(prediction, observed_delta)
-    after = before * direction_factor * magnitude_factor * precision_factor
-    return round(min(max(after, 0.05), 0.95), 4)
+    prior = min(max(before, 0.05), 0.95)
+    evidence_support = _assessment_likelihood(
+        direction_matched=assessment.direction_matched,
+        magnitude_matched=assessment.magnitude_matched,
+        prediction=prediction,
+        observed_delta=observed_delta,
+        favored=True,
+    )
+    evidence_against = _assessment_likelihood(
+        direction_matched=assessment.direction_matched,
+        magnitude_matched=assessment.magnitude_matched,
+        prediction=prediction,
+        observed_delta=observed_delta,
+        favored=False,
+    )
+    numerator = prior * evidence_support
+    denominator = numerator + (1.0 - prior) * evidence_against
+    if denominator <= 0:
+        return round(prior, 4)
+    posterior = numerator / denominator
+    return round(min(max(posterior, 0.05), 0.95), 4)
+
+
+def _assessment_likelihood(
+    *,
+    direction_matched,
+    magnitude_matched,
+    prediction,
+    observed_delta: float,
+    favored: bool,
+) -> float:
+    direction_weight = {
+        True: 0.82 if favored else 0.28,
+        "partial": 0.62 if favored else 0.45,
+        False: 0.24 if favored else 0.80,
+    }[direction_matched]
+    magnitude_weight = {
+        True: 0.76 if favored else 0.36,
+        "partial": 0.58 if favored else 0.52,
+        False: 0.30 if favored else 0.74,
+    }[magnitude_matched]
+    precision_weight = _precision_factor(prediction, observed_delta)
+    return max(direction_weight * magnitude_weight * precision_weight, 1e-4)
 
 
 def _precision_factor(prediction, observed_delta: float) -> float:

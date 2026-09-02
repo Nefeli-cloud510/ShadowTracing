@@ -1,0 +1,152 @@
+{
+  "task_id": "ST_LIVE_20260903_025637",
+  "current_round": 1,
+  "current_stage": "awaiting_human_approval",
+  "current_phase": "experiment_planning",
+  "current_step": "step_4",
+  "progress_percentage": 45,
+  "started_at": "2026-09-03T02:56:37.756808",
+  "phase_sequence": [
+    "task_definition",
+    "hypothesis_generation",
+    "experiment_planning",
+    "experiment_execution",
+    "result_analysis",
+    "decision_making",
+    "next_round"
+  ],
+  "phases": {
+    "task_definition": {
+      "status": "completed",
+      "completed_at": "2026-09-03T02:56:37.756808",
+      "notes": "scientific task saved and confirmed",
+      "steps": {
+        "confirmation": {
+          "name": "confirmation",
+          "status": "completed",
+          "requires_user_approval": true
+        }
+      }
+    },
+    "hypothesis_generation": {
+      "status": "completed",
+      "completed_at": "2026-09-03T02:56:37.756808",
+      "notes": "programmatic initial hypothesis tree generated",
+      "steps": {
+        "programmatic_generation": {
+          "name": "programmatic_generation",
+          "status": "completed",
+          "requires_user_approval": false
+        }
+      }
+    },
+    "experiment_planning": {
+      "status": "in_progress",
+      "started_at": "2026-09-03T02:57:03.695239",
+      "steps": {
+        "step_1": {
+          "name": "识别关键不确定性",
+          "status": "completed",
+          "requires_user_approval": false
+        },
+        "step_2": {
+          "name": "生成候选实验",
+          "status": "completed",
+          "requires_user_approval": false
+        },
+        "step_3": {
+          "name": "计算综合价值",
+          "status": "completed",
+          "requires_user_approval": false
+        },
+        "step_4": {
+          "name": "选择E*",
+          "status": "pending",
+          "requires_user_approval": true
+        },
+        "step_5": {
+          "name": "生成实验协议",
+          "status": "pending",
+          "requires_user_approval": false
+        }
+      }
+    },
+    "experiment_execution": {
+      "status": "completed",
+      "steps": {}
+    },
+    "result_analysis": {
+      "status": "completed",
+      "steps": {}
+    },
+    "decision_making": {
+      "status": "completed",
+      "completed_at": "2026-09-03T03:07:50.938943",
+      "steps": {
+        "round_review": {
+          "name": "round_review",
+          "status": "completed",
+          "requires_user_approval": true
+        }
+      }
+    },
+    "next_round": {
+      "status": "in_progress",
+      "started_at": "2026-09-03T03:08:50.711605",
+      "notes": "planner input prepared for next-round reasoning/planning",
+      "steps": {
+        "planner_input_prepared": {
+          "name": "planner_input_prepared",
+          "status": "completed",
+          "requires_user_approval": false,
+          "notes": "reuse current planning policy"
+        },
+        "candidate_generation": {
+          "name": "candidate_generation",
+          "status": "in_progress",
+          "requires_user_approval": false,
+          "notes": "llm candidate generation is consuming planner_input"
+        }
+      }
+    }
+  },
+  "steps": {
+    "task_definition": {
+      "name": "task_definition",
+      "status": "completed",
+      "requires_user_approval": false
+    },
+    "state_bootstrap": {
+      "name": "state_bootstrap",
+      "status": "completed",
+      "requires_user_approval": false
+    },
+    "execution": {
+      "name": "execution",
+      "status": "completed",
+      "requires_user_approval": false
+    },
+    "evaluation": {
+      "name": "evaluation",
+      "status": "completed",
+      "requires_user_approval": false
+    },
+    "state_writeback": {
+      "name": "state_writeback",
+      "status": "completed",
+      "requires_user_approval": false
+    }
+  },
+  "user_settings": {
+    "auto_continue": false,
+    "stop_at_each_step": true,
+    "approval_required": [
+      "experiment_selection",
+      "protocol_validation",
+      "round_completion"
+    ]
+  },
+  "user_requests": {
+    "stop_requested": false
+  }
+}

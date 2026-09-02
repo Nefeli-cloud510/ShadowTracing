@@ -63,10 +63,14 @@ export function RoundSegment({
 
   return (
     <section
-      className="round-segment"
+      className={['round-segment', round.isCollapsed ? 'round-segment--collapsed' : ''].filter(Boolean).join(' ')}
       aria-label={round.title}
       style={{ width: `${segmentWidth}px`, minHeight: `${segmentHeight}px` }}
     >
+      <div className="round-segment__header">
+        <span className="round-segment__title">{round.title}</span>
+        <span className="round-segment__state">{round.isCurrent ? round.stateLabel : '已完成'}</span>
+      </div>
       <div
         className="round-segment__scale"
         style={{ transform: `scale(${scale})`, width: '1220px', height: '520px', position: 'relative' }}
@@ -87,7 +91,7 @@ export function RoundSegment({
                 {isH && (
                   <div className="branch branch--up">
                     <div className="branch-card">
-                      <span className="branch-card__eyebrow">Hypothesis</span>
+                      <span className="branch-card__eyebrow">假设分支</span>
                       <span className="branch-card__title">{leadHypothesis?.id ?? '待生成'}</span>
                       <span className="branch-card__text">{leadHypothesis?.label ?? '当前轮尚未生成假设分支。'}</span>
                     </div>
@@ -97,10 +101,10 @@ export function RoundSegment({
                 {isE && (
                   <div className="branch branch--up">
                     <div className="branch-card">
-                      <span className="branch-card__eyebrow">Candidate Experiment</span>
+                      <span className="branch-card__eyebrow">候选实验</span>
                       <span className="branch-card__title">{leadExperiment?.id ?? '待生成'}</span>
                       <span className="branch-card__text">
-                        Target {leadExperiment?.targetHypothesis} · U(E) {leadExperiment?.utility.toFixed(2)}
+                        目标假设 {leadExperiment?.targetHypothesis} · U(E) {leadExperiment?.utility.toFixed(2)}
                       </span>
                       <div className="branch-card__chips">
                         <span className="branch-card__chip">IG {leadExperiment?.informationGain.toFixed(2)}</span>
@@ -122,7 +126,7 @@ export function RoundSegment({
                 {isQ && (
                   <div className="branch branch--down">
                     <div className="branch-card">
-                      <span className="branch-card__eyebrow">Question Input</span>
+                      <span className="branch-card__eyebrow">问题输入</span>
                       <span className="branch-card__title">{round.questionSummary ? '已输入' : '待输入'}</span>
                       <span className="branch-card__text">
                         {round.questionSummary ? '任务、目标变量与约束已记录。' : '当前尚未输入科学问题。'}
@@ -134,11 +138,17 @@ export function RoundSegment({
                 {isA && round.evaluation && (
                   <div className="branch branch--down">
                     <div className="branch-card">
-                      <span className="branch-card__eyebrow">Evaluation</span>
-                      <span className="branch-card__title">{round.evaluation.verdict}</span>
+                      <span className="branch-card__eyebrow">评价结果</span>
+                      <span className="branch-card__title">
+                        {round.evaluation.verdict === 'supports'
+                          ? '支持'
+                          : round.evaluation.verdict === 'weakens'
+                            ? '削弱'
+                            : '混合'}
+                      </span>
                       <div className="branch-card__chips">
                         <span className="branch-card__chip">delta r {round.evaluation.deltaPearsonR.toFixed(4)}</span>
-                        <span className="branch-card__chip">pg_actual {round.evaluation.pgActual.toFixed(3)}</span>
+                        <span className="branch-card__chip">PG 实际 {round.evaluation.pgActual.toFixed(3)}</span>
                       </div>
                     </div>
                     <div className="branch-line" />
@@ -147,7 +157,7 @@ export function RoundSegment({
                 {isU && leadUncertainty && (
                   <div className="branch branch--down">
                     <div className="branch-card">
-                      <span className="branch-card__eyebrow">Uncertainty</span>
+                      <span className="branch-card__eyebrow">不确定性</span>
                       <span className="branch-card__title">{leadUncertainty.id}</span>
                       <span className="branch-card__text">{renderUncertaintyItem(leadUncertainty)}</span>
                     </div>

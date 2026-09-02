@@ -820,11 +820,12 @@ def build_real_llm_control(
     *,
     model: str,
 ) -> dict[str, Any]:
-    controller_gateway = ObservedLLMGateway(role_name="central_controller", model=model)
-    interpreter_gateway = ObservedLLMGateway(role_name="scientific_interpreter", model=model)
-    proposer_gateway = ObservedLLMGateway(role_name="hypothesis_proposer", model=model)
-    questioner_gateway = ObservedLLMGateway(role_name="scientific_questioner", model=model)
-    planner_gateway = ObservedLLMGateway(role_name="experiment_planner", model=model)
+    gateway_kwargs = {"model": model, "allow_fallback": False}
+    controller_gateway = ObservedLLMGateway(role_name="central_controller", **gateway_kwargs)
+    interpreter_gateway = ObservedLLMGateway(role_name="scientific_interpreter", **gateway_kwargs)
+    proposer_gateway = ObservedLLMGateway(role_name="hypothesis_proposer", **gateway_kwargs)
+    questioner_gateway = ObservedLLMGateway(role_name="scientific_questioner", **gateway_kwargs)
+    planner_gateway = ObservedLLMGateway(role_name="experiment_planner", **gateway_kwargs)
     rag_service = ObservedRAGService(project_root=run_root)
 
     control = HumanControlService(

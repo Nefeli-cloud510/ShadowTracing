@@ -20,7 +20,7 @@ from core.protocol_bridge import ElasticNetDataSourceConfig
 from core.rag_service import RAGContextBundle, RAGService
 from core.runtime_config import get_llm_model_for_role
 from core.scientific_interpreter_llm import ScientificInterpreterLLM
-from core.scientific_questioner_llm import ScientificQuestionerLLM
+from core.scientific_questioner_llm import ProposedUncertainty, ScientificQuestionerLLM
 from core.state_repository import UnifiedStateRepository
 from core.state_updater import UnifiedStateUpdater
 from core.unified_schema import (
@@ -244,6 +244,29 @@ class HumanControlService:
             "approval_options": ["批准并继续", "修改参数", "拒绝并重选", "暂停实验"],
         }
 
+    def prepare_initial_review_context(
+        self,
+        *,
+        data_dictionary: DataDictionary,
+    ) -> ReasoningPlannerInput:
+        """Persist first-round planner input so the UI can display questioner traces before approval."""
+        uncertainties = self.repository.load_uncertainties()
+        planner_input_builder = ReasoningPlannerInputBuilder(self.repository)
+        planner_input = planner_input_builder.build(
+            data_dictionary=data_dictionary,
+            source_round_id=0,
+            human_feedback=None,
+        )
+        if self.planner_mode == "llm":
+            planner_input, uncertainties = self._augment_next_round_context_with_llm_services(
+                planner_input=planner_input,
+                uncertainties=uncertainties,
+            )
+            self.repository.save_uncertainties(uncertainties)
+        self.repository.save_planner_input(planner_input)
+        self._log_planner_input_prepared(planner_input)
+        return planner_input
+
     def approve_candidate(
         self,
         *,
@@ -375,13 +398,73 @@ class HumanControlService:
             auto_continue=auto_continue,
             model_parameters=model_parameters,
         )
+        process_state = self.repository.load_process_state()
+        process_state.current_round = max(process_state.current_round, protocol.round_id)
+        process_state.current_phase = "experiment_execution"
+        process_state.current_step = "dispatch_execution"
+        process_state.current_stage = "running_experiment"
+        process_state.progress_percentage = 62
+        process_state.phases["experiment_execution"] = ProcessPhase(
+            status="in_progress",
+            started_at=datetime.now(),
+            steps={
+                "dispatch_execution": ProcessStep(name="下发实验任务", status="completed"),
+                "core_execution": ProcessStep(name="执行实验与训练", status="in_progress"),
+                "result_collection": ProcessStep(name="收集结果产物", status="pending"),
+            },
+            notes="approved experiment is being executed by the harness",
+        )
+        self.repository.save_process_state(process_state)
+
         task = self.repository.load_task()
         harness = UnifiedExperimentHarness(
             data_source=self._build_data_source_config(task),
             project_root=self.project_root,
             run_shap=self.run_shap,
         )
-        result = harness.run(protocol)
+        try:
+            result = harness.run(protocol)
+        except Exception as exc:
+            process_state = self.repository.load_process_state()
+            process_state.current_phase = "experiment_execution"
+            process_state.current_step = "execution_failed"
+            process_state.current_stage = "failed"
+            process_state.phases["experiment_execution"] = ProcessPhase(
+                status="failed",
+                completed_at=datetime.now(),
+                steps={
+                    "dispatch_execution": ProcessStep(name="下发实验任务", status="completed"),
+                    "core_execution": ProcessStep(name="执行实验与训练", status="failed"),
+                    "result_collection": ProcessStep(name="收集结果产物", status="skipped"),
+                },
+                notes=f"execution failed: {exc}",
+            )
+            process_state.progress_percentage = max(process_state.progress_percentage or 0, 62)
+            self.repository.save_process_state(process_state)
+            raise
+        process_state = self.repository.load_process_state()
+        process_state.current_phase = "result_analysis"
+        process_state.current_step = "evaluation"
+        process_state.current_stage = "evaluating_results"
+        process_state.progress_percentage = 72
+        process_state.phases["experiment_execution"] = ProcessPhase(
+            status="completed",
+            completed_at=datetime.now(),
+            steps={
+                "dispatch_execution": ProcessStep(name="下发实验任务", status="completed"),
+                "core_execution": ProcessStep(name="执行实验与训练", status="completed"),
+                "result_collection": ProcessStep(name="收集结果产物", status="completed"),
+            },
+        )
+        process_state.phases["result_analysis"] = ProcessPhase(
+            status="in_progress",
+            started_at=datetime.now(),
+            steps={
+                "evaluation": ProcessStep(name="计算指标与稳健性分析", status="in_progress"),
+                "scientific_interpretation": ProcessStep(name="生成科学解释", status="pending"),
+            },
+        )
+        self.repository.save_process_state(process_state)
         unresolved = remaining_uncertainties or self._remaining_uncertainties_for_review(protocol)
         evaluation = evaluate_experiment(
             result,
@@ -635,13 +718,26 @@ class HumanControlService:
         if not omni or not lhaaso:
             raise KeyError("task.payload.data_sources 必须同时包含 omni 和 lhaaso 配置")
 
+        data_dictionary = self.repository.load_data_dictionary()
         time_column = omni.get("time_column") or lhaaso.get("time_column") or "TIME"
         target_column = omni.get("target_column") or task.payload.research_question.target
+        extra_paths = [
+            self._resolve_project_path(details["path"])
+            for source_id, details in data_sources.items()
+            if source_id not in {"omni", "lhaaso"} and details and details.get("path")
+        ]
+        column_aliases = {}
+        for field in data_dictionary.fields:
+            column_aliases[field.field_name] = field.field_name
+            if field.physical_meaning and field.physical_meaning not in {"feature", "target", "time", "弃用字段"}:
+                column_aliases[field.physical_meaning] = field.field_name
         return ElasticNetDataSourceConfig(
             omni_file_path=self._resolve_project_path(omni["path"]),
             lhaaso_file_path=self._resolve_project_path(lhaaso["path"]),
+            extra_file_paths=extra_paths,
             time_column=time_column,
             target_column=target_column,
+            column_aliases=column_aliases,
         )
 
     def _resolve_project_path(self, path_value: str) -> Path:
@@ -788,6 +884,13 @@ class HumanControlService:
         self._log_planner_output_generated(planner_output)
         applied_output = PlannerOutputApplier(self.repository).apply(planner_output)
         review = self.request_experiment_selection_review()
+        process_state = self.repository.load_process_state()
+        process_state.current_round = max(process_state.current_round, round_id + 1)
+        process_state.current_phase = "experiment_planning"
+        process_state.current_step = "step_4"
+        process_state.current_stage = "awaiting_human_approval"
+        process_state.progress_percentage = 45
+        self.repository.save_process_state(process_state)
         return {
             "planning_status": "candidate_plan_rebuilt",
             "hypothesis_generation": {
@@ -1110,8 +1213,15 @@ class HumanControlService:
             rag_context=rag_context,
         )
         proposer_output = reasoning_bundle.proposer
+        explicit_focus_notes = [
+            f"proposer_focus:{feature}"
+            for feature in proposer_output.focus_features[:6]
+            if feature in planner_input.data_dictionary_summary.feature_candidates
+        ]
         planner_input.planner_guidance.extend(
-            note for note in proposer_output.guidance_notes if note not in planner_input.planner_guidance
+            note
+            for note in [*explicit_focus_notes, *proposer_output.guidance_notes]
+            if note not in planner_input.planner_guidance
         )
         planner_input.recent_reasoning_traces.extend(
             self._notes_to_traces(
@@ -1122,7 +1232,10 @@ class HumanControlService:
             )
         )
 
-        questioner_output = reasoning_bundle.questioner
+        questioner_output = self._align_questioner_output_to_dictionary(
+            planner_input=planner_input,
+            questioner_output=reasoning_bundle.questioner,
+        )
         planner_input.planner_guidance.extend(
             note for note in questioner_output.guidance_notes if note not in planner_input.planner_guidance
         )
@@ -1141,6 +1254,53 @@ class HumanControlService:
         )
         planner_input.recent_reasoning_traces = planner_input.recent_reasoning_traces[-10:]
         return planner_input, uncertainties
+
+    @staticmethod
+    def _align_questioner_output_to_dictionary(
+        *,
+        planner_input: ReasoningPlannerInput,
+        questioner_output,
+    ):
+        allowed_fields = [
+            *planner_input.data_dictionary_summary.feature_candidates,
+            *planner_input.data_dictionary_summary.target_candidates,
+        ]
+        target = planner_input.target
+        fallback_focus = allowed_fields[:3] or [target]
+
+        aligned_challenges: list[str] = []
+        aligned_uncertainties = []
+        for index, item in enumerate(questioner_output.proposed_uncertainties[:3], start=1):
+            focus = fallback_focus[(index - 1) % len(fallback_focus)]
+            aligned_uncertainties.append(
+                item.model_copy(
+                    update={
+                        "question": f"{focus} 对 {target} 的作用机制是否稳定？",
+                        "description": f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。",
+                    }
+                )
+            )
+            aligned_challenges.append(f"当前仍需检验 {focus} 对 {target} 的解释是否稳健。")
+
+        if not aligned_uncertainties:
+            focus = fallback_focus[0]
+            aligned_uncertainties.append(
+                ProposedUncertainty(
+                    uncertainty_id=None,
+                    question=f"{focus} 对 {target} 的作用机制是否稳定？",
+                    description=f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。",
+                    priority="medium",
+                )
+            )
+            aligned_challenges.append(f"当前仍需检验 {focus} 对 {target} 的解释是否稳健。")
+
+        questioner_output.challenge_points = aligned_challenges
+        questioner_output.guidance_notes = [
+            *questioner_output.guidance_notes[:2],
+            f"questioner_field_scope:{','.join(fallback_focus[:3])}",
+        ]
+        questioner_output.proposed_uncertainties = aligned_uncertainties
+        return questioner_output
 
     @staticmethod
     def _rag_context_to_traces(rag_context: RAGContextBundle, round_id: int) -> list[PlannerReasoningTraceItem]:

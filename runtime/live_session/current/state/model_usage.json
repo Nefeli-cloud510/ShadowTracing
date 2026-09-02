@@ -1,0 +1,37 @@
+{
+  "session_model": "qwen-plus",
+  "routes": [
+    {
+      "route": "/api/session/analyze-question",
+      "model": "qwen-plus",
+      "purpose": "科学问题变量提取与问题类型判断"
+    },
+    {
+      "route": "/api/workflow/start",
+      "model": "qwen-plus",
+      "purpose": "会话启动、变量绑定与初始工作区构建"
+    }
+  ],
+  "roles": [
+    {
+      "role": "hypothesis_proposer",
+      "model": "qwen-plus"
+    },
+    {
+      "role": "scientific_questioner",
+      "model": "qwen-plus"
+    },
+    {
+      "role": "central_controller",
+      "model": "qwen3.8-max"
+    },
+    {
+      "role": "experiment_planner",
+      "model": "qwen-plus"
+    },
+    {
+      "role": "scientific_interpreter",
+      "model": "qwen3.8-max"
+    }
+  ]
+}

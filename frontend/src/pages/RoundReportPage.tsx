@@ -1,0 +1,176 @@
+import { useMemo, useState } from 'react'
+import { PageTabs } from '../components/PageTabs'
+import { useTimelineBundle } from '../hooks/useTimelineBundle'
+
+export function RoundReportPage() {
+  const { data, loading, error } = useTimelineBundle()
+  const report = data?.viewModels.roundReport
+  const sessionStatus = data?.snapshot.sessionStatus
+  const [failureOpen, setFailureOpen] = useState(false)
+  const failureAnalysis = useMemo(() => {
+    const message = sessionStatus?.message ?? ''
+    if (!message) {
+      return []
+    }
+    const hints: string[] = []
+    if (/目标列|字段|column|KeyError/i.test(message)) {
+      hints.push('失败更像是字段映射或数据字典配置问题，请优先检查目标变量、解释变量和表头白名单是否一致。')
+    }
+    if (/protocol|协议|feature/i.test(message)) {
+      hints.push('失败可能发生在实验协议生成或特征组装阶段，请检查候选实验是否引用了已弃用字段。')
+    }
+    if (/timeout|连接|api|llm/i.test(message)) {
+      hints.push('失败可能包含模型调用或服务链路异常，请同时检查本地服务与外部模型可用性。')
+    }
+    if (hints.length === 0) {
+      hints.push('当前失败由运行态异常触发，请结合执行阶段、字段映射和实验协议继续定位。')
+    }
+    return hints
+  }, [sessionStatus?.message])
+
+  return (
+    <div className="timeline-shell">
+      <div className="timeline-shell__frame timeline-shell__frame--detail">
+        <div className="timeline-topbar">
+          <PageTabs />
+        </div>
+
+        <section className="workspace-page">
+          {loading ? (
+            <div className="timeline-empty-state">正在读取轮次报告…</div>
+          ) : error || !report ? (
+            <div className="timeline-empty-state timeline-empty-state--error">
+              {error ?? '轮次报告数据不可用。'}
+            </div>
+          ) : (
+            <>
+              <header className="workspace-page__header">
+                <div>
+                  <span className="timeline-header__eyebrow">Round Report</span>
+                  <h1>Round {report.roundNumber} 报告与决策</h1>
+                  <p>展示性能摘要、科学结论、假设状态与下一步决策建议。</p>
+                </div>
+
+                <div className="detail-page__meta">
+                  <div className="status-chip">
+                    <span>推荐动作</span>
+                    <strong>{report.recommendedAction}</strong>
+                  </div>
+                  <div className="status-chip">
+                    <span>Delta r</span>
+                    <strong>{(report.summary.deltaPearsonR ?? 0).toFixed(4)}</strong>
+                  </div>
+                  <div className="status-chip">
+                    <span>Delta RMSE</span>
+                    <strong>{(report.summary.deltaRmse ?? 0).toFixed(3)}</strong>
+                  </div>
+                  {sessionStatus?.status === 'failed' ? (
+                    <button type="button" className="detail-link detail-link--button" onClick={() => setFailureOpen(true)}>
+                      查看失败原因
+                    </button>
+                  ) : null}
+                </div>
+              </header>
+
+              <section className="detail-card detail-card--wide">
+                <span className="detail-card__eyebrow">Performance Summary</span>
+                <h2>性能摘要卡片</h2>
+                <div className="metrics-grid metrics-grid--two">
+                  <div className="metric-box">
+                    <span className="metric-box__label">Baseline r</span>
+                    <span className="metric-box__value">{(report.summary.baselinePearsonR ?? 0).toFixed(4)}</span>
+                  </div>
+                  <div className="metric-box">
+                    <span className="metric-box__label">Treatment r</span>
+                    <span className="metric-box__value">{(report.summary.treatmentPearsonR ?? 0).toFixed(4)}</span>
+                  </div>
+                  <div className="metric-box metric-box--highlight">
+                    <span className="metric-box__label">Delta r</span>
+                    <span className="metric-box__value">{(report.summary.deltaPearsonR ?? 0).toFixed(4)}</span>
+                  </div>
+                  <div className="metric-box">
+                    <span className="metric-box__label">Delta RMSE</span>
+                    <span className="metric-box__value">{(report.summary.deltaRmse ?? 0).toFixed(3)}</span>
+                  </div>
+                </div>
+              </section>
+
+              <div className="workspace-page__grid">
+                <section className="detail-card">
+                  <span className="detail-card__eyebrow">Scientific Conclusions</span>
+                  <h2>科学结论</h2>
+                  <ul className="detail-list">
+                    {report.scientificConclusions.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="detail-card">
+                  <span className="detail-card__eyebrow">Hypothesis State</span>
+                  <h2>假设树状态</h2>
+                  <div className="collection-grid">
+                    {report.highlightedHypotheses.map((item) => (
+                      <article key={item.id} className="collection-card">
+                        <strong>{item.id}</strong>
+                        <p>{item.label}</p>
+                        <div className="collection-card__meta">
+                          <span>{item.status}</span>
+                          <span>{item.supportScore.toFixed(3)}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="detail-card detail-card--wide">
+                  <span className="detail-card__eyebrow">Unresolved Questions</span>
+                  <h2>剩余不确定性</h2>
+                  <ul className="detail-list">
+                    {report.unresolvedQuestions.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="detail-card detail-card--wide">
+                  <span className="detail-card__eyebrow">Decision</span>
+                  <h2>下一步决策</h2>
+                  <div className="decision-option-row">
+                    {report.decisionOptions.map((option) => (
+                      <button key={option} type="button" className="detail-link detail-link--button">
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </>
+          )}
+        </section>
+        {failureOpen ? (
+          <div className="preview-lightbox" role="dialog" aria-modal="true">
+            <div className="preview-lightbox__panel preview-lightbox__panel--report">
+              <div className="preview-lightbox__header">
+                <h2>失败原因解析</h2>
+                <button type="button" className="detail-link detail-link--button" onClick={() => setFailureOpen(false)}>
+                  关闭
+                </button>
+              </div>
+              <div className="detail-card detail-card--wide">
+                <span className="detail-card__eyebrow">Failure Report</span>
+                <h2>失败摘要</h2>
+                <p>{sessionStatus?.message ?? '当前没有可用的失败信息。'}</p>
+                <ul className="detail-list">
+                  {failureAnalysis.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,29 @@
+{
+  "last_updated": "2026-09-03T03:09:07.286858",
+  "current_round": 2,
+  "queue": [
+    {
+      "uncertainty_id": "U_LLM_R01_01",
+      "question": "p2_y中心值 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority_score": 0.9,
+      "status": "active",
+      "estimated_resolution_round": 2
+    },
+    {
+      "uncertainty_id": "U_LLM_R01_03",
+      "question": "Scalar B, nT 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    },
+    {
+      "uncertainty_id": "U_LLM_R01_04",
+      "question": "BY, nT (GSE) 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority_score": 0.6,
+      "status": "active",
+      "estimated_resolution_round": 3
+    }
+  ],
+  "resolved": [],
+  "deprecated": []
+}

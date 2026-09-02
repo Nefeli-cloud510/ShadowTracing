@@ -1,0 +1,82 @@
+{
+  "experiment_id": "E_R01_00",
+  "round_id": 1,
+  "status": "completed",
+  "runs": [
+    {
+      "run_id": "baseline",
+      "name": "baseline",
+      "prediction_artifact": "results/round_01/E_R01_00/predictions/E_R01_00_baseline.csv",
+      "metrics": {
+        "rmse": 49.25384857191404,
+        "mae": 39.5986254968859,
+        "pearson_r": 0.39448958586943433,
+        "r2": -0.05852141690524881
+      }
+    },
+    {
+      "run_id": "treatment",
+      "name": "treatment",
+      "prediction_artifact": "results/round_01/E_R01_00/predictions/E_R01_00_treatment.csv",
+      "metrics": {
+        "rmse": 49.25384857191404,
+        "mae": 39.5986254968859,
+        "pearson_r": 0.39448958586943433,
+        "r2": -0.05852141690524881
+      }
+    }
+  ],
+  "comparison": {
+    "rmse": 0.0,
+    "mae": 0.0,
+    "pearson_r": 0.0,
+    "r2": 0.0
+  },
+  "visualizations": [
+    {
+      "name": "E_R01_00_baseline_coefficients",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_coefficients.png"
+    },
+    {
+      "name": "E_R01_00_baseline_scatter",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_scatter.png"
+    },
+    {
+      "name": "E_R01_00_baseline_timeseries",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_timeseries.png"
+    },
+    {
+      "name": "E_R01_00_baseline_residual_scatter",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_scatter.png"
+    },
+    {
+      "name": "E_R01_00_baseline_residual_hist",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_hist.png"
+    },
+    {
+      "name": "E_R01_00_treatment_coefficients",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_coefficients.png"
+    },
+    {
+      "name": "E_R01_00_treatment_scatter",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_scatter.png"
+    },
+    {
+      "name": "E_R01_00_treatment_timeseries",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_timeseries.png"
+    },
+    {
+      "name": "E_R01_00_treatment_residual_scatter",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_scatter.png"
+    },
+    {
+      "name": "E_R01_00_treatment_residual_hist",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_hist.png"
+    }
+  ],
+  "execution": {
+    "duration_seconds": 5.286861700005829,
+    "compute_seconds": 5.286861700005829,
+    "status": "completed"
+  }
+}

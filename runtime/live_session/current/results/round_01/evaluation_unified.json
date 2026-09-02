@@ -1,0 +1,99 @@
+{
+  "metrics": {
+    "experiment_id": "E_R01_00",
+    "round_id": 1,
+    "baseline_rmse": 49.25384857191404,
+    "baseline_mae": 39.5986254968859,
+    "baseline_pearson_r": 0.39448958586943433,
+    "treatment_rmse": 49.25384857191404,
+    "treatment_mae": 39.5986254968859,
+    "treatment_pearson_r": 0.39448958586943433,
+    "pg_actual_signed": 0.0,
+    "pg_actual_clipped": 0.0,
+    "delta": {
+      "rmse": 0.0,
+      "mae": 0.0,
+      "pearson_r": 0.0,
+      "r2": 0.0
+    }
+  },
+  "robustness": {
+    "bootstrap": {
+      "stable": true,
+      "n_iterations": 0
+    },
+    "time_slice": {
+      "splits": [],
+      "stable": true
+    },
+    "overall": {
+      "stable": true
+    },
+    "recommendation": "可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。"
+  },
+  "scientific": {
+    "experiment_id": "E_R01_00",
+    "round_id": 1,
+    "hypothesis_assessments": [],
+    "disagreement_updates": [],
+    "evidence_summary": {
+      "new_evidence_for": [
+        {
+          "claim": "本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。",
+          "strength": "medium",
+          "source": "experiment_result.comparison"
+        }
+      ],
+      "new_evidence_against": [],
+      "remaining_uncertainties": [
+        {
+          "uncertainty_id": "U_LLM_R01_01",
+          "question": "p2_y中心值 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+          "priority": "medium"
+        }
+      ]
+    }
+  },
+  "visualizations": [
+    {
+      "name": "E_R01_00_baseline_coefficients",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_coefficients.png"
+    },
+    {
+      "name": "E_R01_00_baseline_scatter",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_scatter.png"
+    },
+    {
+      "name": "E_R01_00_baseline_timeseries",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_timeseries.png"
+    },
+    {
+      "name": "E_R01_00_baseline_residual_scatter",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_scatter.png"
+    },
+    {
+      "name": "E_R01_00_baseline_residual_hist",
+      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_hist.png"
+    },
+    {
+      "name": "E_R01_00_treatment_coefficients",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_coefficients.png"
+    },
+    {
+      "name": "E_R01_00_treatment_scatter",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_scatter.png"
+    },
+    {
+      "name": "E_R01_00_treatment_timeseries",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_timeseries.png"
+    },
+    {
+      "name": "E_R01_00_treatment_residual_scatter",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_scatter.png"
+    },
+    {
+      "name": "E_R01_00_treatment_residual_hist",
+      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_hist.png"
+    }
+  ]
+}

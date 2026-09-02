@@ -1,0 +1,277 @@
+{
+  "task_id": "ST_LIVE_20260903_025637",
+  "source_round_id": 1,
+  "next_round_id": 2,
+  "source_experiment_id": "E_R01_00",
+  "scientific_question": "LHAASO观测到的宇宙线日影南北偏移是否包含能够提前改善未来太阳风速度预测的有效信息？",
+  "target": "SW Plasma Speed, km/s",
+  "evaluation_summary": {
+    "experiment_id": "E_R01_00",
+    "round_id": 1,
+    "baseline_rmse": 49.25384857191404,
+    "treatment_rmse": 49.25384857191404,
+    "baseline_pearson_r": 0.39448958586943433,
+    "treatment_pearson_r": 0.39448958586943433,
+    "delta_pearson_r": 0.0,
+    "delta_rmse": 0.0,
+    "pg_actual_signed": 0.0,
+    "pg_actual_clipped": 0.0,
+    "key_findings": [
+      "本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。"
+    ],
+    "robustness_recommendation": "可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。",
+    "stable": true
+  },
+  "unresolved_uncertainties": [
+    {
+      "uncertainty_id": "U_LLM_R01_01",
+      "question": "p2_y中心值 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority": "medium",
+      "priority_score": 0.6,
+      "status": "active",
+      "related_hypotheses": [
+        "H_p2_y中心值_independent_gain",
+        "H_p2_y中心值_null_competition",
+        "H_p2_y中心值_branch_by_nt_gse",
+        "H_p2_y中心值_branch_bz_nt_gse",
+        "H_p2_y中心值_branch_by_nt_gsm",
+        "H_p2_y中心值_branch_bz_nt_gsm",
+        "H_p2_y中心值_branch_kp_10_index",
+        "H_p2_y中心值_via_scalar_b_nt",
+        "H_p2_y中心值_via_by_nt_gse",
+        "H_p2_y中心值_via_bz_nt_gse",
+        "H_p2_y中心值_via_by_nt_gsm",
+        "H_p2_y中心值_via_bz_nt_gsm",
+        "H_p2_y中心值_conditioned_on_scalar_b_nt",
+        "H_p2_y中心值_conditioned_on_by_nt_gse",
+        "H_p2_y中心值_conditioned_on_bz_nt_gse",
+        "H_p2_y中心值_conditioned_on_by_nt_gsm",
+        "H_p2_y中心值_conditioned_on_bz_nt_gsm",
+        "H_p2_y中心值_stability_refinement"
+      ]
+    },
+    {
+      "uncertainty_id": "U_LLM_R01_03",
+      "question": "Scalar B, nT 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority": "medium",
+      "status": "active",
+      "related_hypotheses": [
+        "H_p2_y中心值_independent_gain",
+        "H_p2_y中心值_null_competition",
+        "H_p2_y中心值_branch_by_nt_gse",
+        "H_p2_y中心值_branch_bz_nt_gse",
+        "H_p2_y中心值_branch_by_nt_gsm",
+        "H_p2_y中心值_branch_bz_nt_gsm",
+        "H_p2_y中心值_branch_kp_10_index",
+        "H_p2_y中心值_via_scalar_b_nt",
+        "H_p2_y中心值_via_by_nt_gse",
+        "H_p2_y中心值_via_bz_nt_gse",
+        "H_p2_y中心值_via_by_nt_gsm",
+        "H_p2_y中心值_via_bz_nt_gsm",
+        "H_p2_y中心值_conditioned_on_scalar_b_nt",
+        "H_p2_y中心值_conditioned_on_by_nt_gse",
+        "H_p2_y中心值_conditioned_on_bz_nt_gse",
+        "H_p2_y中心值_conditioned_on_by_nt_gsm",
+        "H_p2_y中心值_conditioned_on_bz_nt_gsm",
+        "H_p2_y中心值_stability_refinement"
+      ]
+    },
+    {
+      "uncertainty_id": "U_LLM_R01_04",
+      "question": "BY, nT (GSE) 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+      "priority": "medium",
+      "status": "active",
+      "related_hypotheses": [
+        "H_p2_y中心值_independent_gain",
+        "H_p2_y中心值_null_competition",
+        "H_p2_y中心值_branch_by_nt_gse",
+        "H_p2_y中心值_branch_bz_nt_gse",
+        "H_p2_y中心值_branch_by_nt_gsm",
+        "H_p2_y中心值_branch_bz_nt_gsm",
+        "H_p2_y中心值_branch_kp_10_index",
+        "H_p2_y中心值_via_scalar_b_nt",
+        "H_p2_y中心值_via_by_nt_gse",
+        "H_p2_y中心值_via_bz_nt_gse",
+        "H_p2_y中心值_via_by_nt_gsm",
+        "H_p2_y中心值_via_bz_nt_gsm",
+        "H_p2_y中心值_conditioned_on_scalar_b_nt",
+        "H_p2_y中心值_conditioned_on_by_nt_gse",
+        "H_p2_y中心值_conditioned_on_bz_nt_gse",
+        "H_p2_y中心值_conditioned_on_by_nt_gsm",
+        "H_p2_y中心值_conditioned_on_bz_nt_gsm",
+        "H_p2_y中心值_stability_refinement"
+      ]
+    }
+  ],
+  "active_hypotheses": [
+    {
+      "hypothesis_id": "H_p2_y中心值_independent_gain",
+      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 提供可检验的独立增量信息。",
+      "status": "active",
+      "support_score": 0.56
+    },
+    {
+      "hypothesis_id": "H_p2_y中心值_null_competition",
+      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的观测增益主要来自与 Scalar B, nT 的伴随相关，而非独立信息。",
+      "status": "active",
+      "support_score": 0.42
+    },
+    {
+      "hypothesis_id": "H_p2_y中心值_branch_by_nt_gse",
+      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能主要通过 BY, nT (GSE) 路径放大或传递。",
+      "status": "active",
+      "support_score": 0.38
+    },
+    {
+      "hypothesis_id": "H_p2_y中心值_branch_bz_nt_gse",
+      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能主要通过 BZ, nT (GSE) 路径放大或传递。",
+      "status": "active",
+      "support_score": 0.38
+    },
+    {
+      "hypothesis_id": "H_p2_y中心值_branch_by_nt_gsm",
+      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能主要通过 BY, nT (GSM) 路径放大或传递。",
+      "status": "active",
+      "support_score": 0.38
+    }
+  ],
+  "recent_hypothesis_assessments": [],
+  "recent_disagreement_updates": [],
+  "recent_reasoning_traces": [
+    {
+      "trace_id": "IE001",
+      "stage": "scientific_interpreter",
+      "summary": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，尚未形成稳定支持信号。",
+      "related_hypotheses": [
+        "H_p2_y中心值_independent_gain"
+      ],
+      "related_uncertainties": [
+        "U_LLM_R01_01"
+      ],
+      "support_delta": -0.0405,
+      "priority_delta": 0.0
+    },
+    {
+      "trace_id": "LIE_INT_001",
+      "stage": "scientific_interpreter",
+      "summary": "需要保守解释当前结果。",
+      "related_hypotheses": [
+        "H_p2_y中心值_independent_gain"
+      ],
+      "related_uncertainties": [
+        "U_LLM_R01_01"
+      ],
+      "support_delta": 0.0205,
+      "priority_delta": 0.0
+    },
+    {
+      "trace_id": "RAGP001",
+      "stage": "rag_project",
+      "summary": "riority\": \"medium\"}], \"key_findings\": [\"本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。\"], \"robustness_recommendation\": \"可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。\", \"stable\": true}, \"hypothesi",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "RAGP002",
+      "stage": "rag_project",
+      "summary": "y\\\": \\\"medium\\\"}], \\\"key_findings\\\": [\\\"本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。\\\"], \\\"robustness_recommendation\\\": \\\"可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。\\\", \\\"stable\\\": true}, \\\"h",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "HP0101",
+      "stage": "hypothesis_proposer",
+      "summary": "围绕 p2_y中心值 扩展独立增量或直接作用分支。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "HP0102",
+      "stage": "hypothesis_proposer",
+      "summary": "围绕 Scalar B, nT 扩展中介机制或传导路径分支。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "HP0103",
+      "stage": "hypothesis_proposer",
+      "summary": "围绕 BY, nT (GSE) 扩展边界条件或调节作用分支。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    },
+    {
+      "trace_id": "SQ0101",
+      "stage": "scientific_questioner",
+      "summary": "当前仍需检验 p2_y中心值 对 SW Plasma Speed, km/s 的解释是否稳健。",
+      "related_hypotheses": [],
+      "related_uncertainties": []
+    }
+  ],
+  "recent_human_feedback": [
+    {
+      "feedback_id": "F001",
+      "feedback_type": "轮次备注",
+      "content": "????????????,??????????????????",
+      "linked_reasoning_trace_ids": [
+        "IE001",
+        "LIE_INT_001"
+      ],
+      "related_experiment_id": "E_R01_00",
+      "context_summary": "linked_traces=IE001,LIE_INT_001"
+    }
+  ],
+  "data_dictionary_summary": {
+    "dictionary_id": "DICT_LIVE_20260903_025637",
+    "dataset_name": "out_of_ICME_raw_OMNI_Daily_DATA + raw_out_of_ICME_sunshadow2",
+    "time_column": "TIME",
+    "target_candidates": [
+      "SW Plasma Speed, km/s"
+    ],
+    "feature_candidates": [
+      "p2_y中心值",
+      "Scalar B, nT",
+      "BY, nT (GSE)",
+      "BZ, nT (GSE)",
+      "BY, nT (GSM)",
+      "BZ, nT (GSM)",
+      "Kp*10 index",
+      "Dst-index, nT",
+      "ap_index, nT",
+      "f10.7_index",
+      "p1_x中心值",
+      "p1_x中心值误差",
+      "p2_y中心值误差"
+    ]
+  },
+  "planning_constraints": {
+    "no_future_information": true,
+    "validation_feedback_allowed": true,
+    "final_test_blind": true,
+    "max_rounds": 10,
+    "max_experiments_per_round": 3,
+    "resource_budget": {}
+  },
+  "planner_guidance": [
+    "上一轮预测增益不明显，下一轮优先探索区分性更强的候选实验。",
+    "优先关注未解决不确定性: p2_y中心值 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
+    "上一轮程序解释重点: H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，尚未形成稳定支持信号。",
+    "最近人工反馈: ????????????,??????????????????",
+    "rag_project:riority\": \"medium\"}], \"key_findings\": [\"本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。\"], \"robustness_recommendation\": \"可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。\", \"stable\": true}, \"hypothesi",
+    "rag_external:黑点是WCDA-1的测量结果。图7-11在CR2220期间，WCDA-1日影测量的1AU处行星际磁场的y分量。黑点是WCDA-1的测量结果。红色面积是日影移位拟合导致的误差。蓝色面积是模拟与数据不一致性导致的误差。(1)日影移位拟合导致的系统误差。在实验观测日影方面，在拟合其南北移位时，存在系统误差，即图7-7中黑色数据点的误差棒oabs。同样，在模拟日影中，也存在相应的系统误差，即图7-7中彩色数据点的误差棒sim。在利用公式7-2拟合参数6和B0时，将oobs。和osim传递到参数及其误差中。因此将5和B0的结果和误差带入7-1，就可计算得到磁场以及日影移位拟合导致的系统误差。图7-11中的红色区域就是此系统误差。可以看到，不同日面经度，误差大小是不同的。这与每日不同的太阳风速有关。山东大学博士学位论文[empty]-116-(2)模拟与数据不一致性导致的系统误差。Nfit是代表能量相关的量，能量分布又与由于磁场导致宇宙线偏转的日影直接相关。因此，需要估计模拟的Nfit分布错误引入的系统误差。本工作中利用的Nfit分布的范围为100到800。假设A作为Nfit分布沿Nfit方向移动的量。移动后，Nfit分布的范围将变为从100+A到800+A。移动前后原初中值能量将发生变化。因此A与能量存在关系。假设原初中值能量变化20%，我们求得移动量A为21。",
+    "proposer_focus:p2_y中心值",
+    "proposer_focus:Scalar B, nT",
+    "proposer_focus:BY, nT (GSE)",
+    "proposer_focus:BZ, nT (GSE)",
+    "proposer_focus:BY, nT (GSM)",
+    "proposer_focus:BZ, nT (GSM)",
+    "proposer_focus:p2_y中心值 可能构成下一轮假设扩展条件。",
+    "proposer_focus:Scalar B, nT 可能构成下一轮假设扩展条件。",
+    "proposer_focus:BY, nT (GSE) 可能构成下一轮假设扩展条件。",
+    "proposer_focus:BZ, nT (GSE) 可能构成下一轮假设扩展条件。",
+    "proposer_focus:BY, nT (GSM) 可能构成下一轮假设扩展条件。",
+    "proposer_focus:BZ, nT (GSM) 可能构成下一轮假设扩展条件。",
+    "questioner_project:riority\": \"medium\"}], \"key_findings\": [\"本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。\"], \"robustness_recommendation\": \"可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。\", \"stable\": true}, \"hypothesi",
+    "questioner_field_scope:p2_y中心值,Scalar B, nT,BY, nT (GSE)"
+  ],
+  "generated_at": "2026-09-03T03:08:18.379496"
+}

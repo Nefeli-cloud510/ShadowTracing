@@ -116,6 +116,7 @@ class HypothesisGenerationService:
         current_round: int,
     ) -> list[HypothesisNode]:
         primary_x, target, mediators, feature_pool = _task_feature_context(task, data_dictionary)
+        planner_features = _feedback_features(planner_input, data_dictionary, primary_x, target)
         nodes: list[HypothesisNode] = []
         existing_ids: set[str] = set()
 
@@ -174,7 +175,53 @@ class HypothesisGenerationService:
         nodes.append(null_node)
         existing_ids.add(null_node.hypothesis_id)
 
-        for mediator in mediators[: max(task.payload.constraints.max_hypotheses_per_level or 3, 1)]:
+        root_branch_budget = max(task.payload.constraints.max_hypotheses_per_level or min(max(len(feature_pool) + len(mediators), 5), 8), 3)
+        root_branch_features = [
+            feature
+            for feature in _unique_preserve_order([*planner_features, *mediators, *feature_pool])
+            if feature not in {competition_feature, primary_x, target}
+        ]
+        for feature in _unique_preserve_order(root_branch_features)[:root_branch_budget]:
+            is_mediator = feature in mediators
+            branch_node = HypothesisNode(
+                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_branch_{feature}", existing_ids),
+                statement=(
+                    f"{primary_x} 对 {target} 的作用可能主要通过 {feature} 路径放大或传递。"
+                    if is_mediator
+                    else f"{primary_x} 对 {target} 的作用可能依赖于 {feature} 所界定的边界条件。"
+                ),
+                level=1,
+                status="active",
+                support_score=0.38 if is_mediator else 0.34,
+                activation_condition="kept active as an alternative first-order explanation",
+                created_at_round=current_round,
+                updated_at_round=current_round,
+                alternative_explanations=[
+                    f"{feature} may capture a distinct first-order mechanism for {target}",
+                ],
+                generation_rationale=_build_generation_rationale(
+                    trigger="branch_bootstrap",
+                    summary=(
+                        f"将 {feature} 提升为一级主干，避免初始假设树只剩两个主干路径。"
+                    ),
+                    linked_uncertainties=_linked_uncertainty_ids(
+                        uncertainties,
+                        keywords=[feature, primary_x, target, "路径", "条件", "边界"],
+                    ),
+                    derived_features=[primary_x, feature, target],
+                    source_signals=(
+                        _mediator_signals(task, uncertainties, feature)
+                        if is_mediator
+                        else _task_bootstrap_signals(task, data_dictionary, uncertainties, primary_x, target)
+                    ),
+                    confidence=0.59 if is_mediator else 0.55,
+                ),
+            )
+            nodes.append(branch_node)
+            existing_ids.add(branch_node.hypothesis_id)
+
+        prioritized_mediators = _unique_preserve_order([*planner_features, *mediators])
+        for mediator in [item for item in prioritized_mediators if item in mediators][: max(task.payload.constraints.max_hypotheses_per_level or 4, 2)]:
             child = HypothesisNode(
                 hypothesis_id=_unique_hypothesis_id(f"{primary_x}_via_{mediator}", existing_ids),
                 statement=f"{primary_x} 对 {target} 的作用可能通过 {mediator} 中介路径体现。",
@@ -196,6 +243,40 @@ class HypothesisGenerationService:
                     derived_features=[primary_x, mediator, target],
                     source_signals=_mediator_signals(task, uncertainties, mediator),
                     confidence=0.64,
+                ),
+            )
+            gain_node.children_ids.append(child.hypothesis_id)
+            nodes.append(child)
+            existing_ids.add(child.hypothesis_id)
+
+        branch_budget = max((task.payload.constraints.max_hypotheses_per_level or 6) - len(mediators), 0)
+        branch_features = [
+            feature
+            for feature in _unique_preserve_order([*planner_features, *feature_pool])
+            if feature not in {competition_feature, primary_x, target} and feature not in mediators
+        ][:branch_budget]
+        for feature in branch_features:
+            child = HypothesisNode(
+                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_conditioned_by_{feature}", existing_ids),
+                statement=f"{primary_x} 对 {target} 的作用可能受 {feature} 条件约束，并在不同情境下呈现差异。",
+                level=2,
+                parent_id=gain_node.hypothesis_id,
+                status="pending",
+                support_score=0.35,
+                activation_condition=f"当 {feature} 被识别为重要边界条件时激活",
+                created_at_round=current_round,
+                updated_at_round=current_round,
+                alternative_explanations=[f"{feature} may act as moderator or contextual boundary of {primary_x}"],
+                generation_rationale=_build_generation_rationale(
+                    trigger="feature_branch_bootstrap",
+                    summary=f"根据数据字典中的候选特征 {feature}，补充条件/调节路径分支。",
+                    linked_uncertainties=_linked_uncertainty_ids(
+                        uncertainties,
+                        keywords=[feature, primary_x, target, "条件", "边界"],
+                    ),
+                    derived_features=[primary_x, feature, target],
+                    source_signals=_task_bootstrap_signals(task, data_dictionary, uncertainties, primary_x, target),
+                    confidence=0.61,
                 ),
             )
             gain_node.children_ids.append(child.hypothesis_id)
@@ -256,7 +337,12 @@ class HypothesisGenerationService:
 
         feedback_features = _feedback_features(planner_input, data_dictionary, primary_x, target)
         for feature in feedback_features:
-            if feature.lower() in mentioned_statements:
+            if any(
+                node.generation_rationale
+                and node.generation_rationale.trigger == "planner_feature_focus"
+                and feature.lower() in node.statement.lower()
+                for node in nodes
+            ):
                 continue
             node = HypothesisNode(
                 hypothesis_id=_unique_hypothesis_id(f"{primary_x}_conditioned_on_{feature}", existing_ids),

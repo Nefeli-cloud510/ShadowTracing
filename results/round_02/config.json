@@ -1,8 +1,0 @@
-{
-  "window_size": 7,
-  "use_lag_feature": true,
-  "max_lag_day": 5,
-  "alpha": 0.3,
-  "l1_ratio": 0.7,
-  "reasoning": "当前R²为负且RMSE高于基线，表明模型未捕获有效时序模式；关闭lag特征但max_lag_day仍设为3无意义，故启用lag特征并扩大窗口和lag范围以增强时序依赖建模；降低alpha缓解过正则化，提高l1_ratio增强稀疏性以筛选关键滞后变量"
-}
