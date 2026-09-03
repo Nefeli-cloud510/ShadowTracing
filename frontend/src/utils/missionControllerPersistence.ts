@@ -1,7 +1,12 @@
 import type { DataInspectionResult, QuestionAnalysis } from '../api/liveWorkflow'
+import { clearDataDictionaryDraft } from './dataDictionaryDraft'
 
 type UploadScope = 'knowledge' | 'data'
 export const WORKSPACE_RESET_EVENT = 'shadowtracing:workspace-reset'
+export const WORKFLOW_START_PENDING_KEY = 'shadowtracing.workflowStartPending'
+export const WORKFLOW_START_ERROR_KEY = 'shadowtracing.workflowStartError'
+export const WORKFLOW_START_STATE_EVENT = 'shadowtracing-workflow-start-state'
+export const WORKSPACE_RESET_AT_KEY = 'shadowtracing.workspaceResetAt'
 
 export interface MissionControllerDraft {
   question: string
@@ -16,11 +21,13 @@ export interface MissionControllerDraft {
   roundFeedback: string
   roundDecision: 'continue' | 'adjust' | 'stop'
   latestInspection: DataInspectionResult | null
+  updatedAt?: string
 }
 
 const STORAGE_KEY = 'shadowtracing.missionControllerDraft'
 const DB_NAME = 'shadowtracing-upload-cache'
 const STORE_NAME = 'uploads'
+const LEGACY_STORAGE_KEYS = ['st_demo_question', 'st_demo_knowledge_files', 'st_demo_data_files']
 
 function getIndexedDb(): IDBFactory | null {
   return typeof window === 'undefined' ? null : window.indexedDB ?? null
@@ -64,13 +71,31 @@ function readStore<T>(requestFactory: (store: IDBObjectStore) => IDBRequest<T>):
   })
 }
 
+export function readWorkspaceResetAt(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return window.localStorage.getItem(WORKSPACE_RESET_AT_KEY)
+}
+
 export function readMissionControllerDraft(): MissionControllerDraft | null {
   if (typeof window === 'undefined') {
     return null
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as MissionControllerDraft) : null
+    if (!raw) {
+      return null
+    }
+    const draft = JSON.parse(raw) as MissionControllerDraft
+    const resetAt = readWorkspaceResetAt()
+    if (!resetAt) {
+      return draft
+    }
+    if (!draft.updatedAt) {
+      return null
+    }
+    return draft.updatedAt > resetAt ? draft : null
   } catch {
     return null
   }
@@ -80,7 +105,13 @@ export function writeMissionControllerDraft(draft: MissionControllerDraft) {
   if (typeof window === 'undefined') {
     return
   }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(draft))
+  window.localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      ...draft,
+      updatedAt: new Date().toISOString(),
+    } satisfies MissionControllerDraft),
+  )
 }
 
 export function clearMissionControllerDraft() {
@@ -97,11 +128,21 @@ export function notifyWorkspaceReset() {
   window.dispatchEvent(new Event(WORKSPACE_RESET_EVENT))
 }
 
+export function clearWorkflowStartState() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.sessionStorage.removeItem(WORKFLOW_START_PENDING_KEY)
+  window.sessionStorage.removeItem(WORKFLOW_START_ERROR_KEY)
+  window.dispatchEvent(new Event(WORKFLOW_START_STATE_EVENT))
+}
+
 export async function persistUploadFiles(scope: UploadScope, files: File[]) {
   const database = await openDb()
   if (!database) {
     return
   }
+  const storedAt = new Date().toISOString()
 
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readwrite')
@@ -116,6 +157,7 @@ export async function persistUploadFiles(scope: UploadScope, files: File[]) {
             id: `${scope}::${file.name}::${file.lastModified}::${file.size}`,
             scope,
             file,
+            storedAt,
           })
         }
         return
@@ -139,8 +181,22 @@ export async function persistUploadFiles(scope: UploadScope, files: File[]) {
 }
 
 export async function loadUploadFiles(scope: UploadScope): Promise<File[]> {
-  const records = await readStore<Array<{ scope: UploadScope; file: File }>>((store) => store.getAll())
-  return (records ?? []).filter((record) => record.scope === scope).map((record) => record.file)
+  const resetAt = readWorkspaceResetAt()
+  const records = await readStore<Array<{ scope: UploadScope; file: File; storedAt?: string }>>((store) => store.getAll())
+  return (records ?? [])
+    .filter((record) => {
+      if (record.scope !== scope) {
+        return false
+      }
+      if (!resetAt) {
+        return true
+      }
+      if (!record.storedAt) {
+        return false
+      }
+      return record.storedAt > resetAt
+    })
+    .map((record) => record.file)
 }
 
 export async function clearUploadFiles(scope?: UploadScope) {
@@ -179,6 +235,20 @@ export async function clearUploadFiles(scope?: UploadScope) {
       reject(transaction.error)
     }
   })
+}
+
+export async function resetClientWorkspaceState() {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(WORKSPACE_RESET_AT_KEY, new Date().toISOString())
+    clearMissionControllerDraft()
+    clearDataDictionaryDraft()
+    clearWorkflowStartState()
+    for (const key of LEGACY_STORAGE_KEYS) {
+      window.localStorage.removeItem(key)
+    }
+  }
+  await clearUploadFiles()
+  notifyWorkspaceReset()
 }
 
 export function mergeSelectedFiles(existingFiles: File[], incomingFiles: File[]) {

@@ -6,6 +6,7 @@ from typing import Any
 from core.state_repository import UnifiedStateRepository
 from core.support_update_rules import compute_support_update_from_reasoning, priority_after_action
 from core.unified_schema import (
+    ClosureChecklistItem,
     CritiqueRecord,
     EvidenceItem,
     EvaluationResult,
@@ -13,14 +14,20 @@ from core.unified_schema import (
     ExperimentMemoryState,
     ExperimentProtocol,
     ExperimentResult,
+    FailureHistoryState,
+    FailureRecord,
     HypothesisTreeState,
     InterpretationEnhancement,
     LatestTreeUpdate,
+    MetricsTimelineEntry,
+    MetricsTimelineState,
     ProcessPhase,
     ProcessState,
     PrioritizedUncertainty,
     ProcessStep,
     ReasoningTraceEntry,
+    RoundHistoryEntry,
+    RoundHistoryState,
     SupportHistoryEntry,
     TreeSummary,
     UncertaintyHistoryEntry,
@@ -51,7 +58,15 @@ class UnifiedStateUpdater:
         tree = self.repository.load_hypothesis_tree()
         uncertainties = self.repository.load_uncertainties()
         experiment_memory = self.repository.load_experiment_memory()
+        round_history = self.repository.load_round_history()
+        metrics_timeline = self.repository.load_metrics_timeline()
         process_state = self.repository.load_process_state()
+        protocol = self._ensure_protocol_core_outputs(
+            protocol=protocol,
+            evaluation=evaluation,
+            tree=tree,
+            uncertainties=uncertainties,
+        )
 
         tree = self._update_hypothesis_tree(tree, protocol, evaluation)
         uncertainties = self._update_uncertainties(uncertainties, protocol, evaluation)
@@ -73,11 +88,27 @@ class UnifiedStateUpdater:
                 interpretation_enhancements=interpretation_enhancements,
                 interpreter_source=interpreter_source,
             )
+        round_history = self._update_round_history(
+            round_history,
+            protocol=protocol,
+            evaluation=evaluation,
+            experiment_memory=experiment_memory,
+            failure_reason=None,
+        )
+        metrics_timeline = self._update_metrics_timeline(
+            metrics_timeline,
+            protocol=protocol,
+            evaluation=evaluation,
+            experiment_memory=experiment_memory,
+            execution_status=result.status,
+        )
         process_state = self._update_process_state(process_state, protocol.round_id)
 
         self.repository.save_hypothesis_tree(tree)
         self.repository.save_uncertainties(uncertainties)
         self.repository.save_experiment_memory(experiment_memory)
+        self.repository.save_round_history(round_history)
+        self.repository.save_metrics_timeline(metrics_timeline)
         self.repository.save_process_state(process_state)
 
         return {
@@ -86,6 +117,126 @@ class UnifiedStateUpdater:
             "experiment_memory": experiment_memory,
             "process_state": process_state,
         }
+
+    def apply_execution_failure(
+        self,
+        *,
+        protocol: ExperimentProtocol,
+        error: Exception,
+        protocol_path: str | None = "config/latest_protocol.json",
+    ) -> dict[str, object]:
+        now = datetime.now()
+        experiment_memory = self.repository.load_experiment_memory()
+        round_history = self.repository.load_round_history()
+        metrics_timeline = self.repository.load_metrics_timeline()
+        failure_history = self.repository.load_failure_history()
+        process_state = self.repository.load_process_state()
+        protocol = self._ensure_protocol_core_outputs(
+            protocol=protocol,
+            evaluation=None,
+            tree=self.repository.load_hypothesis_tree(),
+            uncertainties=self.repository.load_uncertainties(),
+        )
+
+        failure_message = str(error).strip() or repr(error)
+        entry = experiment_memory.entry_index().get(protocol.experiment_id)
+        if entry is None:
+            entry = ExperimentMemoryEntry(
+                experiment_id=protocol.experiment_id,
+                round_id=protocol.round_id,
+                status="failed",
+                tested_hypotheses=protocol.tested_hypotheses,
+                target_uncertainties=protocol.target_uncertainties,
+                protocol_path=self.repository.relativize(protocol_path),
+                result_path=None,
+                evaluation_path=None,
+                metrics_snapshot=None,
+                key_findings=[f"实验失败：{failure_message}"],
+                visualizations=[],
+                created_at=now,
+                updated_at=now,
+            )
+            experiment_memory.entries.append(entry)
+        else:
+            entry.round_id = protocol.round_id
+            entry.status = "failed"
+            entry.tested_hypotheses = protocol.tested_hypotheses
+            entry.target_uncertainties = protocol.target_uncertainties
+            entry.protocol_path = self.repository.relativize(protocol_path)
+            entry.result_path = None
+            entry.evaluation_path = None
+            entry.metrics_snapshot = None
+            entry.key_findings = [f"实验失败：{failure_message}"]
+            entry.visualizations = []
+            entry.updated_at = now
+
+        failure_history.records.append(
+            FailureRecord(
+                failure_id=f"FAIL_R{protocol.round_id:02d}_{len(failure_history.records) + 1:03d}",
+                round_id=protocol.round_id,
+                phase=process_state.current_phase or "experiment_execution",
+                step=process_state.current_step or "execution_failed",
+                experiment_id=protocol.experiment_id,
+                error_type=error.__class__.__name__,
+                message=failure_message,
+                traceback_excerpt=repr(error),
+                can_continue=True,
+            )
+        )
+        failure_history.current_round = max(failure_history.current_round, protocol.round_id)
+        failure_history.last_updated = now
+
+        round_history = self._update_round_history(
+            round_history,
+            protocol=protocol,
+            evaluation=None,
+            experiment_memory=experiment_memory,
+            failure_reason=failure_message,
+        )
+        metrics_timeline = self._update_metrics_timeline(
+            metrics_timeline,
+            protocol=protocol,
+            evaluation=None,
+            experiment_memory=experiment_memory,
+            execution_status="failed",
+        )
+
+        self.repository.save_experiment_memory(experiment_memory)
+        self.repository.save_round_history(round_history)
+        self.repository.save_metrics_timeline(metrics_timeline)
+        self.repository.save_failure_history(failure_history)
+        return {
+            "experiment_memory": experiment_memory,
+            "round_history": round_history,
+            "metrics_timeline": metrics_timeline,
+            "failure_history": failure_history,
+        }
+
+    def _ensure_protocol_core_outputs(
+        self,
+        *,
+        protocol: ExperimentProtocol,
+        evaluation: EvaluationResult | None,
+        tree: HypothesisTreeState,
+        uncertainties: UncertaintyState,
+    ) -> ExperimentProtocol:
+        tested_hypotheses = _unique_preserve_order(protocol.tested_hypotheses)
+        if not tested_hypotheses:
+            tested_hypotheses = _infer_tested_hypotheses(protocol=protocol, evaluation=evaluation, tree=tree)
+            if tested_hypotheses:
+                protocol.notes.append("auto_filled_tested_hypotheses")
+        target_uncertainties = _unique_preserve_order(protocol.target_uncertainties)
+        if not target_uncertainties:
+            target_uncertainties = _infer_target_uncertainties(
+                protocol=protocol,
+                evaluation=evaluation,
+                uncertainties=uncertainties,
+            )
+            if target_uncertainties:
+                protocol.notes.append("auto_filled_target_uncertainties")
+        protocol.tested_hypotheses = tested_hypotheses
+        protocol.target_uncertainties = target_uncertainties
+        return protocol
 
     def _apply_interpretation_enhancements(
         self,
@@ -433,6 +584,12 @@ class UnifiedStateUpdater:
         ] + [
             item.claim for item in evaluation.scientific.evidence_summary.new_evidence_against
         ]
+        key_findings.append(
+            _build_vsw_performance_summary(
+                target=protocol.target,
+                metrics=evaluation.metrics,
+            )
+        )
 
         entry = entry_index.get(protocol.experiment_id)
         if entry is None:
@@ -441,6 +598,7 @@ class UnifiedStateUpdater:
                 round_id=protocol.round_id,
                 status=result.status,
                 tested_hypotheses=protocol.tested_hypotheses,
+                target_uncertainties=protocol.target_uncertainties,
                 protocol_path=self.repository.relativize(protocol_path),
                 result_path=self.repository.relativize(result_path),
                 evaluation_path=self.repository.relativize(evaluation_path),
@@ -455,6 +613,7 @@ class UnifiedStateUpdater:
             entry.round_id = protocol.round_id
             entry.status = result.status
             entry.tested_hypotheses = protocol.tested_hypotheses
+            entry.target_uncertainties = protocol.target_uncertainties
             entry.protocol_path = self.repository.relativize(protocol_path)
             entry.result_path = self.repository.relativize(result_path)
             entry.evaluation_path = self.repository.relativize(evaluation_path)
@@ -466,6 +625,121 @@ class UnifiedStateUpdater:
         memory.current_round = max(memory.current_round, protocol.round_id)
         memory.last_updated = now
         return memory
+
+    def _update_round_history(
+        self,
+        state: RoundHistoryState,
+        *,
+        protocol: ExperimentProtocol,
+        evaluation: EvaluationResult | None,
+        experiment_memory: ExperimentMemoryState,
+        failure_reason: str | None,
+    ) -> RoundHistoryState:
+        now = datetime.now()
+        entry = next((item for item in state.entries if item.round_id == protocol.round_id), None)
+        if entry is None:
+            entry = RoundHistoryEntry(round_id=protocol.round_id, created_at=now, updated_at=now)
+            state.entries.append(entry)
+
+        memory_entry = experiment_memory.entry_index().get(protocol.experiment_id)
+        findings = list(memory_entry.key_findings[:5]) if memory_entry is not None else []
+        tested_hypotheses = _unique_preserve_order(
+            list(protocol.tested_hypotheses) + (list(memory_entry.tested_hypotheses) if memory_entry is not None else [])
+        )
+        target_uncertainties = _unique_preserve_order(
+            list(protocol.target_uncertainties) + (list(memory_entry.target_uncertainties) if memory_entry is not None else [])
+        )
+        closure = [
+            _closure_item("scientific_question", "科学问题已定义", True, protocol.scientific_objective or protocol.target),
+            _closure_item(
+                "hypothesis_generation",
+                "竞争假设已生成",
+                bool(tested_hypotheses),
+                ",".join(tested_hypotheses[:3]) or "缺少 tested_hypotheses（协议与实验记忆均未写入）",
+            ),
+            _closure_item(
+                "uncertainty_generation",
+                "科学不确定性已生成",
+                bool(target_uncertainties),
+                ",".join(target_uncertainties[:3]) or "缺少 target_uncertainties（协议与实验记忆均未写入）",
+            ),
+            _closure_item("candidate_approval", "候选实验已审批", True, protocol.source_candidate_id or protocol.experiment_id),
+            _closure_item(
+                "experiment_execution",
+                "实验执行已完成或已失败归因",
+                failure_reason is not None or (memory_entry is not None and memory_entry.status in {"completed", "failed"}),
+                failure_reason or (memory_entry.status if memory_entry is not None else "缺少实验记忆"),
+            ),
+            _closure_item(
+                "result_feedback",
+                "结果解释与反馈已写回",
+                failure_reason is not None or bool(findings) or evaluation is not None,
+                failure_reason or "已写入评价摘要",
+            ),
+        ]
+
+        entry.status = "failed" if failure_reason else "completed"
+        entry.source_experiment_id = protocol.experiment_id
+        entry.approved_candidate_id = protocol.source_candidate_id or protocol.experiment_id
+        entry.gating_ready = all(item.completed or not item.required for item in closure)
+        entry.closure_checklist = closure
+        entry.tested_hypotheses = list(tested_hypotheses[:8])
+        entry.target_uncertainties = list(target_uncertainties[:8])
+        entry.unresolved_uncertainties = list(target_uncertainties[:5])
+        entry.highlighted_hypotheses = list(tested_hypotheses[:5])
+        entry.scientific_findings = findings or ([failure_reason] if failure_reason else [])
+        entry.failure_reason = failure_reason
+        entry.metrics_snapshot = evaluation.metrics if evaluation is not None else None
+        entry.updated_at = now
+
+        state.current_round = max(state.current_round, protocol.round_id)
+        state.last_updated = now
+        state.entries.sort(key=lambda item: item.round_id)
+        return state
+
+    def _update_metrics_timeline(
+        self,
+        state: MetricsTimelineState,
+        *,
+        protocol: ExperimentProtocol,
+        evaluation: EvaluationResult | None,
+        experiment_memory: ExperimentMemoryState,
+        execution_status: str,
+    ) -> MetricsTimelineState:
+        now = datetime.now()
+        state.entries = [item for item in state.entries if item.round_id != protocol.round_id]
+        support_scores = []
+        for entry in experiment_memory.entries:
+            if entry.round_id != protocol.round_id:
+                continue
+            if entry.metrics_snapshot is None:
+                continue
+            support_scores.append(entry.metrics_snapshot.delta.pearson_r or 0.0)
+
+        unresolved_count = len(protocol.target_uncertainties)
+        metrics = evaluation.metrics if evaluation is not None else None
+        state.entries.append(
+            MetricsTimelineEntry(
+                round_id=protocol.round_id,
+                experiment_id=protocol.experiment_id,
+                execution_status=execution_status,
+                baseline_rmse=metrics.baseline_rmse if metrics else None,
+                treatment_rmse=metrics.treatment_rmse if metrics else None,
+                baseline_pearson_r=metrics.baseline_pearson_r if metrics else None,
+                treatment_pearson_r=metrics.treatment_pearson_r if metrics else None,
+                delta_rmse=metrics.delta.rmse if metrics else None,
+                delta_pearson_r=metrics.delta.pearson_r if metrics else None,
+                stable=evaluation.robustness.overall.stable if evaluation is not None else False,
+                support_mean=round(sum(support_scores) / len(support_scores), 4) if support_scores else None,
+                support_max=round(max(support_scores), 4) if support_scores else None,
+                unresolved_uncertainty_count=unresolved_count,
+                recorded_at=now,
+            )
+        )
+        state.current_round = max(state.current_round, protocol.round_id)
+        state.last_updated = now
+        state.entries.sort(key=lambda item: item.round_id)
+        return state
 
     def _update_process_state(self, process_state: ProcessState, round_id: int) -> ProcessState:
         process_state.current_round = max(process_state.current_round, round_id)
@@ -499,6 +773,86 @@ def _normalize_uncertainty_item(item: dict[str, Any], round_id: int, offset: int
         "description": item.get("description") or question,
         "priority": item.get("priority", "medium"),
     }
+
+
+def _closure_item(item_id: str, label: str, completed: bool, detail: str | None) -> ClosureChecklistItem:
+    return ClosureChecklistItem(
+        item_id=item_id,
+        label=label,
+        completed=completed,
+        required=True,
+        detail=detail,
+    )
+
+
+def _unique_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        normalized = str(item).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _infer_tested_hypotheses(
+    *,
+    protocol: ExperimentProtocol,
+    evaluation: EvaluationResult | None,
+    tree: HypothesisTreeState,
+) -> list[str]:
+    inferred = []
+    if evaluation is not None:
+        inferred.extend(item.hypothesis_id for item in evaluation.scientific.hypothesis_assessments if item.hypothesis_id)
+        inferred.extend(
+            item.leading_hypothesis_id
+            for item in evaluation.scientific.disagreement_updates
+            if getattr(item, "leading_hypothesis_id", None)
+        )
+    if protocol.source_candidate_id:
+        inferred.extend(
+            node.hypothesis_id
+            for node in tree.nodes
+            if protocol.source_candidate_id in [e.source for e in node.evidence_items]
+        )
+    if not inferred:
+        inferred.extend(tree.active_hypotheses[:3])
+    return _unique_preserve_order(inferred)
+
+
+def _infer_target_uncertainties(
+    *,
+    protocol: ExperimentProtocol,
+    evaluation: EvaluationResult | None,
+    uncertainties: UncertaintyState,
+) -> list[str]:
+    inferred = []
+    if evaluation is not None:
+        inferred.extend(item.uncertainty_id for item in evaluation.scientific.disagreement_updates if item.uncertainty_id)
+        inferred.extend(
+            _normalize_uncertainty_item(item, protocol.round_id, index).get("uncertainty_id")
+            for index, item in enumerate(evaluation.scientific.evidence_summary.remaining_uncertainties, start=1)
+        )
+    if not inferred:
+        inferred.extend(item.uncertainty_id for item in uncertainties.records if item.status not in {"resolved", "deprecated"})
+    return _unique_preserve_order(inferred)
+
+
+def _build_vsw_performance_summary(*, target: str, metrics: PerformanceMetrics) -> str:
+    target_label = target or "目标变量"
+    baseline_r = metrics.baseline_pearson_r
+    treatment_r = metrics.treatment_pearson_r
+    delta_r = metrics.delta.pearson_r
+    delta_rmse = metrics.delta.rmse
+    trend = "提升" if (delta_r or 0.0) > 0 else "下降" if (delta_r or 0.0) < 0 else "持平"
+    return (
+        f"{target_label} 预测效果专项分析：Pearson r 从 {baseline_r if baseline_r is not None else '--'} "
+        f"变化到 {treatment_r if treatment_r is not None else '--'}，整体{trend}；"
+        f"ΔPearson r={delta_r if delta_r is not None else '--'}，"
+        f"ΔRMSE={delta_rmse if delta_rmse is not None else '--'}。"
+    )
 
 
 def _priority_to_score(priority: str) -> float:

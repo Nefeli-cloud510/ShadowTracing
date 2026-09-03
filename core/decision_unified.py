@@ -38,6 +38,33 @@ class PlanningContext:
     prefer_simple_design: bool = False
 
 
+DIFFERENTIATING_EXPERIMENT_ERROR = "实验组与对照组变量无差异，无法开展区分性对照实验，请重新生成实验方案"
+
+
+def _is_baseline_candidate(candidate: CandidateExperiment) -> bool:
+    return candidate.type == "baseline_benchmark"
+
+
+def _normalize_design_features(features: list[str]) -> list[str]:
+    return _unique_preserve_order([item.strip() for item in features if item and item.strip()])
+
+
+def _validate_candidate_design(candidate: CandidateExperiment) -> None:
+    candidate.design.control = _normalize_design_features(candidate.design.control)
+    candidate.design.treatment = _normalize_design_features(candidate.design.treatment)
+    if _is_baseline_candidate(candidate):
+        if not candidate.design.treatment:
+            raise ValueError("基线实验至少需要保留一组基线变量。")
+        candidate.design.control = []
+        if "experiment_mode:baseline_single_arm" not in candidate.design.notes:
+            candidate.design.notes.append("experiment_mode:baseline_single_arm")
+        return
+    if not candidate.design.control or not candidate.design.treatment:
+        raise ValueError("区分性实验必须同时提供对照组与实验组变量。")
+    if set(candidate.design.control) == set(candidate.design.treatment):
+        raise ValueError(DIFFERENTIATING_EXPERIMENT_ERROR)
+
+
 class UncertaintyPrioritizer:
     """Programmatic prioritizer that scores open scientific uncertainties."""
 
@@ -128,23 +155,7 @@ class CandidateExperimentGenerator:
         )
         top_uncertainties = queue.top_uncertainties(limit=limit)
         node_index = hypothesis_tree.node_index()
-        candidates: list[CandidateExperiment] = [
-            CandidateExperiment(
-                experiment_id=f"E_R{uncertainty_state.current_round + 1:02d}_00",
-                type="baseline_benchmark",
-                purpose="maintain benchmark and provide calibrated baseline for this round",
-                scientific_question=f"在不新增 {primary_x} 的情况下，本轮基线性能表现如何？",
-                tested_hypotheses=[],
-                design=ExperimentDesign(
-                    target=target,
-                    control=control_base,
-                    treatment=control_base,
-                    notes=["baseline benchmark candidate"],
-                ),
-                requires_human_review=False,
-                novelty="benchmark",
-            )
-        ]
+        candidates: list[CandidateExperiment] = []
         rejected_candidates: list[RejectedCandidate] = []
         top_uncertainties = _rank_uncertainties_with_feedback(top_uncertainties, uncertainty_state, planning_context)
 
@@ -195,6 +206,16 @@ class CandidateExperimentGenerator:
             )
             candidate.design.notes.extend(_planning_notes(planning_context))
             candidate.design.notes.extend(_rationale_design_notes(record, rationale_context))
+            try:
+                _validate_candidate_design(candidate)
+            except ValueError as exc:
+                rejected_candidates.append(
+                    RejectedCandidate(
+                        experiment_id=candidate.experiment_id,
+                        reason=str(exc),
+                    )
+                )
+                continue
             _annotate_candidate_estimates(
                 candidate=candidate,
                 task=task,
@@ -228,6 +249,7 @@ class CandidateExperimentGenerator:
                 novelty="fallback candidate to satisfy minimum diversity",
             )
             fallback_candidate.design.notes.append("hypothesis_triggers:fallback_sensitivity_probe")
+            _validate_candidate_design(fallback_candidate)
             _annotate_candidate_estimates(
                 candidate=fallback_candidate,
                 task=task,
@@ -239,6 +261,7 @@ class CandidateExperimentGenerator:
             candidates.append(fallback_candidate)
 
         for candidate in candidates:
+            _validate_candidate_design(candidate)
             if candidate.estimated_information_gain is None:
                 _annotate_candidate_estimates(
                     candidate=candidate,
@@ -296,6 +319,10 @@ class UtilityScorer:
                 - self.weights["gamma"] * risk
                 - self.weights["delta"] * cost
             )
+            same_design = candidate.design.control == candidate.design.treatment
+            if same_design and not _is_baseline_candidate(candidate):
+                utility = min(utility, 0.12)
+                candidate.design.notes.append("selection_penalty:control_equals_treatment")
             candidate.utility_score = round(min(max(utility, 0.0), 1.0), 4)
         candidate_set.candidates.sort(key=lambda item: item.utility_score or 0.0, reverse=True)
         return candidate_set

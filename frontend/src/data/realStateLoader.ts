@@ -12,6 +12,7 @@ import type {
   TimelineNodeStatus,
   UncertaintyPreview,
 } from '../types/timeline'
+import { filterSelectableCandidateExperiments, getExperimentValidationSnapshot } from '../utils/experimentValidation'
 
 type NumericValue = number | string | { value?: number | string } | undefined
 
@@ -172,6 +173,7 @@ type RawDecisionLog = {
 
 type RawCandidateExperiment = {
   experiment_id?: string
+  type?: string
   scientific_question?: string
   purpose?: string
   tested_hypotheses?: string[]
@@ -284,6 +286,7 @@ type SessionStatus = {
   message?: string
   currentRound?: number
   model?: string
+  updatedAt?: string
 }
 
 const PHASE_ORDER = [
@@ -449,6 +452,8 @@ const API_SESSION_URL =
         : ''
     : ''
 
+const WORKSPACE_RESET_AT_KEY = 'shadowtracing.workspaceResetAt'
+
 type StateSource = {
   mode: 'api'
   baseUrl: string
@@ -457,6 +462,13 @@ type StateSource = {
 function joinSourcePath(baseUrl: string, fileName: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/, '')
   return `${normalizedBase}/${fileName}`
+}
+
+function readWorkspaceResetAt(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return window.localStorage.getItem(WORKSPACE_RESET_AT_KEY)
 }
 
 async function readJsonText(path: string): Promise<string | null> {
@@ -494,6 +506,19 @@ async function readSessionStatus(): Promise<SessionStatus | null> {
   } catch {
     return null
   }
+}
+
+function isSnapshotStaleAfterReset(snapshot: LoaderSnapshot, session: SessionStatus | null): boolean {
+  const resetAt = readWorkspaceResetAt()
+  if (!resetAt) {
+    return false
+  }
+  const taskCreatedAt = snapshot.task?.payload?.research_question?.text ? (snapshot.task as RawTask & { created_at?: string }).created_at : undefined
+  const snapshotMarkers = [taskCreatedAt, session?.updatedAt].filter((value): value is string => Boolean(value))
+  if (snapshotMarkers.length === 0) {
+    return true
+  }
+  return snapshotMarkers.every((value) => value <= resetAt)
 }
 
 async function readJson<T>(path: string): Promise<T> {
@@ -677,6 +702,10 @@ function uniqueStrings(values: unknown[], maxLength = 180): string[] {
   }
 
   return result
+}
+
+function getSelectableCandidates(snapshot: LoaderSnapshot): RawCandidateExperiment[] {
+  return filterSelectableCandidateExperiments([...(snapshot.candidateExperiments.candidates ?? [])])
 }
 
 function toNumber(value: NumericValue): number {
@@ -1018,6 +1047,7 @@ function buildUncertaintyPreviews(
   currentRound: number,
   uncertainties: RawUncertainties,
   plannerInput: RawPlannerInput,
+  maxItems = roundNumber === currentRound ? 2 : 1,
 ): UncertaintyPreview[] {
   const queueOrder = new Map<string, number>()
   for (const item of uncertainties.priority_queue?.queue ?? []) {
@@ -1051,7 +1081,7 @@ function buildUncertaintyPreviews(
       }
       return priorityScore(b.priority) - priorityScore(a.priority)
     })
-    .slice(0, roundNumber === currentRound ? 2 : 1)
+    .slice(0, maxItems)
     .map((item, index) => ({
       id: item.uncertainty_id ?? `U${index + 1}`,
       title: sanitizeText(item.question ?? item.description ?? '未命名不确定性', 116),
@@ -1067,8 +1097,9 @@ function buildExperimentPreviews(
   candidateExperiments: RawCandidateExperiments,
   experimentMemory: RawExperimentMemory,
 ): ExperimentPreview[] {
+  const selectableCandidates = filterSelectableCandidateExperiments([...(candidateExperiments.candidates ?? [])])
   if (roundNumber === currentRound && (candidateExperiments.round ?? currentRound) >= roundNumber) {
-    return [...(candidateExperiments.candidates ?? [])]
+    return selectableCandidates
       .sort((a, b) => toNumber(b.utility_score) - toNumber(a.utility_score))
       .slice(0, 3)
       .map((item, index) => ({
@@ -1405,10 +1436,10 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
       status:
         snapshot.process.current_phase === 'experiment_planning'
           ? 'running'
-          : (snapshot.candidateExperiments.candidates?.length ?? 0) > 0
+          : getSelectableCandidates(snapshot).length > 0
             ? 'completed'
             : 'waiting',
-      summary: `${snapshot.candidateExperiments.candidates?.length ?? 0} 个候选实验`,
+      summary: `${getSelectableCandidates(snapshot).length} 个候选实验`,
     },
     {
       id: 'scientific-interpreter',
@@ -1501,6 +1532,7 @@ function buildExperimentEvaluationViewModel(
   currentRound: number,
 ): FrontendViewModels['experimentEvaluation'] {
   const candidateExperiments = [...(snapshot.candidateExperiments.candidates ?? [])]
+    .filter((item) => filterSelectableCandidateExperiments([item]).length > 0)
     .sort((a, b) => toNumber(b.utility_score) - toNumber(a.utility_score))
     .map((item) => ({
       ...item,
@@ -1512,9 +1544,20 @@ function buildExperimentEvaluationViewModel(
     (a, b) => (b.round_id ?? 0) - (a.round_id ?? 0),
   )
   const latestEntry = experimentEntries[0]
+  const latestProtocolDecision = [...(snapshot.decisionLog.decisions ?? [])]
+    .reverse()
+    .find((item) => item.decision_type === 'protocol_generated')
 
   return {
     recommendedExperimentId: candidateExperiments[0]?.experiment_id,
+    executionPlanSummary: sanitizeText(
+      String(
+        latestProtocolDecision?.details?.plan_summary
+          ?? latestProtocolDecision?.details?.scientific_objective
+          ?? '',
+      ),
+      320,
+    ) || undefined,
     candidateExperiments,
     experimentEntries,
     latestEvaluation: buildEvaluationPreview(currentRound - 1, snapshot.experimentMemory, snapshot.plannerInput)
@@ -1555,7 +1598,7 @@ function buildGovernanceViewModel(
   const reviewByRound = new Map<number, RawDecision>()
   const candidateById = new Map<string, RawCandidateExperiment>()
 
-  for (const candidate of snapshot.candidateExperiments.candidates ?? []) {
+  for (const candidate of getSelectableCandidates(snapshot)) {
     if (candidate.experiment_id) {
       candidateById.set(candidate.experiment_id, candidate)
     }
@@ -1750,9 +1793,9 @@ function buildProcessMonitorViewModel(
           ? `Step ${currentStepOrder || 1}: ${planningSteps[Math.max(currentStepOrder - 1, 0)]?.label ?? '实验规划'}`
           : PHASE_LABELS[snapshot.process.current_phase ?? ''] ?? '当前步骤',
       status: humanizeStage(snapshot.process.current_stage),
-      candidateCount: snapshot.candidateExperiments.candidates?.length ?? 0,
+      candidateCount: getSelectableCandidates(snapshot).length,
       recommendedExperimentId:
-        [...(snapshot.candidateExperiments.candidates ?? [])].sort(
+        getSelectableCandidates(snapshot).sort(
           (a, b) => toNumber(b.utility_score) - toNumber(a.utility_score),
         )[0]?.experiment_id,
     },
@@ -1779,6 +1822,7 @@ function buildRoundReportViewModel(
     currentRound,
     snapshot.uncertainties,
     snapshot.plannerInput,
+    12,
   ).map((item) => item.title)
 
   return {
@@ -1819,7 +1863,7 @@ function buildApprovalOverlayViewModel(
   snapshot: LoaderSnapshot,
   currentRound: number,
 ): FrontendViewModels['approvalOverlay'] {
-  const sortedCandidates = [...(snapshot.candidateExperiments.candidates ?? [])].sort(
+  const sortedCandidates = getSelectableCandidates(snapshot).sort(
     (a, b) => toNumber(b.utility_score) - toNumber(a.utility_score),
   )
   const topCandidate = sortedCandidates[0]
@@ -1832,16 +1876,43 @@ function buildApprovalOverlayViewModel(
       reason: topCandidate
         ? `${topCandidate.experiment_id} 信息增益 ${toNumber(topCandidate.estimated_information_gain).toFixed(3)}，综合价值 ${toNumber(topCandidate.utility_score).toFixed(3)}。`
         : '当前没有候选实验。',
+      evidence: [
+        topCandidate?.scientific_question ?? topCandidate?.purpose ?? '当前没有可用的实验问题摘要。',
+      ],
     },
     candidates: sortedCandidates.slice(0, 5).map((item, index) => ({
       experimentId: item.experiment_id ?? `candidate-${index + 1}`,
+      scientificQuestion: sanitizeText(item.scientific_question ?? item.purpose ?? '暂无实验说明', 180),
       informationGain: toNumber(item.estimated_information_gain),
       performanceGain: toNumber(item.estimated_performance_gain),
       risk: toNumber(item.estimated_risk),
       cost: toNumber(item.estimated_cost),
       utility: toNumber(item.utility_score),
       recommended: index === 0,
+      relatedUncertainties: Array.isArray((item as Record<string, unknown>).related_uncertainties)
+        ? ((item as Record<string, unknown>).related_uncertainties as string[])
+        : [],
+      testedHypotheses: Array.isArray(item.tested_hypotheses) ? item.tested_hypotheses : [],
+      controlVariables: getExperimentValidationSnapshot(item).controlVariables,
+      treatmentVariables: getExperimentValidationSnapshot(item).treatmentVariables,
+      experimentMode: getExperimentValidationSnapshot(item).experimentMode,
+      hasFeatureDifference: getExperimentValidationSnapshot(item).hasFeatureDifference,
     })),
+    competitionChecklist: [
+      {
+        label: '闭环留痕',
+        status: 'ready',
+        summary: '候选实验、审批与轮次结果均已写入运行态状态文件。',
+      },
+      {
+        label: '证据承接',
+        status: 'ready',
+        summary: '候选实验继续承接上一轮不确定性与 tested hypotheses。',
+      },
+    ],
+    iterationSignals: sortedCandidates.slice(0, 2).map((item) =>
+      sanitizeText(item.scientific_question ?? item.purpose ?? '下一轮将继续围绕当前关键不确定性推进。', 120),
+    ),
   }
 }
 
@@ -2109,6 +2180,16 @@ export async function loadFrontendStateSnapshot(): Promise<{
 
   try {
     const snapshot = await loadSnapshotFromSource(sources[0])
+    if (isSnapshotStaleAfterReset(snapshot, snapshot.sessionStatus ?? null)) {
+      return {
+        snapshot: createEmptySnapshot({
+          status: 'idle',
+          stage: 'waiting_input',
+          currentRound: 0,
+        }),
+        sourceMode: 'empty',
+      }
+    }
     return {
       snapshot,
       sourceMode: 'api',

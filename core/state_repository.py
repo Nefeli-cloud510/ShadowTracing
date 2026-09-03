@@ -11,13 +11,16 @@ from core.unified_schema import (
     DataDictionary,
     DecisionLog,
     ExperimentMemoryState,
+    FailureHistoryState,
     HypothesisNode,
     HypothesisTreeState,
     LatestTreeUpdate,
+    MetricsTimelineState,
     ReasoningPlannerInput,
     ProcessPhase,
     ProcessState,
     ProcessStep,
+    RoundHistoryState,
     ScientificTask,
     TreeSummary,
     UncertaintyPriorityQueue,
@@ -40,6 +43,9 @@ class StatePaths:
     uncertainties: Path
     uncertainty_priority: Path
     experiment_memory: Path
+    round_history: Path
+    metrics_timeline: Path
+    failure_history: Path
     process_state: Path
     decision_log: Path
     candidate_experiments: Path
@@ -61,6 +67,9 @@ class UnifiedStateRepository:
             uncertainties=self.state_dir / "uncertainties.json",
             uncertainty_priority=self.state_dir / "uncertainty_priority.json",
             experiment_memory=self.state_dir / "experiment_memory.json",
+            round_history=self.state_dir / "round_history.json",
+            metrics_timeline=self.state_dir / "metrics_timeline.json",
+            failure_history=self.state_dir / "failure_history.json",
             process_state=self.state_dir / "process.json",
             decision_log=self.state_dir / "decision_log.json",
             candidate_experiments=self.state_dir / "candidate_experiments.json",
@@ -133,6 +142,24 @@ class UnifiedStateRepository:
             last_updated=now,
             entries=[],
         )
+        round_history = RoundHistoryState(
+            task_id=task.task_id,
+            current_round=0,
+            last_updated=now,
+            entries=[],
+        )
+        metrics_timeline = MetricsTimelineState(
+            task_id=task.task_id,
+            current_round=0,
+            last_updated=now,
+            entries=[],
+        )
+        failure_history = FailureHistoryState(
+            task_id=task.task_id,
+            current_round=0,
+            last_updated=now,
+            records=[],
+        )
         process_state = ProcessState(
             task_id=task.task_id,
             current_round=0,
@@ -202,6 +229,12 @@ class UnifiedStateRepository:
             self.save_uncertainties(uncertainties)
         if overwrite or not self.paths.experiment_memory.exists():
             self.save_experiment_memory(experiment_memory)
+        if overwrite or not self.paths.round_history.exists():
+            self.save_round_history(round_history)
+        if overwrite or not self.paths.metrics_timeline.exists():
+            self.save_metrics_timeline(metrics_timeline)
+        if overwrite or not self.paths.failure_history.exists():
+            self.save_failure_history(failure_history)
         if overwrite or not self.paths.process_state.exists():
             self.save_process_state(process_state)
         if overwrite or not self.paths.decision_log.exists():
@@ -247,6 +280,24 @@ class UnifiedStateRepository:
 
     def save_experiment_memory(self, state: ExperimentMemoryState) -> None:
         self._save_model(self.paths.experiment_memory, state)
+
+    def load_round_history(self) -> RoundHistoryState:
+        return self._load_model(self.paths.round_history, RoundHistoryState)
+
+    def save_round_history(self, state: RoundHistoryState) -> None:
+        self._save_model(self.paths.round_history, state)
+
+    def load_metrics_timeline(self) -> MetricsTimelineState:
+        return self._load_model(self.paths.metrics_timeline, MetricsTimelineState)
+
+    def save_metrics_timeline(self, state: MetricsTimelineState) -> None:
+        self._save_model(self.paths.metrics_timeline, state)
+
+    def load_failure_history(self) -> FailureHistoryState:
+        return self._load_model(self.paths.failure_history, FailureHistoryState)
+
+    def save_failure_history(self, state: FailureHistoryState) -> None:
+        self._save_model(self.paths.failure_history, state)
 
     def load_process_state(self) -> ProcessState:
         return self._load_model(self.paths.process_state, ProcessState)

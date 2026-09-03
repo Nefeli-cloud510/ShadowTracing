@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { PageTabs } from '../components/PageTabs'
 import { StepConfirmDialog } from '../components/StepConfirmDialog'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
+import { filterSelectableCandidateExperiments } from '../utils/experimentValidation'
 
 type FilterMode = 'all' | 'active' | 'resolved'
 
@@ -11,6 +12,10 @@ export function UncertaintyPage() {
   const { data, loading, error } = useTimelineBundle()
   const [filterMode, setFilterMode] = useState<FilterMode>('all')
   const [confirmNextOpen, setConfirmNextOpen] = useState(false)
+  const selectableCandidates = useMemo(
+    () => filterSelectableCandidateExperiments(data?.snapshot.candidateExperiments?.candidates ?? []),
+    [data?.snapshot.candidateExperiments?.candidates],
+  )
 
   const queue = useMemo(() => {
     const prioritized = data?.snapshot.uncertainties?.priority_queue?.queue ?? []
@@ -35,7 +40,7 @@ export function UncertaintyPage() {
         }))
     }
 
-    const candidateFallback = data?.snapshot.candidateExperiments?.candidates ?? []
+    const candidateFallback = selectableCandidates
     return candidateFallback.slice(0, 5).map((candidate: any, index: number) => ({
       uncertainty_id: candidate.related_uncertainties?.[0] ?? `U_FALLBACK_${index + 1}`,
       question: candidate.scientific_question ?? candidate.purpose ?? '等待围绕当前分歧生成问题',
@@ -43,7 +48,7 @@ export function UncertaintyPage() {
       status: 'identified',
       estimated_resolution_round: data?.viewModels.currentRoundNumber ?? 1,
     }))
-  }, [data?.snapshot.candidateExperiments?.candidates, data?.snapshot.uncertainties, data?.viewModels.currentRoundNumber])
+  }, [data?.snapshot.uncertainties, data?.viewModels.currentRoundNumber, selectableCandidates])
 
   const records = useMemo(() => {
     const raw = data?.snapshot.uncertainties?.records ?? []
@@ -73,14 +78,13 @@ export function UncertaintyPage() {
   }, [data?.snapshot.uncertainties?.records, filterMode, queue])
 
   const candidateLinks = useMemo(() => {
-    const candidates = data?.snapshot.candidateExperiments?.candidates ?? []
-    return candidates.slice(0, 6).map((candidate: any) => ({
+    return selectableCandidates.slice(0, 6).map((candidate: any) => ({
       id: candidate.experiment_id,
       question: candidate.scientific_question ?? candidate.purpose ?? '待补充实验目标',
       relatedUncertainties: candidate.related_uncertainties ?? [],
       insight: candidate.distinguishing_insight ?? '围绕当前关键分歧生成区分性实验。',
     }))
-  }, [data?.snapshot.candidateExperiments?.candidates])
+  }, [selectableCandidates])
 
   return (
     <div className="timeline-shell">

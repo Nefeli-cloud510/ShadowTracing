@@ -1,9 +1,9 @@
 {
-  "experiment_id": "E_R01_00",
+  "experiment_id": "E_R01_S1",
   "round_id": 1,
-  "task_id": "ST_LIVE_20260903_025637",
+  "task_id": "ST_LIVE_20260903_151104",
   "target": "SW Plasma Speed, km/s",
-  "scientific_objective": "在不新增 p2_y中心值 的情况下，本轮基线性能表现如何？",
+  "scientific_objective": "p2_y中心值 的时间滞后设定是否影响实验结论稳定性？",
   "forecast_horizon_days": 3,
   "features": {
     "target": "SW Plasma Speed, km/s",
@@ -21,11 +21,19 @@
       "BZ, nT (GSE)",
       "BY, nT (GSM)",
       "BZ, nT (GSM)",
-      "Kp*10 index"
+      "Kp*10 index",
+      "p2_y中心值"
     ],
-    "lags": {},
+    "lags": {
+      "p2_y中心值": [
+        1,
+        2,
+        3
+      ]
+    },
     "notes": [
-      "baseline benchmark candidate"
+      "fallback sensitivity probe to ensure candidate diversity",
+      "hypothesis_triggers:fallback_sensitivity_probe"
     ]
   },
   "model": {
@@ -34,8 +42,8 @@
       "window_size": 3,
       "alpha": 0.3,
       "l1_ratio": 0.5,
-      "use_lag_feature": false,
-      "max_lag_day": 0,
+      "use_lag_feature": true,
+      "max_lag_day": 3,
       "random_state": 42,
       "test_split_ratio": 0.2
     }
@@ -56,30 +64,37 @@
       "step": 1,
       "action": "planner_note_step",
       "parameters": {
-        "note": "Precompute and archive aligned time series: LHAASO shadow metrics (hourly), ACE solar wind speed (1-min → 1-h avg), and magnetospheric indices (Kp, B-field components) on common UTC timestamps with nanosecond precision."
+        "note": "Step 1: 对每个lag_k ∈ [0, 3]h（步长15min），构建包含p2_y中心值_lag_k及其他control变量的VAR(2)模型，并记录AIC与Granger p-value"
       }
     },
     {
       "step": 2,
       "action": "planner_note_step",
       "parameters": {
-        "note": "Validate temporal stationarity of LHAASO offset distribution over the candidate period (2021–2023) using Kwiatkowski–Phillips–Schmidt–Shin (KPSS) test (α=0.05)."
+        "note": "Step 2: 绘制lag_k vs ΔAIC（相对于无p2_y的baseline VAR），标识ΔAIC峰值对应最优滞后"
       }
     },
     {
       "step": 3,
       "action": "planner_note_step",
       "parameters": {
-        "note": "Log all timestamp alignment offsets >30s between LHAASO event reconstruction and ACE telemetry as metadata for uncertainty propagation in subsequent hypothesis-driven candidates."
+        "note": "Step 3: 在最优滞后下，执行反事实预测：屏蔽p2_y中心值后重运行模型，计算vX预测RMSE增幅（ΔRMSE ≥ 8%视为显著增益）"
       }
     },
     {
       "step": 4,
+      "action": "planner_note_step",
+      "parameters": {
+        "note": "Step 4: 输出per-lag Granger结果表（columns: lag_k, F-stat, p-value, ΔAIC, ΔRMSE），作为protocol refinement附件"
+      }
+    },
+    {
+      "step": 5,
       "action": "data_quality_check",
       "parameters": {}
     },
     {
-      "step": 5,
+      "step": 6,
       "action": "run_model",
       "parameters": {
         "features": "control",
@@ -87,7 +102,7 @@
       }
     },
     {
-      "step": 6,
+      "step": 7,
       "action": "run_model",
       "parameters": {
         "features": "treatment",
@@ -95,7 +110,7 @@
       }
     },
     {
-      "step": 7,
+      "step": 8,
       "action": "comparison",
       "parameters": {
         "baseline_label": "baseline",
@@ -107,15 +122,17 @@
     "no_future_information": true,
     "target_immutable": true
   },
-  "source_candidate_id": "E_R01_00",
-  "requires_human_review": false,
+  "source_candidate_id": "E_R01_S1",
+  "requires_human_review": true,
   "notes": [
-    "mapped_from_candidate:E_R01_00",
-    "no distinguishing insight provided",
+    "mapped_from_candidate:E_R01_S1",
+    "通过时滞敏感性实验，区分这些假设来源是否只是时间设定差异造成，并继续检验 p2_y中心值 的稳健性。",
     "planner_refinement:llm_experiment_planner",
     "llm_experiment_planner",
-    "All magnetic field and Kp features must be interpolated to LHAASO observation timestamps (UTC) using cubic spline; missing values beyond 2h gap imputed via forward-fill + linear interpolation.",
-    "LHAASO shadow offset must be computed relative to J2000 ecliptic north, corrected for geomagnetic cutoff rigidity drift using NMDB-adjusted cutoff model v2.1.",
-    "Baseline evaluation must report R², MAE, and directional accuracy (sign agreement of ΔVsw prediction vs. ACE/SWEPAM truth) at each target lead time."
+    "所有时间序列须统一重采样至5分钟分辨率，使用线性插值+前向填充（max_gap=15min）",
+    "p2_y中心值需经Z-score标准化（基于训练期滚动30天窗口）后输入，避免量纲主导VAR系数估计",
+    "格兰杰因果检验仅在VAR模型残差白噪声检验通过（Ljung-Box, p>0.1）后执行",
+    "若p2_y中心值在任意滞后阶数上Granger-causes solar_wind_speed_vx（GSE）且ΔAIC > 2，则触发hypothesis_triggers:lagged_predictive_signal",
+    "execution_plan_summary:目标：p2_y中心值 的时间滞后设定是否影响实验结论稳定性？；预测目标：SW Plasma Speed, km/s；对照组变量：Scalar B, nT、BY, nT (GSE)、BZ, nT (GSE)、BY, nT (GSM)；实验组变量：Scalar B, nT、BY, nT (GSE)、BZ, nT (GSE)、BY, nT (GSM)、BZ, nT (GSM)；执行步骤：数据质量检查→基线训练→实验组训练→结果对比；关联假设：本轮以不确定性验证为主；规划增强：llm_experiment_planner。"
   ]
 }

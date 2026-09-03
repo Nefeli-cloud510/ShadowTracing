@@ -198,7 +198,7 @@ def _build_unresolved_uncertainties(uncertainties) -> list[PlannerUncertaintyIte
             )
         )
     items.sort(key=lambda item: item.priority_score or 0.0, reverse=True)
-    return items[:5]
+    return items[:12]
 
 
 def _build_active_hypotheses(tree) -> list[HypothesisSnapshot]:
@@ -210,10 +210,10 @@ def _build_active_hypotheses(tree) -> list[HypothesisSnapshot]:
             support_score=node.support_score,
         )
         for node in tree.nodes
-        if node.status in {"active", "observing", "converged"}
+        if node.status in {"active", "observing", "converged", "pending", "draft", "weakened"}
     ]
     snapshots.sort(key=lambda item: item.support_score, reverse=True)
-    return snapshots[:5]
+    return snapshots[:12]
 
 
 def _build_constraints(task) -> dict[str, object]:

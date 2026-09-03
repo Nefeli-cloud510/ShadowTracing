@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from core.central_controller_llm import CentralControllerLLM
+from core.decision_unified import DIFFERENTIATING_EXPERIMENT_ERROR
 from core.decision_unified import DecisionLayerService
 from core.evaluation_unified import evaluate_experiment, export_evaluation_result
 from core.experiment_planner_llm import ExperimentPlannerLLM
@@ -66,6 +67,20 @@ class CandidateProtocolMapper:
         model_parameters: dict[str, Any] | None = None,
         protocol_refinements: list[ProtocolRefinementSuggestion] | None = None,
     ) -> ExperimentProtocol:
+        is_baseline_experiment = candidate.type == "baseline_benchmark"
+        control_features = [item for item in candidate.design.control if item]
+        treatment_features = [item for item in candidate.design.treatment if item]
+        if is_baseline_experiment:
+            if not treatment_features:
+                raise ValueError("基线实验至少需要一组基线变量，无法生成执行协议。")
+            control_features = []
+        else:
+            if not control_features or not treatment_features:
+                raise ValueError("区分性实验缺少对照组或实验组变量，无法生成执行协议。")
+            if set(control_features) == set(treatment_features):
+                raise ValueError(DIFFERENTIATING_EXPERIMENT_ERROR)
+        candidate.design.control = control_features
+        candidate.design.treatment = treatment_features
         parameters = {
             "window_size": 3,
             "alpha": 0.3,
@@ -74,6 +89,18 @@ class CandidateProtocolMapper:
             "max_lag_day": max((max(values) for values in candidate.design.lags.values()), default=0),
             "random_state": 42,
             "test_split_ratio": 0.2,
+        }
+        parameters["feature_groups"] = {
+            "mode": "baseline_single_arm" if is_baseline_experiment else "comparative",
+            "baseline": list(treatment_features if is_baseline_experiment else control_features),
+            "treatment": list(treatment_features),
+        }
+        parameters["candidate_design_snapshot"] = {
+            "candidate_id": candidate.experiment_id,
+            "target": candidate.design.target,
+            "control": list(control_features),
+            "treatment": list(treatment_features),
+            "lags": {key: list(values) for key, values in candidate.design.lags.items()},
         }
         if model_parameters:
             parameters.update(model_parameters)
@@ -86,22 +113,31 @@ class CandidateProtocolMapper:
                 refinement_notes.extend(refinement.protocol_notes)
                 refinement_steps.extend(step.model_copy(deep=True) for step in refinement.suggested_steps)
 
-        base_steps = [
-            ExperimentStep(step=1, action="data_quality_check"),
-            ExperimentStep(step=2, action="run_model", parameters={"features": "control", "label": "baseline"}),
-            ExperimentStep(step=3, action="run_model", parameters={"features": "treatment", "label": "treatment"}),
-            ExperimentStep(
-                step=4,
-                action="comparison",
-                parameters={"baseline_label": "baseline", "treatment_label": "treatment"},
-            ),
-        ]
+        base_steps = [ExperimentStep(step=1, action="data_quality_check")]
+        if is_baseline_experiment:
+            base_steps.append(
+                ExperimentStep(step=2, action="run_model", parameters={"features": "treatment", "label": "baseline"})
+            )
+        else:
+            base_steps.extend(
+                [
+                    ExperimentStep(step=2, action="run_model", parameters={"features": "control", "label": "baseline"}),
+                    ExperimentStep(step=3, action="run_model", parameters={"features": "treatment", "label": "treatment"}),
+                    ExperimentStep(
+                        step=4,
+                        action="comparison",
+                        parameters={"baseline_label": "baseline", "treatment_label": "treatment"},
+                    ),
+                ]
+            )
         disagreement_steps = _build_disagreement_steps(candidate)
         steps = _renumber_steps(refinement_steps + disagreement_steps + base_steps)
         protocol_notes = [
             f"mapped_from_candidate:{candidate.experiment_id}",
             candidate.distinguishing_insight or "no distinguishing insight provided",
         ]
+        if is_baseline_experiment:
+            protocol_notes.append("experiment_mode:baseline_single_arm")
         protocol_notes.extend(_disagreement_notes(candidate))
 
         return ExperimentProtocol(
@@ -289,6 +325,13 @@ class HumanControlService:
             model_parameters=model_parameters,
             protocol_refinements=protocol_refinements,
         )
+        plan_summary = self._build_execution_plan_summary(
+            task=task,
+            candidate=candidate,
+            protocol=protocol,
+            protocol_refinements=protocol_refinements,
+        )
+        protocol.notes.append(f"execution_plan_summary:{plan_summary}")
         self._save_protocol(protocol)
 
         process_state = self.repository.load_process_state()
@@ -311,6 +354,7 @@ class HumanControlService:
                     "utility_score": candidate.utility_score,
                     "notes": human_notes,
                     "auto_continue": auto_continue,
+                    "plan_summary": plan_summary,
                 },
             )
         )
@@ -328,6 +372,7 @@ class HumanControlService:
                     "protocol_path": self.repository.relativize(self.protocol_path),
                     "scientific_objective": protocol.scientific_objective,
                     "refinement_types": [item.refinement_type for item in protocol_refinements or []],
+                    "plan_summary": plan_summary,
                 },
             )
         )
@@ -425,6 +470,12 @@ class HumanControlService:
         try:
             result = harness.run(protocol)
         except Exception as exc:
+            updater = UnifiedStateUpdater(self.repository)
+            updater.apply_execution_failure(
+                protocol=protocol,
+                error=exc,
+                protocol_path=self.repository.relativize(self.protocol_path),
+            )
             process_state = self.repository.load_process_state()
             process_state.current_phase = "experiment_execution"
             process_state.current_step = "execution_failed"
@@ -441,7 +492,35 @@ class HumanControlService:
             )
             process_state.progress_percentage = max(process_state.progress_percentage or 0, 62)
             self.repository.save_process_state(process_state)
-            raise
+            self.request_round_review(
+                round_id=protocol.round_id,
+                experiment_id=protocol.experiment_id,
+                evaluation_summary={
+                    "experiment_id": protocol.experiment_id,
+                    "round_id": protocol.round_id,
+                    "stable": False,
+                    "key_findings": [f"实验失败：{exc}"],
+                },
+                hypothesis_assessments=[],
+                disagreement_updates=[],
+                reasoning_traces=[],
+                failure_summary={
+                    "message": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "can_continue": True,
+                },
+            )
+            return {
+                "protocol": protocol,
+                "result": None,
+                "evaluation": None,
+                "review": {
+                    "status": "awaiting_round_decision",
+                    "round_id": protocol.round_id,
+                    "experiment_id": protocol.experiment_id,
+                },
+                "failure": str(exc),
+            }
         process_state = self.repository.load_process_state()
         process_state.current_phase = "result_analysis"
         process_state.current_step = "evaluation"
@@ -559,6 +638,7 @@ class HumanControlService:
         hypothesis_assessments: list[dict[str, Any]] | None = None,
         disagreement_updates: list[dict[str, Any]] | None = None,
         reasoning_traces: list[dict[str, Any]] | None = None,
+        failure_summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         process_state = self.repository.load_process_state()
         process_state.current_round = max(process_state.current_round, round_id)
@@ -579,6 +659,8 @@ class HumanControlService:
         )
         self.repository.save_process_state(process_state)
 
+        closure_snapshot = self._build_round_closure_snapshot(round_id)
+
         decision_log = self.repository.load_decision_log()
         decision_log.decisions.append(
             DecisionEntry(
@@ -596,6 +678,9 @@ class HumanControlService:
                     "hypothesis_assessments": hypothesis_assessments or [],
                     "disagreement_updates": disagreement_updates or [],
                     "reasoning_traces": reasoning_traces or [],
+                    "failure_summary": failure_summary or {},
+                    "closure_checklist": closure_snapshot["closure_checklist"],
+                    "gating_ready": closure_snapshot["gating_ready"],
                 },
             )
         )
@@ -609,6 +694,9 @@ class HumanControlService:
             "hypothesis_assessments": hypothesis_assessments or [],
             "disagreement_updates": disagreement_updates or [],
             "reasoning_traces": reasoning_traces or [],
+            "failure_summary": failure_summary or {},
+            "closure_checklist": closure_snapshot["closure_checklist"],
+            "gating_ready": closure_snapshot["gating_ready"],
         }
 
     def record_round_decision(
@@ -630,6 +718,15 @@ class HumanControlService:
             raise ValueError("decision must be one of: continue, adjust, stop")
 
         process_state = self.repository.load_process_state()
+        if process_state.current_stage != "awaiting_round_decision":
+            raise ValueError("当前轮次尚未进入可提交整轮反馈的状态。")
+        closure_snapshot = self._build_round_closure_snapshot(round_id)
+        if not closure_snapshot["gating_ready"]:
+            missing = next(
+                (item.get("label") for item in closure_snapshot["closure_checklist"] if not item.get("completed")),
+                "闭环阶段校验",
+            )
+            raise ValueError(f"本轮闭环尚未完成，仍缺少：{missing}")
         if auto_continue is not None:
             process_state.user_settings.auto_continue = auto_continue
         process_state.current_round = max(process_state.current_round, round_id)
@@ -689,6 +786,12 @@ class HumanControlService:
                 )
             )
         self.repository.save_decision_log(decision_log)
+        self._persist_round_decision_history(
+            round_id=round_id,
+            decision=decision,
+            human_feedback=human_feedback,
+            summary=summary or self._default_round_summary(round_id, decision),
+        )
 
         payload: dict[str, Any] = {
             "status": "recorded",
@@ -710,6 +813,76 @@ class HumanControlService:
             json.dumps(protocol.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _build_execution_plan_summary(
+        self,
+        *,
+        task: ScientificTask,
+        candidate: CandidateExperiment,
+        protocol: ExperimentProtocol,
+        protocol_refinements: list[ProtocolRefinementSuggestion] | None,
+    ) -> str:
+        refinement_labels = [item.refinement_type for item in protocol_refinements or []]
+        control = "、".join(protocol.features.control) or "无"
+        treatment = "、".join(protocol.features.treatment) or "无"
+        target = protocol.target or task.payload.research_question.target or "目标变量"
+        is_baseline_experiment = "experiment_mode:baseline_single_arm" in (protocol.notes or []) or candidate.type == "baseline_benchmark"
+        execution_steps = (
+            "数据质量检查→单组基线训练→基线结果评估"
+            if is_baseline_experiment
+            else "数据质量检查→基线实验自动执行→区分对照实验执行→结果对比"
+        )
+        return (
+            f"目标：{protocol.scientific_objective or candidate.purpose}；"
+            f"预测目标：{target}；"
+            f"对照组变量：{'不设置对照组' if is_baseline_experiment else control}；"
+            f"实验组变量：{treatment}；"
+            f"执行步骤：{execution_steps}；"
+            f"变量输入来源：candidate.design 已完整写入 protocol.features 与 model.parameters.feature_groups(JSON)；"
+            f"关联假设：{ '、'.join(protocol.tested_hypotheses[:3]) or '本轮以不确定性验证为主'}；"
+            f"目标不确定性：{ '、'.join(protocol.target_uncertainties[:3]) or '待从本轮评价中补充'}；"
+            f"规划增强：{ '、'.join(refinement_labels) if refinement_labels else '无额外 LLM 协议增强'}。"
+        )
+
+    def _build_round_closure_snapshot(self, round_id: int) -> dict[str, Any]:
+        try:
+            round_history = self.repository.load_round_history()
+        except Exception:
+            return {"gating_ready": False, "closure_checklist": []}
+
+        entry = next((item for item in round_history.entries if item.round_id == round_id), None)
+        if entry is None:
+            return {"gating_ready": False, "closure_checklist": []}
+        return {
+            "gating_ready": bool(entry.gating_ready),
+            "closure_checklist": [
+                item.model_dump(mode="json", exclude_none=True) if hasattr(item, "model_dump") else item
+                for item in entry.closure_checklist
+            ],
+        }
+
+    def _persist_round_decision_history(
+        self,
+        *,
+        round_id: int,
+        decision: str,
+        human_feedback: str | None,
+        summary: str,
+    ) -> None:
+        try:
+            history = self.repository.load_round_history()
+        except Exception:
+            return
+        entry = next((item for item in history.entries if item.round_id == round_id), None)
+        if entry is None:
+            return
+        entry.next_round_decision = decision
+        entry.human_feedback = human_feedback
+        entry.decision_summary = summary
+        entry.updated_at = datetime.now()
+        history.current_round = max(history.current_round, round_id)
+        history.last_updated = entry.updated_at
+        self.repository.save_round_history(history)
 
     def _build_data_source_config(self, task: ScientificTask) -> ElasticNetDataSourceConfig:
         data_sources = task.payload.data_sources
@@ -1266,21 +1439,50 @@ class HumanControlService:
             *planner_input.data_dictionary_summary.target_candidates,
         ]
         target = planner_input.target
-        fallback_focus = allowed_fields[:3] or [target]
+        fallback_focus = allowed_fields[:8] or [target]
 
         aligned_challenges: list[str] = []
         aligned_uncertainties = []
-        for index, item in enumerate(questioner_output.proposed_uncertainties[:3], start=1):
+        for index, item in enumerate(questioner_output.proposed_uncertainties[:8], start=1):
             focus = fallback_focus[(index - 1) % len(fallback_focus)]
             aligned_uncertainties.append(
                 item.model_copy(
                     update={
-                        "question": f"{focus} 对 {target} 的作用机制是否稳定？",
-                        "description": f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。",
+                        "question": item.question if item.question else f"{focus} 对 {target} 的作用机制是否稳定？",
+                        "description": (
+                            item.description
+                            if item.description
+                            else f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。"
+                        ),
                     }
                 )
             )
-            aligned_challenges.append(f"当前仍需检验 {focus} 对 {target} 的解释是否稳健。")
+            aligned_challenges.append(
+                f"当前仍需检验 {focus} 对 {target} 的解释是否稳健，并核对其与竞争假设的分歧来源。"
+            )
+
+        for index, snapshot in enumerate(planner_input.active_hypotheses[:8], start=1):
+            focus = fallback_focus[(index - 1) % len(fallback_focus)]
+            aligned_uncertainties.append(
+                ProposedUncertainty(
+                    uncertainty_id=None,
+                    question=f"{snapshot.hypothesis_id} 关于 {focus} 与 {target} 的竞争解释还缺少哪类证据？",
+                    description=f"基于假设 {snapshot.hypothesis_id} 的当前支持度与状态，继续围绕 {focus}、{target} 和竞争分支补充可执行证据缺口。",
+                    priority="high" if index <= 4 else "medium",
+                )
+            )
+
+        for index, update in enumerate(planner_input.recent_disagreement_updates[:6], start=1):
+            focus = fallback_focus[(index - 1) % len(fallback_focus)]
+            aligned_uncertainties.append(
+                ProposedUncertainty(
+                    uncertainty_id=update.uncertainty_id or None,
+                    question=f"{update.uncertainty_id} 的领先解释是否会因 {focus} 的参数敏感性或残差结构而改变？",
+                    description=f"需要围绕 {update.uncertainty_id} 继续做 {focus} 相关的参数敏感性、残差来源与失败归因验证。",
+                    priority="high",
+                )
+            )
+            aligned_challenges.append(f"{update.uncertainty_id} 仍是当前轮必须继续追踪的分歧点。")
 
         if not aligned_uncertainties:
             focus = fallback_focus[0]
@@ -1296,8 +1498,9 @@ class HumanControlService:
 
         questioner_output.challenge_points = aligned_challenges
         questioner_output.guidance_notes = [
-            *questioner_output.guidance_notes[:2],
-            f"questioner_field_scope:{','.join(fallback_focus[:3])}",
+            *questioner_output.guidance_notes[:4],
+            f"questioner_field_scope:{','.join(fallback_focus[:6])}",
+            f"questioner_hypothesis_span:{','.join(item.hypothesis_id for item in planner_input.active_hypotheses[:8])}",
         ]
         questioner_output.proposed_uncertainties = aligned_uncertainties
         return questioner_output
@@ -1349,22 +1552,33 @@ class HumanControlService:
         planner_input: ReasoningPlannerInput,
         proposed: list,
     ):
-        existing_questions = {record.question for record in uncertainties.records}
+        existing_questions = {
+            "".join(str(record.question or "").lower().split())
+            for record in uncertainties.records
+        }
         existing_ids = {record.uncertainty_id for record in uncertainties.records}
         next_index = len(uncertainties.records) + 1
         for item in proposed:
-            if item.question in existing_questions:
+            normalized_question = "".join(str(item.question or "").lower().split())
+            if not normalized_question or normalized_question in existing_questions:
                 continue
             uncertainty_id = item.uncertainty_id or f"U_LLM_R{planner_input.next_round_id:02d}_{next_index:02d}"
             while uncertainty_id in existing_ids:
                 next_index += 1
                 uncertainty_id = f"U_LLM_R{planner_input.next_round_id:02d}_{next_index:02d}"
+            related_hypotheses = [
+                entry.hypothesis_id
+                for entry in planner_input.active_hypotheses
+                if entry.hypothesis_id and entry.hypothesis_id in f"{item.question} {item.description}"
+            ]
+            if not related_hypotheses:
+                related_hypotheses = [entry.hypothesis_id for entry in planner_input.active_hypotheses[:4]]
             uncertainties.records.append(
                 UncertaintyRecord(
                     uncertainty_id=uncertainty_id,
                     question=item.question,
                     description=item.description,
-                    related_hypotheses=[entry.hypothesis_id for entry in planner_input.active_hypotheses[:2]],
+                    related_hypotheses=related_hypotheses,
                     status="active",
                     priority=item.priority if item.priority in {"low", "medium", "high"} else "medium",
                     created_at_round=planner_input.next_round_id,
@@ -1373,7 +1587,7 @@ class HumanControlService:
                 )
             )
             existing_ids.add(uncertainty_id)
-            existing_questions.add(item.question)
+            existing_questions.add(normalized_question)
             next_index += 1
         return uncertainties
 

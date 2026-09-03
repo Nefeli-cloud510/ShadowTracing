@@ -1,12 +1,34 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { submitRoundDecision } from '../api/liveWorkflow'
 import { PageTabs } from '../components/PageTabs'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
 
 export function RoundReportPage() {
-  const { data, loading, error } = useTimelineBundle()
+  const navigate = useNavigate()
+  const { data, loading, error, refresh } = useTimelineBundle()
   const report = data?.viewModels.roundReport
   const sessionStatus = data?.snapshot.sessionStatus
   const [failureOpen, setFailureOpen] = useState(false)
+  const [submittingDecision, setSubmittingDecision] = useState<'continue' | 'adjust' | 'stop' | null>(null)
+  const processStage = data?.snapshot.process?.current_stage
+  const sessionStage = data?.snapshot.sessionStatus?.stage
+  const latestRoundReview = [...(data?.snapshot.decisionLog?.decisions ?? [])]
+    .reverse()
+    .find((item: any) => item.decision_type === 'round_review_requested')
+  const closureChecklist = Array.isArray(latestRoundReview?.details?.closure_checklist)
+    ? latestRoundReview.details.closure_checklist
+    : []
+  const gatingReady = latestRoundReview?.details?.gating_ready !== false
+  const awaitingRoundDecision =
+    processStage === 'awaiting_round_decision'
+    || sessionStage === 'round_review_requested'
+    || sessionStatus?.status === 'awaiting_round_decision'
+  const decisionBlockedReason = !awaitingRoundDecision
+    ? `当前流程仍在加载中：${data?.viewModels.processMonitor?.currentPhase ?? '闭环阶段未同步'} / ${data?.viewModels.processMonitor?.currentStep ?? '步骤未同步'}。`
+    : !gatingReady
+      ? `当前仍有环节未完成：${closureChecklist.filter((item: any) => !item.completed).map((item: any) => item.label).join('、') || '请先完成本轮闭环' }。`
+      : null
   const failureAnalysis = useMemo(() => {
     const message = sessionStatus?.message ?? ''
     if (!message) {
@@ -27,6 +49,39 @@ export function RoundReportPage() {
     }
     return hints
   }, [sessionStatus?.message])
+
+  async function handleDecision(decision: 'continue' | 'stop') {
+    if (submittingDecision) {
+      return
+    }
+    try {
+      setSubmittingDecision(decision)
+      const result = await submitRoundDecision({ decision })
+      await refresh()
+      if (decision === 'stop') {
+        navigate('/workflow')
+        return
+      }
+      if (
+        result.stage === 'next_round_planning'
+        || result.status === 'running'
+        || result.planning_status === 'candidate_plan_rebuilt'
+      ) {
+        navigate('/hypotheses')
+      } else {
+        navigate('/workflow')
+      }
+    } finally {
+      setSubmittingDecision(null)
+    }
+  }
+
+  function handleAdjustPlan() {
+    if (submittingDecision) {
+      return
+    }
+    navigate('/dialogue')
+  }
 
   return (
     <div className="timeline-shell">
@@ -135,14 +190,46 @@ export function RoundReportPage() {
 
                 <section className="detail-card detail-card--wide">
                   <span className="detail-card__eyebrow">Decision</span>
-                  <h2>下一步决策</h2>
+                  <h2>轮次迭代入口</h2>
                   <div className="decision-option-row">
-                    {report.decisionOptions.map((option) => (
-                      <button key={option} type="button" className="detail-link detail-link--button">
-                        {option}
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      className="detail-link detail-link--button detail-link--accent"
+                      onClick={() => void handleDecision('continue')}
+                      disabled={submittingDecision !== null}
+                    >
+                      {submittingDecision === 'continue' ? '加载中…' : '开启新一轮迭代'}
+                    </button>
+                    <button
+                      type="button"
+                      className="detail-link detail-link--button"
+                      onClick={handleAdjustPlan}
+                      disabled={submittingDecision !== null}
+                    >
+                      调整计划
+                    </button>
+                    <button
+                      type="button"
+                      className="detail-link detail-link--button"
+                      onClick={() => void handleDecision('stop')}
+                      disabled={submittingDecision !== null}
+                    >
+                      {submittingDecision === 'stop' ? '加载中…' : '停止实验'}
+                    </button>
                   </div>
+                  {decisionBlockedReason ? <p>当前状态提示：{decisionBlockedReason} 但你仍可从此处强制推进新一轮。</p> : null}
+                  {submittingDecision ? (
+                    <p>加载中：系统正在汇总当前科学解释、假设树状态与轮次日志，并同步下一步页面。</p>
+                  ) : null}
+                  {!gatingReady && closureChecklist.length > 0 ? (
+                    <ul className="detail-list">
+                      {closureChecklist
+                        .filter((item: any) => !item.completed)
+                        .map((item: any) => (
+                          <li key={item.item_id}>{item.label}：{item.detail ?? '尚未完成'}</li>
+                        ))}
+                    </ul>
+                  ) : null}
                 </section>
               </div>
             </>

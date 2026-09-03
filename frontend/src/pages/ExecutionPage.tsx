@@ -130,6 +130,16 @@ export function ExecutionPage() {
               </section>
 
               <section className="detail-card detail-card--wide">
+                <span className="detail-card__eyebrow">Execution Plan</span>
+                <h2>本次实验计划说明</h2>
+                <div className="evaluation-summary-card">
+                  <p>
+                    {experiment.executionPlanSummary ?? '当前尚未生成可读的实验计划摘要，系统将继续沿用结构化协议执行。'}
+                  </p>
+                </div>
+              </section>
+
+              <section className="detail-card detail-card--wide">
                 <span className="detail-card__eyebrow">Key Visuals</span>
                 <h2>关键结果图</h2>
                 <div className="evaluation-hero-grid">

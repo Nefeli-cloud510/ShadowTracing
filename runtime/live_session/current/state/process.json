@@ -1,11 +1,11 @@
 {
-  "task_id": "ST_LIVE_20260903_025637",
+  "task_id": "ST_LIVE_20260903_151104",
   "current_round": 1,
-  "current_stage": "awaiting_human_approval",
-  "current_phase": "experiment_planning",
-  "current_step": "step_4",
-  "progress_percentage": 45,
-  "started_at": "2026-09-03T02:56:37.756808",
+  "current_stage": "awaiting_round_decision",
+  "current_phase": "decision_making",
+  "current_step": "round_review",
+  "progress_percentage": 85,
+  "started_at": "2026-09-03T15:11:04.571718",
   "phase_sequence": [
     "task_definition",
     "hypothesis_generation",
@@ -18,7 +18,7 @@
   "phases": {
     "task_definition": {
       "status": "completed",
-      "completed_at": "2026-09-03T02:56:37.756808",
+      "completed_at": "2026-09-03T15:11:04.571718",
       "notes": "scientific task saved and confirmed",
       "steps": {
         "confirmation": {
@@ -30,7 +30,7 @@
     },
     "hypothesis_generation": {
       "status": "completed",
-      "completed_at": "2026-09-03T02:56:37.756808",
+      "completed_at": "2026-09-03T15:11:04.571718",
       "notes": "programmatic initial hypothesis tree generated",
       "steps": {
         "programmatic_generation": {
@@ -42,7 +42,7 @@
     },
     "experiment_planning": {
       "status": "in_progress",
-      "started_at": "2026-09-03T02:57:03.695239",
+      "started_at": "2026-09-03T15:11:29.903176",
       "steps": {
         "step_1": {
           "name": "识别关键不确定性",
@@ -61,12 +61,12 @@
         },
         "step_4": {
           "name": "选择E*",
-          "status": "pending",
+          "status": "completed",
           "requires_user_approval": true
         },
         "step_5": {
           "name": "生成实验协议",
-          "status": "pending",
+          "status": "completed",
           "requires_user_approval": false
         }
       }
@@ -80,34 +80,19 @@
       "steps": {}
     },
     "decision_making": {
-      "status": "completed",
-      "completed_at": "2026-09-03T03:07:50.938943",
+      "status": "in_progress",
       "steps": {
         "round_review": {
           "name": "round_review",
-          "status": "completed",
-          "requires_user_approval": true
+          "status": "pending",
+          "requires_user_approval": true,
+          "notes": "等待 human_pi 决定是否进入下一轮。"
         }
       }
     },
     "next_round": {
-      "status": "in_progress",
-      "started_at": "2026-09-03T03:08:50.711605",
-      "notes": "planner input prepared for next-round reasoning/planning",
-      "steps": {
-        "planner_input_prepared": {
-          "name": "planner_input_prepared",
-          "status": "completed",
-          "requires_user_approval": false,
-          "notes": "reuse current planning policy"
-        },
-        "candidate_generation": {
-          "name": "candidate_generation",
-          "status": "in_progress",
-          "requires_user_approval": false,
-          "notes": "llm candidate generation is consuming planner_input"
-        }
-      }
+      "status": "pending",
+      "steps": {}
     }
   },
   "steps": {

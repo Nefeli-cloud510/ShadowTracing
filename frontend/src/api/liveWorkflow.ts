@@ -32,6 +32,7 @@ export interface StartWorkflowPayload {
 export interface LiveWorkflowResponse {
   status: string
   stage?: string
+  planning_status?: string
   message?: string
   question?: string
   runRoot?: string

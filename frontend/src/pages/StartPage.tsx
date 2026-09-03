@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { resetWorkflow } from '../api/liveWorkflow'
+import { resetClientWorkspaceState } from '../utils/missionControllerPersistence'
 
 export function StartPage() {
   const navigate = useNavigate()
@@ -10,20 +11,14 @@ export function StartPage() {
   useEffect(() => {
     let active = true
 
-    const clearClientCache = () => {
-      if (typeof window === 'undefined') {
-        return
-      }
-      window.localStorage.removeItem('st_demo_question')
-      window.localStorage.removeItem('st_demo_knowledge_files')
-      window.localStorage.removeItem('st_demo_data_files')
-    }
-
-    clearClientCache()
-
     void (async () => {
       try {
-        await resetWorkflow()
+        try {
+          await resetWorkflow()
+        } catch {
+          // Start page should still clear local workspace state when backend service is offline.
+        }
+        await resetClientWorkspaceState()
         if (!active) {
           return
         }

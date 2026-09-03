@@ -33,7 +33,9 @@ class ExperimentPlannerLLM:
 1. 不得发明不存在的 candidate_id、hypothesis_id、uncertainty_id
 2. 只输出严格 JSON
 3. 数值参数只给模型参数建议，不做最终裁决
-4. 所有建议必须适合作为 protocol refinement 附加到现有协议上"""
+4. 所有建议必须适合作为 protocol refinement 附加到现有协议上
+5. 若 candidate_type 是 baseline_benchmark，则按“单组基线实验”理解，不要生成对照组/实验组对比建议
+6. 若 candidate_type 不是 baseline_benchmark，则必须维持对照组与实验组存在明确变量差异，不能给出无差异对照建议"""
 
     def __init__(self, *, gateway: LLMGateway | None = None) -> None:
         self.gateway = gateway or LLMGateway()
@@ -88,6 +90,7 @@ class ExperimentPlannerLLM:
             f"treatment={candidate.design.treatment}\n"
             f"candidate_notes={candidate.design.notes}\n"
             f"existing_refinements={[item.model_dump(exclude_none=True) for item in existing_refinements]}\n"
+            "这些 tested_hypotheses 与 related_uncertainties 是上一轮闭环强制落盘产物，必须作为下一轮规划依据引用，不可忽略。\n"
             "请输出 JSON: rationale, suggested_model_parameters, suggested_feature_focus, protocol_notes, extra_steps。"
         )
 

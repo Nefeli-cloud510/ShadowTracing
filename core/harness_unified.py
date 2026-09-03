@@ -32,28 +32,48 @@ class UnifiedExperimentHarness:
     def run(self, protocol: ExperimentProtocol) -> ExperimentResult:
         if protocol.model.name.lower() != "elasticnet":
             raise ValueError(f"当前统一 harness 仅支持 ElasticNet，收到: {protocol.model.name}")
-        if not protocol.features.control:
-            raise ValueError("ExperimentProtocol.features.control 不能为空")
         if not protocol.features.treatment:
             raise ValueError("ExperimentProtocol.features.treatment 不能为空")
+        is_baseline_single_arm = "experiment_mode:baseline_single_arm" in (protocol.notes or []) or not protocol.features.control
+        if not is_baseline_single_arm and not protocol.features.control:
+            raise ValueError("ExperimentProtocol.features.control 不能为空")
 
         round_dir = self.results_dir / f"round_{protocol.round_id:02d}"
         execution_dir = round_dir / protocol.experiment_id
         execution_dir.mkdir(parents=True, exist_ok=True)
 
         started = time.perf_counter()
-        baseline_output = self._execute_variant(
+        baseline_features = self._resolve_feature_columns(
             protocol=protocol,
-            feature_columns=protocol.features.control,
             label="baseline",
-            output_dir=execution_dir / "baseline",
+            fallback=protocol.features.treatment if is_baseline_single_arm else protocol.features.control,
         )
-        treatment_output = self._execute_variant(
+        treatment_features = self._resolve_feature_columns(
             protocol=protocol,
-            feature_columns=protocol.features.treatment,
             label="treatment",
-            output_dir=execution_dir / "treatment",
+            fallback=protocol.features.treatment,
         )
+        if is_baseline_single_arm:
+            baseline_output = self._execute_variant(
+                protocol=protocol,
+                feature_columns=baseline_features,
+                label="baseline",
+                output_dir=execution_dir / "baseline",
+            )
+            treatment_output = baseline_output
+        else:
+            baseline_output = self._execute_variant(
+                protocol=protocol,
+                feature_columns=baseline_features,
+                label="baseline",
+                output_dir=execution_dir / "baseline",
+            )
+            treatment_output = self._execute_variant(
+                protocol=protocol,
+                feature_columns=treatment_features,
+                label="treatment",
+                output_dir=execution_dir / "treatment",
+            )
         duration_seconds = time.perf_counter() - started
 
         predictions_dir = execution_dir / "predictions"
@@ -86,6 +106,22 @@ class UnifiedExperimentHarness:
             latest_metrics_path=self.latest_metrics_path,
         )
         return result
+
+    @staticmethod
+    def _resolve_feature_columns(
+        *,
+        protocol: ExperimentProtocol,
+        label: str,
+        fallback: list[str],
+    ) -> list[str]:
+        feature_groups = protocol.model.parameters.get("feature_groups")
+        if isinstance(feature_groups, dict):
+            configured = feature_groups.get(label)
+            if isinstance(configured, list):
+                normalized = [str(item).strip() for item in configured if str(item).strip()]
+                if normalized:
+                    return normalized
+        return [str(item).strip() for item in fallback if str(item).strip()]
 
     def _execute_variant(
         self,

@@ -1,7 +1,7 @@
 {
-  "tree_id": "ST_LIVE_20260903_025637_tree",
-  "task_id": "ST_LIVE_20260903_025637",
-  "current_round": 2,
+  "tree_id": "ST_LIVE_20260903_151104_tree",
+  "task_id": "ST_LIVE_20260903_151104",
+  "current_round": 1,
   "root_question": "LHAASO观测到的宇宙线日影南北偏移是否包含能够提前改善未来太阳风速度预测的有效信息？",
   "nodes": [
     {
@@ -13,36 +13,20 @@
         "H_p2_y中心值_via_by_nt_gse",
         "H_p2_y中心值_via_bz_nt_gse",
         "H_p2_y中心值_via_by_nt_gsm",
-        "H_p2_y中心值_via_bz_nt_gsm",
-        "H_p2_y中心值_conditioned_on_scalar_b_nt",
-        "H_p2_y中心值_conditioned_on_by_nt_gse",
-        "H_p2_y中心值_conditioned_on_bz_nt_gse",
-        "H_p2_y中心值_conditioned_on_by_nt_gsm",
-        "H_p2_y中心值_conditioned_on_bz_nt_gsm",
-        "H_p2_y中心值_stability_refinement"
+        "H_p2_y中心值_via_bz_nt_gsm"
       ],
       "status": "active",
-      "support_score": 0.5431,
+      "support_score": 0.6343,
       "support_history": [
         {
           "round": 1,
-          "score": 0.5395,
+          "score": 0.6138,
           "event": "scientific_interpreter:IE001"
         },
         {
           "round": 1,
-          "score": 0.56,
+          "score": 0.6343,
           "event": "scientific_interpreter:LIE_INT_001"
-        },
-        {
-          "round": 2,
-          "score": 0.5836,
-          "event": "planner_interpretation:LIE001"
-        },
-        {
-          "round": 2,
-          "score": 0.5431,
-          "event": "planner_interpretation:IE001"
         }
       ],
       "activation_condition": "derived from scientific task and current variable binding",
@@ -50,10 +34,10 @@
         {
           "id": "IE001",
           "type": "expert_judgment",
-          "description": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，尚未形成稳定支持信号。",
+          "description": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，出现初步支持信号。",
           "source": "scientific_interpreter_llm",
           "added_at_round": 1,
-          "support_weight": 0.0405
+          "support_weight": 0.0338
         },
         {
           "id": "LIE_INT_001",
@@ -62,29 +46,13 @@
           "source": "scientific_interpreter_llm",
           "added_at_round": 1,
           "support_weight": 0.03
-        },
-        {
-          "id": "LIE001",
-          "type": "expert_judgment",
-          "description": "若 E_R02_01 在不同滞后窗口下持续呈现显著独立增益（ΔR² > 0.01 且 p < 0.05），将强化 H_p2_y中心值_independent_gain；若增益仅在特定滞后段出现、或与 BY, nT (GSE) 滞后结构高度耦合，则更支持 H_p2_y中心值_branch_by_nt_gse 或 H_p2_y中心值_null_competition。",
-          "source": "planner_output",
-          "added_at_round": 2,
-          "support_weight": 0.03
-        },
-        {
-          "id": "IE001",
-          "type": "expert_judgment",
-          "description": "H_p2_y中心值_independent_gain 当前支持度为 0.56，结合上一轮表现，尚未形成稳定支持信号。",
-          "source": "planner_output",
-          "added_at_round": 2,
-          "support_weight": 0.0405
         }
       ],
       "evidence_against": [],
       "critiques": [
         {
           "id": "IE001_critique",
-          "content": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，尚未形成稳定支持信号。",
+          "content": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，出现初步支持信号。",
           "from_role": "scientific_interpreter",
           "added_at_round": 1,
           "resolved": false
@@ -94,20 +62,6 @@
           "content": "需要保守解释当前结果。",
           "from_role": "scientific_interpreter",
           "added_at_round": 1,
-          "resolved": false
-        },
-        {
-          "id": "LIE001_critique",
-          "content": "若 E_R02_01 在不同滞后窗口下持续呈现显著独立增益（ΔR² > 0.01 且 p < 0.05），将强化 H_p2_y中心值_independent_gain；若增益仅在特定滞后段出现、或与 BY, nT (GSE) 滞后结构高度耦合，则更支持 H_p2_y中心值_branch_by_nt_gse 或 H_p2_y中心值_null_competition。",
-          "from_role": "scientific_interpreter",
-          "added_at_round": 2,
-          "resolved": false
-        },
-        {
-          "id": "IE001_critique",
-          "content": "H_p2_y中心值_independent_gain 当前支持度为 0.56，结合上一轮表现，尚未形成稳定支持信号。",
-          "from_role": "scientific_interpreter",
-          "added_at_round": 2,
           "resolved": false
         }
       ],
@@ -122,12 +76,10 @@
         "新增 p2_y中心值 后性能没有稳定改善"
       ],
       "alternative_explanations": [
-        "可由科学解释者补充方向/幅度/精密度的更细解释。",
-        "由中央控制 LLM 生成的解释聚焦。",
         "可由科学解释者补充方向/幅度/精密度的更细解释。"
       ],
       "created_at_round": 0,
-      "updated_at_round": 2,
+      "updated_at_round": 1,
       "generation_rationale": {
         "trigger": "task_bootstrap",
         "summary": "根据 scientific task 中的主变量绑定，先生成 p2_y中心值 对 SW Plasma Speed, km/s 的独立增量假设。",
@@ -139,14 +91,14 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "LHAASO观测到的宇宙线日影南北偏移是否包含能够提前改善未来太阳风速度预测的有效信息？",
             "weight": 0.95
           },
           {
             "signal_type": "data_dictionary",
-            "source_id": "DICT_LIVE_20260903_025637",
+            "source_id": "DICT_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "variables available: p2_y中心值 -> SW Plasma Speed, km/s",
             "weight": 0.8
@@ -186,7 +138,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "需要保留 Scalar B, nT 对 SW Plasma Speed, km/s 的竞争解释",
             "weight": 0.7
@@ -201,7 +153,7 @@
       "level": 1,
       "children_ids": [],
       "status": "active",
-      "support_score": 0.38,
+      "support_score": 0.4,
       "support_history": [],
       "activation_condition": "kept active as an alternative first-order explanation",
       "evidence_items": [],
@@ -226,7 +178,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BY, nT (GSE)",
             "weight": 0.82
@@ -266,7 +218,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BZ, nT (GSE)",
             "weight": 0.82
@@ -281,7 +233,7 @@
       "level": 1,
       "children_ids": [],
       "status": "active",
-      "support_score": 0.38,
+      "support_score": 0.36,
       "support_history": [],
       "activation_condition": "kept active as an alternative first-order explanation",
       "evidence_items": [],
@@ -306,7 +258,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BY, nT (GSM)",
             "weight": 0.82
@@ -321,7 +273,7 @@
       "level": 1,
       "children_ids": [],
       "status": "active",
-      "support_score": 0.38,
+      "support_score": 0.34,
       "support_history": [],
       "activation_condition": "kept active as an alternative first-order explanation",
       "evidence_items": [],
@@ -346,7 +298,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BZ, nT (GSM)",
             "weight": 0.82
@@ -361,7 +313,7 @@
       "level": 1,
       "children_ids": [],
       "status": "active",
-      "support_score": 0.38,
+      "support_score": 0.32,
       "support_history": [],
       "activation_condition": "kept active as an alternative first-order explanation",
       "evidence_items": [],
@@ -386,7 +338,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: Kp*10 index",
             "weight": 0.82
@@ -434,7 +386,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: Scalar B, nT",
             "weight": 0.82
@@ -482,7 +434,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BY, nT (GSE)",
             "weight": 0.82
@@ -530,7 +482,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BZ, nT (GSE)",
             "weight": 0.82
@@ -578,7 +530,7 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BY, nT (GSM)",
             "weight": 0.82
@@ -626,384 +578,13 @@
         "source_signals": [
           {
             "signal_type": "scientific_task",
-            "source_id": "ST_LIVE_20260903_025637",
+            "source_id": "ST_LIVE_20260903_151104",
             "source_round": 0,
             "excerpt": "research question 提供 mediator candidate: BZ, nT (GSM)",
             "weight": 0.82
           }
         ],
         "confidence": 0.64
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_conditioned_on_scalar_b_nt",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能依赖 Scalar B, nT 条件路径。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.38,
-      "support_history": [],
-      "activation_condition": "当 planner context 或 human feedback 明确关注 Scalar B, nT 时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [
-        "Scalar B, nT may define the boundary condition of p2_y中心值's effect"
-      ],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "planner_feature_focus",
-        "summary": "由于 planner context 明确关注 Scalar B, nT，生成条件路径假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01",
-          "U_LLM_R01_03"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "Scalar B, nT",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "HP0102",
-            "source_round": 1,
-            "excerpt": "围绕 Scalar B, nT 扩展中介机制或传导路径分支。",
-            "weight": 0.76
-          },
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "SQ0102",
-            "source_round": 1,
-            "excerpt": "当前仍需检验 Scalar B, nT 对 SW Plasma Speed, km/s 的解释是否稳健。",
-            "weight": 0.76
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:Scalar B, nT",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:Scalar B, nT 可能构成下一轮假设扩展条件。",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "必须使用原始时间序列对齐：将 p2_y中心值、SW Plasma Speed, km/s、Scalar B, nT、BY, nT (GSE) 统一重采样至相同时间分辨率（建议 1-hr 或 6-hr bins），并显式标注每条时间序列的观测延迟（如 LHAASO 日影计算滞后于太阳风到达地球约 30–60 min）。",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "questioner_field_scope:p2_y中心值,Scalar B, nT,BY, nT (GSE)",
-            "weight": 0.7
-          }
-        ],
-        "confidence": 0.7
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_conditioned_on_by_nt_gse",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能依赖 BY, nT (GSE) 条件路径。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.38,
-      "support_history": [],
-      "activation_condition": "当 planner context 或 human feedback 明确关注 BY, nT (GSE) 时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [
-        "BY, nT (GSE) may define the boundary condition of p2_y中心值's effect"
-      ],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "planner_feature_focus",
-        "summary": "由于 planner context 明确关注 BY, nT (GSE)，生成条件路径假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01",
-          "U_LLM_R01_04"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "BY, nT (GSE)",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "HP0103",
-            "source_round": 1,
-            "excerpt": "围绕 BY, nT (GSE) 扩展边界条件或调节作用分支。",
-            "weight": 0.76
-          },
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "SQ0103",
-            "source_round": 1,
-            "excerpt": "当前仍需检验 BY, nT (GSE) 对 SW Plasma Speed, km/s 的解释是否稳健。",
-            "weight": 0.76
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BY, nT (GSE)",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BY, nT (GSE) 可能构成下一轮假设扩展条件。",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "必须使用原始时间序列对齐：将 p2_y中心值、SW Plasma Speed, km/s、Scalar B, nT、BY, nT (GSE) 统一重采样至相同时间分辨率（建议 1-hr 或 6-hr bins），并显式标注每条时间序列的观测延迟（如 LHAASO 日影计算滞后于太阳风到达地球约 30–60 min）。",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "questioner_field_scope:p2_y中心值,Scalar B, nT,BY, nT (GSE)",
-            "weight": 0.7
-          }
-        ],
-        "confidence": 0.7
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_conditioned_on_bz_nt_gse",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能依赖 BZ, nT (GSE) 条件路径。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.38,
-      "support_history": [],
-      "activation_condition": "当 planner context 或 human feedback 明确关注 BZ, nT (GSE) 时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [
-        "BZ, nT (GSE) may define the boundary condition of p2_y中心值's effect"
-      ],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "planner_feature_focus",
-        "summary": "由于 planner context 明确关注 BZ, nT (GSE)，生成条件路径假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "BZ, nT (GSE)",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BZ, nT (GSE)",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BZ, nT (GSE) 可能构成下一轮假设扩展条件。",
-            "weight": 0.7
-          }
-        ],
-        "confidence": 0.7
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_conditioned_on_by_nt_gsm",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能依赖 BY, nT (GSM) 条件路径。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.38,
-      "support_history": [],
-      "activation_condition": "当 planner context 或 human feedback 明确关注 BY, nT (GSM) 时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [
-        "BY, nT (GSM) may define the boundary condition of p2_y中心值's effect"
-      ],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "planner_feature_focus",
-        "summary": "由于 planner context 明确关注 BY, nT (GSM)，生成条件路径假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "BY, nT (GSM)",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BY, nT (GSM)",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BY, nT (GSM) 可能构成下一轮假设扩展条件。",
-            "weight": 0.7
-          }
-        ],
-        "confidence": 0.7
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_conditioned_on_bz_nt_gsm",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的作用可能依赖 BZ, nT (GSM) 条件路径。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.38,
-      "support_history": [],
-      "activation_condition": "当 planner context 或 human feedback 明确关注 BZ, nT (GSM) 时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [
-        "BZ, nT (GSM) may define the boundary condition of p2_y中心值's effect"
-      ],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "planner_feature_focus",
-        "summary": "由于 planner context 明确关注 BZ, nT (GSM)，生成条件路径假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "BZ, nT (GSM)",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BZ, nT (GSM)",
-            "weight": 0.7
-          },
-          {
-            "signal_type": "planner_guidance",
-            "source_round": 1,
-            "excerpt": "proposer_focus:BZ, nT (GSM) 可能构成下一轮假设扩展条件。",
-            "weight": 0.7
-          }
-        ],
-        "confidence": 0.7
-      }
-    },
-    {
-      "hypothesis_id": "H_p2_y中心值_stability_refinement",
-      "statement": "p2_y中心值 对 SW Plasma Speed, km/s 的增量可能只在部分时间窗口稳定，需要额外稳健性验证。",
-      "level": 2,
-      "parent_id": "H_p2_y中心值_independent_gain",
-      "children_ids": [],
-      "status": "pending",
-      "support_score": 0.34,
-      "support_history": [],
-      "activation_condition": "当上一轮结果提示稳健性不足或时间片分歧时激活",
-      "evidence_items": [],
-      "evidence_against": [],
-      "critiques": [],
-      "predictions": [],
-      "falsification_conditions": [],
-      "alternative_explanations": [],
-      "created_at_round": 2,
-      "updated_at_round": 2,
-      "generation_rationale": {
-        "trigger": "stability_refinement",
-        "summary": "上一轮上下文继续提示稳健性/时间片分歧，因此扩展稳定性细化假设。",
-        "linked_uncertainties": [
-          "U_LLM_R01_01",
-          "U_LLM_R01_03",
-          "U_LLM_R01_04"
-        ],
-        "derived_features": [
-          "p2_y中心值",
-          "SW Plasma Speed, km/s"
-        ],
-        "source_signals": [
-          {
-            "signal_type": "uncertainty_record",
-            "source_id": "U_LLM_R01_01",
-            "source_round": 1,
-            "excerpt": "p2_y中心值 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
-            "weight": 0.84
-          },
-          {
-            "signal_type": "uncertainty_record",
-            "source_id": "U_LLM_R01_03",
-            "source_round": 2,
-            "excerpt": "Scalar B, nT 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
-            "weight": 0.84
-          },
-          {
-            "signal_type": "uncertainty_record",
-            "source_id": "U_LLM_R01_04",
-            "source_round": 2,
-            "excerpt": "BY, nT (GSE) 对 SW Plasma Speed, km/s 的作用机制是否稳定？",
-            "weight": 0.84
-          },
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "IE001",
-            "source_round": 1,
-            "excerpt": "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，尚未形成稳定支持信号。",
-            "weight": 0.75
-          },
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "RAGP001",
-            "source_round": 1,
-            "excerpt": "riority\": \"medium\"}], \"key_findings\": [\"本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。\"], \"robustness_recommendation\": \"可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。\", \"stable\": true}, \"hypothesi",
-            "weight": 0.75
-          },
-          {
-            "signal_type": "reasoning_trace",
-            "source_id": "RAGP002",
-            "source_round": 1,
-            "excerpt": "/s 的作用机制是否稳定？\", \"related_hypotheses\": [\"H_p2_y中心值_independent_gain\", \"H_p2_y中心值_null_competition\"], \"disagreement\": {}, \"status\": \"active\", \"priority\": \"medium\", \"created_at_round\"",
-            "weight": 0.75
-          }
-        ],
-        "confidence": 0.62
       }
     }
   ],
@@ -1022,23 +603,16 @@
     "H_p2_y中心值_via_bz_nt_gsm"
   ],
   "pruned_hypotheses": [],
-  "pending_hypotheses": [
-    "H_p2_y中心值_conditioned_on_scalar_b_nt",
-    "H_p2_y中心值_conditioned_on_by_nt_gse",
-    "H_p2_y中心值_conditioned_on_bz_nt_gse",
-    "H_p2_y中心值_conditioned_on_by_nt_gsm",
-    "H_p2_y中心值_conditioned_on_bz_nt_gsm",
-    "H_p2_y中心值_stability_refinement"
-  ],
+  "pending_hypotheses": [],
   "latest_update": {
-    "round": 2,
-    "event": "planner_output_applied",
-    "description": "planner interpretation enhancements written back into knowledge memory"
+    "round": 1,
+    "event": "scientific_interpreter_applied",
+    "description": "scientific interpreter applied 2 interpretation enhancements"
   },
   "tree_summary": {
-    "total_nodes": 18,
+    "total_nodes": 12,
     "active_count": 12,
     "pruned_count": 0,
-    "pending_count": 6
+    "pending_count": 0
   }
 }

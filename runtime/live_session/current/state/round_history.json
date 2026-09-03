@@ -1,0 +1,85 @@
+{
+  "task_id": "ST_LIVE_20260903_151104",
+  "current_round": 1,
+  "last_updated": "2026-09-03T15:12:24.396094",
+  "entries": [
+    {
+      "round_id": 1,
+      "status": "completed",
+      "source_experiment_id": "E_R01_S1",
+      "approved_candidate_id": "E_R01_S1",
+      "gating_ready": false,
+      "closure_checklist": [
+        {
+          "item_id": "scientific_question",
+          "label": "科学问题已定义",
+          "completed": true,
+          "required": true,
+          "detail": "p2_y中心值 的时间滞后设定是否影响实验结论稳定性？"
+        },
+        {
+          "item_id": "hypothesis_generation",
+          "label": "竞争假设已生成",
+          "completed": false,
+          "required": true,
+          "detail": "缺少 tested_hypotheses"
+        },
+        {
+          "item_id": "uncertainty_generation",
+          "label": "科学不确定性已生成",
+          "completed": false,
+          "required": true,
+          "detail": "缺少 target_uncertainties"
+        },
+        {
+          "item_id": "candidate_approval",
+          "label": "候选实验已审批",
+          "completed": true,
+          "required": true,
+          "detail": "E_R01_S1"
+        },
+        {
+          "item_id": "experiment_execution",
+          "label": "实验执行已完成或已失败归因",
+          "completed": true,
+          "required": true,
+          "detail": "completed"
+        },
+        {
+          "item_id": "result_feedback",
+          "label": "结果解释与反馈已写回",
+          "completed": true,
+          "required": true,
+          "detail": "已写入评价摘要"
+        }
+      ],
+      "unresolved_uncertainties": [],
+      "highlighted_hypotheses": [],
+      "scientific_findings": [
+        "treatment 相比 baseline 带来更好的预测表现，说明新增实验条件可能包含有效信息。",
+        "SW Plasma Speed, km/s 预测效果专项分析：Pearson r 从 0.39448958586943433 变化到 0.4119936080368105，整体提升；ΔPearson r=0.017504022167376176，ΔRMSE=-0.8262662807156218。",
+        "H_p2_y中心值_independent_gain 当前支持度为 0.58，结合上一轮表现，出现初步支持信号。"
+      ],
+      "metrics_snapshot": {
+        "experiment_id": "E_R01_S1",
+        "round_id": 1,
+        "baseline_rmse": 49.25384857191404,
+        "baseline_mae": 39.5986254968859,
+        "baseline_pearson_r": 0.39448958586943433,
+        "treatment_rmse": 48.42758229119842,
+        "treatment_mae": 38.40749317745875,
+        "treatment_pearson_r": 0.4119936080368105,
+        "pg_actual_signed": 0.016775669408030432,
+        "pg_actual_clipped": 0.016775669408030432,
+        "delta": {
+          "rmse": -0.8262662807156218,
+          "mae": -1.1911323194271546,
+          "pearson_r": 0.017504022167376176,
+          "r2": 0.03521691834092633
+        }
+      },
+      "created_at": "2026-09-03T15:12:24.396094",
+      "updated_at": "2026-09-03T15:12:24.396094"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
-  "dictionary_id": "DICT_LIVE_20260903_025637",
-  "generated_at": "2026-09-03T02:56:37.750424",
+  "dictionary_id": "DICT_LIVE_20260903_151104",
+  "generated_at": "2026-09-03T15:11:04.570489",
   "version": "1.0",
   "dataset_name": "out_of_ICME_raw_OMNI_Daily_DATA + raw_out_of_ICME_sunshadow2",
   "total_samples": 364,
@@ -78,7 +78,7 @@
     {
       "field_name": "Kp*10 index",
       "data_type": "int64",
-      "physical_meaning": "KP地磁指数*10",
+      "physical_meaning": "Kp地磁指数*10",
       "missing_rate": 0.0,
       "is_target": false,
       "user_notes": "sources=out_of_ICME_raw_OMNI_Daily_DATA.xlsx; category=candidate_mediator"
@@ -102,7 +102,7 @@
     {
       "field_name": "f10.7_index",
       "data_type": "float64",
-      "physical_meaning": "F10.7太阳射电流量",
+      "physical_meaning": "F10.7太阳射电指数",
       "missing_rate": 0.0,
       "is_target": false,
       "user_notes": "sources=out_of_ICME_raw_OMNI_Daily_DATA.xlsx; category=candidate_mediator"
@@ -228,10 +228,10 @@
     "BZ, nT (GSE)": "行星际磁场Z分量（GSE坐标）",
     "BY, nT (GSM)": "行星际磁场Y分量（GSM坐标）",
     "BZ, nT (GSM)": "行星际磁场Z分量（GSM坐标）",
-    "Kp*10 index": "KP地磁指数*10",
+    "Kp*10 index": "Kp地磁指数*10",
     "Dst-index, nT": "磁暴环电流指数",
     "ap_index, nT": "ap地磁指数",
-    "f10.7_index": "F10.7太阳射电流量",
+    "f10.7_index": "F10.7太阳射电指数",
     "SW Plasma Speed, km/s": "太阳风速度",
     "p1_x中心值": "宇宙线日影东西偏移",
     "p1_x中心值误差": "宇宙线日影东西偏移误差",

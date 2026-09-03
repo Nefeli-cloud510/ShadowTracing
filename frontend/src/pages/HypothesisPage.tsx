@@ -4,8 +4,7 @@ import { resetWorkflow } from '../api/liveWorkflow'
 import { PageTabs } from '../components/PageTabs'
 import { StepConfirmDialog } from '../components/StepConfirmDialog'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
-import { clearDataDictionaryDraft } from '../utils/dataDictionaryDraft'
-import { clearMissionControllerDraft, clearUploadFiles, notifyWorkspaceReset } from '../utils/missionControllerPersistence'
+import { resetClientWorkspaceState } from '../utils/missionControllerPersistence'
 
 export function HypothesisPage() {
   const navigate = useNavigate()
@@ -14,7 +13,13 @@ export function HypothesisPage() {
   const [confirmNextOpen, setConfirmNextOpen] = useState(false)
   const nodes = useMemo(() => {
     const rawNodes = data?.snapshot.hypothesisTree?.nodes ?? []
-    return [...rawNodes]
+    const deduped = [...rawNodes].filter((item: any, index: number, collection: any[]) => {
+      const signature = `${String(item.level ?? '')}|${String(item.parent_id ?? '')}|${String(item.statement ?? '').trim()}`
+      return collection.findIndex((candidate: any) =>
+        `${String(candidate.level ?? '')}|${String(candidate.parent_id ?? '')}|${String(candidate.statement ?? '').trim()}` === signature,
+      ) === index
+    })
+    return deduped
       .sort((left: any, right: any) => {
         if ((left.level ?? 99) !== (right.level ?? 99)) {
           return (left.level ?? 99) - (right.level ?? 99)
@@ -111,11 +116,12 @@ export function HypothesisPage() {
   async function handleClearMemory() {
     try {
       setResetting(true)
-      await resetWorkflow()
-      clearDataDictionaryDraft()
-      clearMissionControllerDraft()
-      await clearUploadFiles()
-      notifyWorkspaceReset()
+      try {
+        await resetWorkflow()
+      } catch {
+        // Frontend state should still be cleared even if the live server is unavailable.
+      }
+      await resetClientWorkspaceState()
       await refresh()
     } finally {
       setResetting(false)
@@ -155,7 +161,7 @@ export function HypothesisPage() {
 
               <section className="detail-card detail-card--wide">
                 <span className="detail-card__eyebrow">Hypothesis Tree</span>
-                <h2>假设空间状态数</h2>
+                <h2>假设空间状态树</h2>
                 <div className="hypothesis-graph-panel">
                   <div className="hypothesis-graph-panel__legend">
                     <span>解释变量：{data?.viewModels.mission.variables.x || '待确认'}</span>

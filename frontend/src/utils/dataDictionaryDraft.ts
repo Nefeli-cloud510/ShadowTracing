@@ -1,4 +1,5 @@
 import type { DataInspectionResult } from '../api/liveWorkflow'
+import { readWorkspaceResetAt } from './missionControllerPersistence'
 
 export type VariableCategory = 'core_explanatory' | 'target' | 'candidate_mediator' | 'deprecated'
 
@@ -78,7 +79,12 @@ export function readDataDictionaryDraft(): DataDictionaryDraft | null {
     if (!raw) {
       return null
     }
-    return JSON.parse(raw) as DataDictionaryDraft
+    const draft = JSON.parse(raw) as DataDictionaryDraft
+    const resetAt = readWorkspaceResetAt()
+    if (!resetAt) {
+      return draft
+    }
+    return draft.updatedAt > resetAt ? draft : null
   } catch {
     return null
   }

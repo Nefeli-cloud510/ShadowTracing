@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { submitApprovalAction } from '../api/liveWorkflow'
 import { ApprovalOverlay } from '../components/ApprovalOverlay'
 import { PageTabs } from '../components/PageTabs'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
+import { filterSelectableCandidateExperiments } from '../utils/experimentValidation'
 import { useTabs } from '../contexts/TabContext'
 
 function formatCodeLabel(value?: string, fallback = '待更新') {
@@ -140,10 +143,11 @@ function HypothesisTreeDetail({ rawTree }: { rawTree: any }) {
 }
 
 function CandidateExperimentDetail({ rawExperiments }: { rawExperiments: any }) {
-  if (!rawExperiments || !rawExperiments.candidates) return <p>暂无候选实验数据。</p>
+  const candidates = filterSelectableCandidateExperiments(rawExperiments?.candidates ?? [])
+  if (candidates.length === 0) return <p>暂无可审批的区分性候选实验数据。</p>
   return (
     <div className="matrix-container">
-      {rawExperiments.candidates.map((e: any, index: number) => (
+      {candidates.map((e: any, index: number) => (
         <div
           key={e.experiment_id ?? `candidate-${index}`}
           className={`matrix-card ${index === 0 ? 'matrix-card--recommended' : ''}`}
@@ -158,6 +162,15 @@ function CandidateExperimentDetail({ rawExperiments }: { rawExperiments: any }) 
             <span>PG: {Number(e.estimated_performance_gain?.value ?? 0).toFixed(2)}</span>
             <span>成本: {Number(e.estimated_cost?.value ?? 0).toFixed(2)}</span>
             <span>U(E): {Number(e.utility_score ?? 0).toFixed(2)}</span>
+          </div>
+          <div className="matrix-card__footnote">
+            模式：{e.type === 'baseline_benchmark' ? '基线实验（单组）' : '区分性对照实验'}
+          </div>
+          <div className="matrix-card__footnote">
+            对照组：{e.type === 'baseline_benchmark' ? '不设置对照组' : Array.isArray(e.design?.control) && e.design.control.length > 0 ? e.design.control.join(', ') : '未配置'}
+          </div>
+          <div className="matrix-card__footnote">
+            实验组：{Array.isArray(e.design?.treatment) && e.design.treatment.length > 0 ? e.design.treatment.join(', ') : '未配置'}
           </div>
           {e.tested_hypotheses?.length ? (
             <div className="matrix-card__footnote">关联假设：{e.tested_hypotheses.slice(0, 3).join(', ')}</div>
@@ -414,7 +427,8 @@ function WritebackDetail({ rawPlannerInput, rawProcess }: { rawPlannerInput: any
 }
 
 export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: string }) {
-  const { data, loading, error } = useTimelineBundle()
+  const navigate = useNavigate()
+  const { data, loading, error, refresh } = useTimelineBundle()
   const { removeTab, setActiveTabId } = useTabs()
   const [approvalOpen, setApprovalOpen] = useState(false)
 
@@ -615,7 +629,22 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
             data={data.viewModels.approvalOverlay}
             open={approvalOpen}
             onClose={() => setApprovalOpen(false)}
-            onAction={async () => undefined}
+            onAction={async (action, payload) => {
+              const result = await submitApprovalAction({
+                action,
+                candidateId: payload.candidateId,
+                humanNotes: payload.humanNotes,
+              })
+              setApprovalOpen(false)
+              await refresh()
+              if (action === 'approve' || action === 'modify') {
+                setActiveTabId('execution')
+                navigate('/execution')
+              } else if (result.stage === 'approval_pending' || result.status === 'awaiting_approval') {
+                setActiveTabId('approval')
+                navigate('/approval')
+              }
+            }}
           />
         ) : null}
       </div>

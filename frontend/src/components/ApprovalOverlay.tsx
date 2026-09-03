@@ -49,21 +49,28 @@ export function ApprovalOverlay({ data, open, onClose, onAction, busy = false, i
             <span>综合价值</span>
           </div>
           {data.candidates.map((item) => (
-            <div
-              key={item.experimentId}
-              className={[
-                'approval-overlay__row',
-                item.recommended ? 'approval-overlay__row--recommended' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            >
-              <span>{item.recommended ? `★${item.experimentId}` : item.experimentId}</span>
-              <span>{item.informationGain.toFixed(3)}</span>
-              <span>{item.performanceGain.toFixed(3)}</span>
-              <span>{item.risk.toFixed(3)}</span>
-              <span>{item.cost.toFixed(3)}</span>
-              <span>{item.utility.toFixed(3)}</span>
+            <div key={item.experimentId}>
+              <div
+                className={[
+                  'approval-overlay__row',
+                  item.recommended ? 'approval-overlay__row--recommended' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <span>{item.recommended ? `★${item.experimentId}` : item.experimentId}</span>
+                <span>{item.informationGain.toFixed(3)}</span>
+                <span>{item.performanceGain.toFixed(3)}</span>
+                <span>{item.risk.toFixed(3)}</span>
+                <span>{item.cost.toFixed(3)}</span>
+                <span>{item.utility.toFixed(3)}</span>
+              </div>
+              <div className="approval-overlay__summary">
+                <strong>{item.experimentMode === 'baseline' ? '基线实验（单组）' : '区分性对照实验'}</strong>
+                <p>对照组变量：{item.experimentMode === 'baseline' ? '不设置对照组' : item.controlVariables.join('、') || '未配置'}</p>
+                <p>实验组变量：{item.treatmentVariables.join('、') || '未配置'}</p>
+                <p>{item.hasFeatureDifference ? '校验结果：两组变量存在差异，可开展对照。' : '校验结果：两组变量无差异，当前方案应被拦截。'}</p>
+              </div>
             </div>
           ))}
         </div>
@@ -101,7 +108,7 @@ export function ApprovalOverlay({ data, open, onClose, onAction, busy = false, i
             onClick={() => void onAction('approve', { candidateId: selectedCandidate, humanNotes: notes })}
             disabled={busy}
           >
-            {busy ? '处理中…' : '批准并继续'}
+            {busy ? '加载中…' : '批准并继续'}
           </button>
           <button
             type="button"

@@ -1,20 +1,20 @@
 {
   "metrics": {
-    "experiment_id": "E_R01_00",
+    "experiment_id": "E_R01_S1",
     "round_id": 1,
     "baseline_rmse": 49.25384857191404,
     "baseline_mae": 39.5986254968859,
     "baseline_pearson_r": 0.39448958586943433,
-    "treatment_rmse": 49.25384857191404,
-    "treatment_mae": 39.5986254968859,
-    "treatment_pearson_r": 0.39448958586943433,
-    "pg_actual_signed": 0.0,
-    "pg_actual_clipped": 0.0,
+    "treatment_rmse": 48.42758229119842,
+    "treatment_mae": 38.40749317745875,
+    "treatment_pearson_r": 0.4119936080368105,
+    "pg_actual_signed": 0.016775669408030432,
+    "pg_actual_clipped": 0.016775669408030432,
     "delta": {
-      "rmse": 0.0,
-      "mae": 0.0,
-      "pearson_r": 0.0,
-      "r2": 0.0
+      "rmse": -0.8262662807156218,
+      "mae": -1.1911323194271546,
+      "pearson_r": 0.017504022167376176,
+      "r2": 0.03521691834092633
     }
   },
   "robustness": {
@@ -32,14 +32,14 @@
     "recommendation": "可以进入下一轮假设解释，但建议补充 bootstrap/time-slice 稳健性检验。"
   },
   "scientific": {
-    "experiment_id": "E_R01_00",
+    "experiment_id": "E_R01_S1",
     "round_id": 1,
     "hypothesis_assessments": [],
     "disagreement_updates": [],
     "evidence_summary": {
       "new_evidence_for": [
         {
-          "claim": "本轮实验结果呈混合信号，需要结合更多实验或稳健性分析继续判断。",
+          "claim": "treatment 相比 baseline 带来更好的预测表现，说明新增实验条件可能包含有效信息。",
           "strength": "medium",
           "source": "experiment_result.comparison"
         }
@@ -56,44 +56,44 @@
   },
   "visualizations": [
     {
-      "name": "E_R01_00_baseline_coefficients",
-      "path": "results/round_01/E_R01_00/baseline/elasticnet_coefficients.png"
+      "name": "E_R01_S1_baseline_coefficients",
+      "path": "results/round_01/E_R01_S1/baseline/elasticnet_coefficients.png"
     },
     {
-      "name": "E_R01_00_baseline_scatter",
-      "path": "results/round_01/E_R01_00/baseline/elasticnet_scatter.png"
+      "name": "E_R01_S1_baseline_scatter",
+      "path": "results/round_01/E_R01_S1/baseline/elasticnet_scatter.png"
     },
     {
-      "name": "E_R01_00_baseline_timeseries",
-      "path": "results/round_01/E_R01_00/baseline/elasticnet_timeseries.png"
+      "name": "E_R01_S1_baseline_timeseries",
+      "path": "results/round_01/E_R01_S1/baseline/elasticnet_timeseries.png"
     },
     {
-      "name": "E_R01_00_baseline_residual_scatter",
-      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_scatter.png"
+      "name": "E_R01_S1_baseline_residual_scatter",
+      "path": "results/round_01/E_R01_S1/baseline/elasticnet_residual_scatter.png"
     },
     {
-      "name": "E_R01_00_baseline_residual_hist",
-      "path": "results/round_01/E_R01_00/baseline/elasticnet_residual_hist.png"
+      "name": "E_R01_S1_baseline_residual_hist",
+      "path": "results/round_01/E_R01_S1/baseline/elasticnet_residual_hist.png"
     },
     {
-      "name": "E_R01_00_treatment_coefficients",
-      "path": "results/round_01/E_R01_00/treatment/elasticnet_coefficients.png"
+      "name": "E_R01_S1_treatment_coefficients",
+      "path": "results/round_01/E_R01_S1/treatment/elasticnet_coefficients.png"
     },
     {
-      "name": "E_R01_00_treatment_scatter",
-      "path": "results/round_01/E_R01_00/treatment/elasticnet_scatter.png"
+      "name": "E_R01_S1_treatment_scatter",
+      "path": "results/round_01/E_R01_S1/treatment/elasticnet_scatter.png"
     },
     {
-      "name": "E_R01_00_treatment_timeseries",
-      "path": "results/round_01/E_R01_00/treatment/elasticnet_timeseries.png"
+      "name": "E_R01_S1_treatment_timeseries",
+      "path": "results/round_01/E_R01_S1/treatment/elasticnet_timeseries.png"
     },
     {
-      "name": "E_R01_00_treatment_residual_scatter",
-      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_scatter.png"
+      "name": "E_R01_S1_treatment_residual_scatter",
+      "path": "results/round_01/E_R01_S1/treatment/elasticnet_residual_scatter.png"
     },
     {
-      "name": "E_R01_00_treatment_residual_hist",
-      "path": "results/round_01/E_R01_00/treatment/elasticnet_residual_hist.png"
+      "name": "E_R01_S1_treatment_residual_hist",
+      "path": "results/round_01/E_R01_S1/treatment/elasticnet_residual_hist.png"
     }
   ]
 }

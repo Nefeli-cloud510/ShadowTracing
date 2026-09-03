@@ -23,13 +23,14 @@ import {
   writeDataDictionaryDraft,
 } from '../utils/dataDictionaryDraft'
 import {
-  clearMissionControllerDraft,
-  clearUploadFiles,
   loadUploadFiles,
   mergeSelectedFiles,
-  notifyWorkspaceReset,
   persistUploadFiles,
   readMissionControllerDraft,
+  resetClientWorkspaceState,
+  WORKFLOW_START_ERROR_KEY,
+  WORKFLOW_START_PENDING_KEY,
+  WORKFLOW_START_STATE_EVENT,
   WORKSPACE_RESET_EVENT,
   writeMissionControllerDraft,
 } from '../utils/missionControllerPersistence'
@@ -138,6 +139,12 @@ export function MissionPage() {
       setLatestInspection(null)
       setDictionaryDraft(null)
       setBackendError(null)
+      setAnalysisLoading(false)
+      setStarting(false)
+      setInspectingData(false)
+      setSubmittingFeedback(false)
+      setConfirmStartOpen(false)
+      setConfirmRoundDecisionOpen(false)
     }
     window.addEventListener(WORKSPACE_RESET_EVENT, handleWorkspaceReset)
     return () => window.removeEventListener(WORKSPACE_RESET_EVENT, handleWorkspaceReset)
@@ -211,10 +218,22 @@ export function MissionPage() {
   const sessionStage = data?.snapshot.sessionStatus?.stage
   const sessionStatus = data?.snapshot.sessionStatus?.status
   const processStage = data?.snapshot.process?.current_stage
+  const latestRoundReview = [...(data?.snapshot.decisionLog?.decisions ?? [])]
+    .reverse()
+    .find((item: any) => item.decision_type === 'round_review_requested')
+  const gatingReady = latestRoundReview?.details?.gating_ready !== false
+  const closureChecklist = Array.isArray(latestRoundReview?.details?.closure_checklist)
+    ? latestRoundReview.details.closure_checklist
+    : []
   const awaitingRoundDecision =
     processStage === 'awaiting_round_decision'
     || sessionStage === 'round_review_requested'
     || sessionStatus === 'awaiting_round_decision'
+  const roundDecisionBlockedReason = !awaitingRoundDecision
+    ? `当前仍在加载中：${processMonitor?.currentPhase ?? '闭环阶段未同步'} / ${processMonitor?.currentStep ?? '步骤未同步'}。`
+    : !gatingReady
+      ? `当前仍有环节未完成：${closureChecklist.filter((item: any) => !item.completed).map((item: any) => item.label).join('、') || '请先完成本轮闭环'}。`
+      : null
 
   const dialogueFeed = useMemo(() => {
     const feed = [
@@ -328,7 +347,7 @@ export function MissionPage() {
         analysis = await analyzeQuestion(question.trim())
         setQuestionAnalysis(analysis)
       }
-      await startWorkflow({
+      const payload = {
         question: question.trim(),
         knowledgeFiles: knowledgeUploads,
         dataFiles: dataUploads,
@@ -338,41 +357,40 @@ export function MissionPage() {
         mCandidates: resolvedM.length > 0 ? resolvedM : analysis?.m_candidates,
         questionType,
         dataDictionaryConfig: dictionaryDraft ? serializeDraftForApi(dictionaryDraft) : undefined,
-      })
+      }
+      window.sessionStorage.setItem(WORKFLOW_START_PENDING_KEY, '1')
+      window.sessionStorage.removeItem(WORKFLOW_START_ERROR_KEY)
+      window.dispatchEvent(new Event(WORKFLOW_START_STATE_EVENT))
       navigate('/workflow')
+      await startWorkflow(payload)
     } catch (error) {
-      setBackendError(error instanceof Error ? error.message : '真实闭环启动失败。')
+      const message = error instanceof Error ? error.message : '真实闭环启动失败。'
+      window.sessionStorage.removeItem(WORKFLOW_START_PENDING_KEY)
+      window.sessionStorage.setItem(WORKFLOW_START_ERROR_KEY, message)
+      window.dispatchEvent(new Event(WORKFLOW_START_STATE_EVENT))
+      setBackendError(message)
     } finally {
       setStarting(false)
     }
   }
 
   async function handleResetSession() {
+    let backendResetError: Error | null = null
     try {
       setResetting(true)
       setBackendError(null)
-      await resetWorkflow()
-      setQuestion('')
-      setKnowledgeFiles([])
-      setDataFiles([])
-      setKnowledgeUploads([])
-      setDataUploads([])
-      setSubmitted(false)
-      setQuestionAnalysis(null)
-      setConfirmedX('')
-      setConfirmedY('')
-      setConfirmedM('')
-      setRoundFeedback('')
-      setLatestInspection(null)
-      setDictionaryDraft(null)
-      clearDataDictionaryDraft()
-      clearMissionControllerDraft()
-      await clearUploadFiles()
-      notifyWorkspaceReset()
-    } catch (error) {
-      setBackendError(error instanceof Error ? error.message : '重置当前会话失败。')
+      try {
+        await resetWorkflow()
+      } catch (error) {
+        backendResetError = error instanceof Error ? error : new Error('重置当前会话失败。')
+      }
+      await resetClientWorkspaceState()
+      await refresh()
     } finally {
       setResetting(false)
+    }
+    if (backendResetError) {
+      setBackendError(`${backendResetError.message} 已先清空前端工作区，请检查 live_workflow_server 是否运行。`)
     }
   }
 
@@ -383,13 +401,24 @@ export function MissionPage() {
     try {
       setSubmittingFeedback(true)
       setBackendError(null)
-      await submitRoundDecision({
+      const result = await submitRoundDecision({
         decision: roundDecision,
         humanFeedback: roundFeedback.trim() || undefined,
       })
       await refresh()
       if (roundDecision !== 'stop') {
-        navigate('/approval')
+        if (
+          result.stage === 'next_round_planning'
+          || result.status === 'running'
+          || result.planning_status === 'candidate_plan_rebuilt'
+        ) {
+          navigate('/hypotheses')
+        } else {
+          navigate('/workflow')
+        }
+      }
+      if (result.message) {
+        setBackendError(result.message)
       }
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : '整轮反馈提交失败。')
@@ -625,24 +654,26 @@ export function MissionPage() {
                         rows={4}
                       />
                       <div className="controller-input__actions">
-                        <select
-                          className="controller-inline-input"
-                          value={roundDecision}
-                          onChange={(event) => setRoundDecision(event.target.value as 'continue' | 'adjust' | 'stop')}
-                        >
-                          <option value="continue">进入下一轮</option>
-                          <option value="adjust">调整后进入下一轮</option>
-                          <option value="stop">停止闭环</option>
-                        </select>
                         <button
                           type="button"
                           className="detail-link detail-link--button"
-                          onClick={() => setConfirmRoundDecisionOpen(true)}
-                          disabled={!awaitingRoundDecision || submittingFeedback}
+                          onClick={() => navigate('/report')}
+                          disabled={submittingFeedback}
                         >
-                          {submittingFeedback ? '提交中…' : '提交整轮反馈'}
+                          前往轮次报告页
                         </button>
                       </div>
+                      <p>新一轮迭代入口已迁移到轮次报告页；建议在报告页统一查看剩余不确定性并开启新一轮。</p>
+                      {roundDecisionBlockedReason ? <p>{roundDecisionBlockedReason}</p> : null}
+                      {!gatingReady && closureChecklist.length > 0 ? (
+                        <ul className="detail-list">
+                          {closureChecklist
+                            .filter((item: any) => !item.completed)
+                            .map((item: any) => (
+                              <li key={item.item_id}>{item.label}：{item.detail ?? '尚未完成'}</li>
+                            ))}
+                        </ul>
+                      ) : null}
                     </article>
                   </div>
                 </div>

@@ -27,6 +27,7 @@ DecisionType = Literal[
     "experiment_approved",
     "experiment_rejected",
     "experiment_modified",
+    "execution_failed",
     "protocol_generated",
     "stop_requested",
     "pause_requested",
@@ -427,6 +428,9 @@ class CandidateExperimentSet(ShadowBaseModel):
         scored = [item for item in self.candidates if item.utility_score is not None]
         if not scored:
             return None
+        discriminative = [item for item in scored if item.design.control != item.design.treatment]
+        if discriminative:
+            return max(discriminative, key=lambda item: item.utility_score or 0.0)
         return max(scored, key=lambda item: item.utility_score or 0.0)
 
 
@@ -884,6 +888,7 @@ class ExperimentMemoryEntry(ShadowBaseModel):
     round_id: int = Field(ge=0)
     status: ExecutionStatus
     tested_hypotheses: list[str] = Field(default_factory=list)
+    target_uncertainties: list[str] = Field(default_factory=list)
     protocol_path: str | None = None
     result_path: str | None = None
     evaluation_path: str | None = None
@@ -924,6 +929,94 @@ class ExperimentMemoryState(ShadowBaseModel):
 
     def entry_index(self) -> dict[str, ExperimentMemoryEntry]:
         return {item.experiment_id: item for item in self.entries}
+
+
+class ClosureChecklistItem(ShadowBaseModel):
+    item_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    completed: bool = False
+    required: bool = True
+    detail: str | None = None
+
+
+class RoundHistoryEntry(ShadowBaseModel):
+    round_id: int = Field(ge=0)
+    status: Literal["in_progress", "completed", "failed", "stopped"] = "in_progress"
+    source_experiment_id: str | None = None
+    approved_candidate_id: str | None = None
+    next_round_decision: Literal["continue", "adjust", "stop"] | None = None
+    decision_summary: str | None = None
+    human_feedback: str | None = None
+    gating_ready: bool = False
+    closure_checklist: list[ClosureChecklistItem] = Field(default_factory=list)
+    tested_hypotheses: list[str] = Field(default_factory=list)
+    target_uncertainties: list[str] = Field(default_factory=list)
+    unresolved_uncertainties: list[str] = Field(default_factory=list)
+    highlighted_hypotheses: list[str] = Field(default_factory=list)
+    scientific_findings: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+    metrics_snapshot: PerformanceMetrics | None = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class RoundHistoryState(ShadowBaseModel):
+    task_id: str = Field(min_length=1)
+    current_round: int = Field(ge=0)
+    last_updated: datetime
+    entries: list[RoundHistoryEntry] = Field(default_factory=list)
+
+    @field_validator("entries")
+    @classmethod
+    def unique_round_entries(cls, value: list[RoundHistoryEntry]) -> list[RoundHistoryEntry]:
+        ids = [item.round_id for item in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("RoundHistoryState.entries contains duplicate round_id")
+        return value
+
+
+class FailureRecord(ShadowBaseModel):
+    failure_id: str = Field(min_length=1)
+    round_id: int = Field(ge=0)
+    phase: str = Field(min_length=1)
+    step: str = Field(min_length=1)
+    experiment_id: str | None = None
+    error_type: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    traceback_excerpt: str | None = None
+    can_continue: bool = True
+    recorded_at: datetime = Field(default_factory=datetime.now)
+
+
+class FailureHistoryState(ShadowBaseModel):
+    task_id: str = Field(min_length=1)
+    current_round: int = Field(ge=0)
+    last_updated: datetime
+    records: list[FailureRecord] = Field(default_factory=list)
+
+
+class MetricsTimelineEntry(ShadowBaseModel):
+    round_id: int = Field(ge=0)
+    experiment_id: str | None = None
+    execution_status: ExecutionStatus
+    baseline_rmse: float | None = None
+    treatment_rmse: float | None = None
+    baseline_pearson_r: float | None = None
+    treatment_pearson_r: float | None = None
+    delta_rmse: float | None = None
+    delta_pearson_r: float | None = None
+    stable: bool | None = None
+    support_mean: float | None = None
+    support_max: float | None = None
+    unresolved_uncertainty_count: int = Field(default=0, ge=0)
+    recorded_at: datetime = Field(default_factory=datetime.now)
+
+
+class MetricsTimelineState(ShadowBaseModel):
+    task_id: str = Field(min_length=1)
+    current_round: int = Field(ge=0)
+    last_updated: datetime
+    entries: list[MetricsTimelineEntry] = Field(default_factory=list)
 
 
 class ProcessStep(ShadowBaseModel):

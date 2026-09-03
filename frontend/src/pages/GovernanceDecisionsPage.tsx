@@ -1,19 +1,22 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { submitApprovalAction } from '../api/liveWorkflow'
 import { ApprovalOverlay } from '../components/ApprovalOverlay'
 import { PageTabs } from '../components/PageTabs'
 import { StepConfirmDialog } from '../components/StepConfirmDialog'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
+import { filterSelectableCandidateExperiments, getExperimentValidationSnapshot } from '../utils/experimentValidation'
 
 function formatDelta(before?: number, after?: number) {
   return `从 ${Number(before ?? 0).toFixed(3)} 调整到 ${Number(after ?? 0).toFixed(3)}`
 }
 
 export function GovernanceDecisionsPage() {
+  const navigate = useNavigate()
   const { data, loading, error, refresh } = useTimelineBundle()
   const governance = data?.viewModels.governance
   const approvalOverlay = data?.viewModels.approvalOverlay
-  const candidateRelations = data?.snapshot.candidateExperiments?.candidates ?? []
+  const candidateRelations: any[] = filterSelectableCandidateExperiments(data?.snapshot.candidateExperiments?.candidates ?? [])
   const [actionBusy, setActionBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<{
@@ -31,12 +34,17 @@ export function GovernanceDecisionsPage() {
     try {
       setActionBusy(true)
       setActionError(null)
-      await submitApprovalAction({
+      const result = await submitApprovalAction({
         action,
         candidateId: payload.candidateId ?? approvalOverlay?.recommendation.candidateId,
         humanNotes: payload.humanNotes,
       })
       await refresh()
+      if (action === 'approve' || action === 'modify') {
+        navigate('/execution')
+      } else if (result.stage === 'approval_pending' || result.status === 'awaiting_approval') {
+        navigate('/approval')
+      }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : '审批动作提交失败。')
     } finally {
@@ -49,15 +57,24 @@ export function GovernanceDecisionsPage() {
     payload: { candidateId?: string; humanNotes?: string },
   ) {
     const candidateId = payload.candidateId ?? approvalOverlay?.recommendation.candidateId ?? '当前推荐实验'
+    const candidatePreview = candidateRelations.find((item: any) => item.experiment_id === candidateId)
+    const validation = getExperimentValidationSnapshot(candidatePreview)
+    const treatmentVariables = validation.treatmentVariables.join('、') || '待系统生成'
+    const controlVariables = validation.controlVariables.join('、') || '待系统生成'
+    const isBaselineExperiment = validation.experimentMode === 'baseline'
+    const hasFeatureDifference = validation.hasFeatureDifference
+    const scientificQuestion = candidatePreview?.scientific_question ?? candidatePreview?.purpose ?? '当前实验计划将围绕关键不确定性推进。'
     const contentMap = {
       approve: {
         title: '是否批准当前实验并进入执行？',
-        message: `系统将按当前审批结果执行 ${candidateId}，并进入实验执行与结果回收阶段。`,
+        message: isBaselineExperiment
+          ? `实验 ${candidateId} 计划预览：${scientificQuestion}；该方案为基线实验，采用单组配置；基线变量：${treatmentVariables}；确认后系统将生成执行协议并自动进入实验执行页面。`
+          : `实验 ${candidateId} 计划预览：${scientificQuestion}；对照组变量：${controlVariables}；实验组变量：${treatmentVariables}；变量差异校验：${hasFeatureDifference ? '通过' : '未通过'}；确认后系统将生成执行协议并自动进入实验执行页面。`,
         confirmLabel: '确认批准',
       },
       modify: {
         title: '是否按修改意见继续审批？',
-        message: `系统将基于你对 ${candidateId} 的修改意见继续推进，并重新写入审批决策。`,
+        message: `实验 ${candidateId} 将带着你的修改意见继续推进；当前计划：${scientificQuestion}；实验组变量：${treatmentVariables}。确认后系统将重新写入协议并自动进入实验执行页面。`,
         confirmLabel: '确认修改',
       },
       reject: {
@@ -139,6 +156,10 @@ export function GovernanceDecisionsPage() {
                 <div className="record-list">
                   {candidateRelations.map((candidate: any) => (
                     <article key={candidate.experiment_id} className="record-card">
+                      {(() => {
+                        const validation = getExperimentValidationSnapshot(candidate)
+                        return (
+                          <>
                       <div className="record-card__header">
                         <strong>{candidate.experiment_id}</strong>
                         <span>{candidate.related_uncertainties?.length ? '已建立关联' : '基线/补位实验'}</span>
@@ -150,6 +171,30 @@ export function GovernanceDecisionsPage() {
                           ? candidate.related_uncertainties.join('，')
                           : '当前为基线或补位候选实验，不直接承接上游不确定性。'}
                       </p>
+                      <p>
+                        实验模式：
+                        {validation.experimentMode === 'baseline' ? '基线实验（单组）' : '区分性对照实验'}
+                      </p>
+                      <p>
+                        对照组变量：
+                        {validation.experimentMode === 'baseline'
+                          ? '不设置对照组'
+                          : validation.controlVariables.length > 0
+                            ? validation.controlVariables.join('、')
+                            : '未配置'}
+                      </p>
+                      <p>实验组变量：{validation.treatmentVariables.length > 0 ? validation.treatmentVariables.join('、') : '未配置'}</p>
+                      <p>
+                        差异校验：
+                        {validation.experimentMode === 'baseline'
+                          ? '基线实验跳过对照差异校验'
+                          : validation.hasFeatureDifference
+                            ? '已通过'
+                            : '未通过，应拦截'}
+                      </p>
+                          </>
+                        )
+                      })()}
                     </article>
                   ))}
                 </div>

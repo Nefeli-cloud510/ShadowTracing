@@ -46,6 +46,10 @@ STATUS_PATH = LIVE_ROOT / "session_status.json"
 UPLOAD_MANIFEST_PATH = STATE_DIR / "upload_manifest.json"
 MODEL_USAGE_PATH = STATE_DIR / "model_usage.json"
 
+
+class StaleSessionError(RuntimeError):
+    """Raised when a background worker belongs to an outdated session generation."""
+
 TEXT_FILE_SUFFIXES = {".txt", ".md", ".markdown", ".csv", ".json"}
 TABULAR_FILE_SUFFIXES = {".csv", ".xlsx", ".xls"}
 TIME_COLUMN_CANDIDATES = {"time", "timestamp", "datetime", "date"}
@@ -774,6 +778,7 @@ class LiveSessionManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._generation = 0
         self._status: dict[str, Any] = {
             "status": "idle",
             "stage": "waiting_input",
@@ -803,8 +808,27 @@ class LiveSessionManager:
         LIVE_ROOT.mkdir(parents=True, exist_ok=True)
         STATUS_PATH.write_text(json.dumps(self._status, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _update(self, **changes: Any) -> None:
+    def _current_generation(self) -> int:
         with self._lock:
+            return self._generation
+
+    def _is_generation_current(self, generation: int) -> bool:
+        with self._lock:
+            return generation == self._generation
+
+    def _abort_if_stale(self, generation: int) -> None:
+        if not self._is_generation_current(generation):
+            raise StaleSessionError("session generation is stale")
+
+    def _cleanup_if_stale(self, generation: int) -> None:
+        if self._is_generation_current(generation):
+            return
+        shutil.rmtree(LIVE_ROOT, ignore_errors=True)
+
+    def _update(self, *, _generation: int | None = None, **changes: Any) -> None:
+        with self._lock:
+            if _generation is not None and _generation != self._generation:
+                return
             self._status.update(changes)
             self._status["updatedAt"] = datetime.now().isoformat()
             self._write_status()
@@ -840,6 +864,7 @@ class LiveSessionManager:
                 status="awaiting_round_decision",
                 stage="round_review_requested",
                 message="本轮实验已完成，请输入整轮反馈并决定是否继续。",
+                planning_status="round_review_requested",
             )
         elif (
             process_state.current_stage == "awaiting_human_approval"
@@ -854,12 +879,14 @@ class LiveSessionManager:
                 stage="approval_pending",
                 message=f"第 {max(candidate_set.round or 0, current_round)} 轮候选实验已生成，等待审批。",
                 currentRound=max(candidate_set.round or 0, current_round),
+                planning_status="candidate_plan_rebuilt",
             )
         elif process_state.current_stage in {"workflow_terminated", "completed"}:
             status_updates.update(
                 status="completed",
                 stage="completed",
                 message="当前闭环已完成。",
+                planning_status="completed",
             )
         elif process_state.current_stage == "failed":
             status_updates.update(
@@ -872,40 +899,56 @@ class LiveSessionManager:
                 status="running",
                 stage="next_round_planning",
                 message="正在根据本轮反馈生成下一轮候选实验。",
+                planning_status="candidate_plan_rebuilding",
             )
         elif process_state.current_phase == "experiment_execution":
             status_updates.update(
                 status="running",
                 stage="experiment_execution",
                 message="正在执行已批准的候选实验。",
+                planning_status="experiment_running",
             )
         self._status.update(status_updates)
 
     def reset(self) -> dict[str, Any]:
-        if LIVE_ROOT.exists():
-            shutil.rmtree(LIVE_ROOT)
-        self._worker = None
-        self._status = {
-            "status": "idle",
-            "stage": "waiting_input",
-            "message": "等待输入科学问题与数据文件。",
-            "question": "",
-            "model": "qwen-plus",
-            "maxRounds": 2,
-            "runRoot": str(LIVE_ROOT),
-            "currentRound": 0,
-            "updatedAt": datetime.now().isoformat(),
-        }
-        return self.snapshot()
+        with self._lock:
+            self._generation += 1
+            self._worker = None
+            self._status = {
+                "status": "idle",
+                "stage": "waiting_input",
+                "planning_status": "awaiting_data_dictionary",
+                "message": "等待输入科学问题与数据文件。",
+                "question": "",
+                "model": "qwen-plus",
+                "maxRounds": 2,
+                "runRoot": str(LIVE_ROOT),
+                "currentRound": 0,
+                "updatedAt": datetime.now().isoformat(),
+            }
+        shutil.rmtree(LIVE_ROOT, ignore_errors=True)
+        self._write_status()
+        return dict(self._status)
 
     def _assert_not_busy(self) -> None:
         if self._worker is not None and self._worker.is_alive():
             raise RuntimeError("当前已有动作正在运行，请等待当前阶段完成。")
 
     def _start_worker(self, target, **kwargs: Any) -> dict[str, Any]:
-        self._worker = threading.Thread(target=target, kwargs=kwargs, daemon=True)
+        generation = self._current_generation()
+        self._worker = threading.Thread(
+            target=self._run_worker,
+            kwargs={"target": target, "_generation": generation, **kwargs},
+            daemon=True,
+        )
         self._worker.start()
         return self.snapshot()
+
+    def _run_worker(self, *, target, _generation: int, **kwargs: Any) -> None:
+        try:
+            target(_generation=_generation, **kwargs)
+        finally:
+            self._cleanup_if_stale(_generation)
 
     def _current_model(self) -> str:
         return str(self._status.get("model") or "qwen-plus")
@@ -954,7 +997,9 @@ class LiveSessionManager:
         self._assert_not_busy()
 
         self.reset()
+        generation = self._current_generation()
         self._update(
+            _generation=generation,
             status="starting",
             stage="workspace_preparing",
             message="正在初始化真实工作区。",
@@ -976,6 +1021,7 @@ class LiveSessionManager:
     def _prepare_initial_review(
         self,
         *,
+        _generation: int,
         question: str,
         knowledge_files: list[dict[str, Any]],
         data_files: list[dict[str, Any]],
@@ -985,6 +1031,7 @@ class LiveSessionManager:
         data_dictionary_config: dict[str, Any] | None = None,
     ) -> None:
         try:
+            self._abort_if_stale(_generation)
             load_project_env(REPO_ROOT)
             run_root, repo, _, dictionary = initialize_live_workspace(
                 question=question,
@@ -994,7 +1041,9 @@ class LiveSessionManager:
                 variable_overrides=variable_overrides,
                 data_dictionary_config=data_dictionary_config,
             )
+            self._abort_if_stale(_generation)
             self._update(
+                _generation=_generation,
                 status="running",
                 stage="llm_bootstrap",
                 message="已写入任务与数据，正在启动 LLM 闭环。",
@@ -1004,20 +1053,26 @@ class LiveSessionManager:
             gateway_bundle = build_real_llm_control(repo, run_root, model=model)
             control = gateway_bundle["control"]
             control.prepare_initial_review_context(data_dictionary=dictionary)
+            self._abort_if_stale(_generation)
 
             self._update(
+                _generation=_generation,
                 status="running",
                 stage="round_review_requested",
                 message="正在生成候选实验并请求审批。",
                 currentRound=1,
             )
             control.request_experiment_selection_review()
+            self._abort_if_stale(_generation)
             self._update(
+                _generation=_generation,
                 status="awaiting_approval",
                 stage="approval_pending",
                 message="候选实验已生成，等待人工审批。",
                 currentRound=1,
             )
+        except StaleSessionError:
+            self._cleanup_if_stale(_generation)
         except Exception as exc:
             failure_path = LIVE_ROOT / "failure_report.json"
             failure_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1034,6 +1089,7 @@ class LiveSessionManager:
                 encoding="utf-8",
             )
             self._update(
+                _generation=_generation,
                 status="failed",
                 stage="failed",
                 message=f"真实闭环执行失败：{exc}",
@@ -1062,11 +1118,13 @@ class LiveSessionManager:
     def _run_candidate_execution(
         self,
         *,
+        _generation: int,
         candidate_id: str | None,
         human_notes: str | None,
         model_parameters: dict[str, Any],
     ) -> None:
         try:
+            self._abort_if_stale(_generation)
             repo = UnifiedStateRepository(LIVE_ROOT)
             control = self._build_control(repo)
             execution = control.approve_and_execute_candidate(
@@ -1075,14 +1133,23 @@ class LiveSessionManager:
                 auto_continue=False,
                 model_parameters=model_parameters or None,
             )
+            self._abort_if_stale(_generation)
             self._update(
+                _generation=_generation,
                 status="awaiting_round_decision",
                 stage="round_review_requested",
-                message="本轮实验已完成，请输入整轮反馈并决定是否继续。",
+                message=(
+                    "本轮实验已完成，请输入整轮反馈并决定是否继续。"
+                    if not execution.get("failure")
+                    else f"本轮实验失败但已记录归因：{execution['failure']}。请基于失败结果决定是否继续下一轮。"
+                ),
                 currentRound=execution["protocol"].round_id,
             )
+        except StaleSessionError:
+            self._cleanup_if_stale(_generation)
         except Exception as exc:
             self._update(
+                _generation=_generation,
                 status="failed",
                 stage="failed",
                 message=f"实验执行失败：{exc}",
@@ -1139,6 +1206,7 @@ class LiveSessionManager:
         self._update(
             status="running",
             stage="next_round_planning",
+            planning_status="candidate_plan_rebuilding",
             message="正在根据本轮反馈生成下一轮候选实验。",
             currentRound=current_round,
         )
@@ -1149,8 +1217,9 @@ class LiveSessionManager:
             human_feedback=human_feedback,
         )
 
-    def _run_round_decision(self, *, round_id: int, decision: str, human_feedback: str | None) -> None:
+    def _run_round_decision(self, *, _generation: int, round_id: int, decision: str, human_feedback: str | None) -> None:
         try:
+            self._abort_if_stale(_generation)
             repo = UnifiedStateRepository(LIVE_ROOT)
             dictionary = self._rebuild_dictionary(repo)
             control = self._build_control(repo)
@@ -1160,18 +1229,24 @@ class LiveSessionManager:
                 human_feedback=human_feedback,
                 data_dictionary=dictionary,
             )
+            self._abort_if_stale(_generation)
             repo = UnifiedStateRepository(LIVE_ROOT)
             process_state = repo.load_process_state()
             candidate_set = repo.load_candidate_experiments()
             next_round = max(candidate_set.round or 0, process_state.current_round, round_id + 1)
             self._update(
+                _generation=_generation,
                 status="awaiting_approval",
                 stage="approval_pending",
+                planning_status="candidate_plan_rebuilt",
                 message=f"第 {next_round} 轮候选实验已生成，等待审批。",
                 currentRound=next_round,
             )
+        except StaleSessionError:
+            self._cleanup_if_stale(_generation)
         except Exception as exc:
             self._update(
+                _generation=_generation,
                 status="failed",
                 stage="failed",
                 message=f"下一轮规划失败：{exc}",

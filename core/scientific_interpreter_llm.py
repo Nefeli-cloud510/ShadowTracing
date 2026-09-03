@@ -24,7 +24,11 @@ class ScientificInterpreterLLM:
     SYSTEM_PROMPT = """你是“逐影 Shadow Tracing”的科学解释者。
 
 你要基于统一 planner_input 输出结构化解释增强，用于写回假设树和不确定性状态。
-不能虚构不存在的 hypothesis_id 或 uncertainty_id，输出必须是严格 JSON。"""
+不能虚构不存在的 hypothesis_id 或 uncertainty_id，输出必须是严格 JSON。
+你必须同时覆盖两类解释：
+1. 预测性能解释：重点分析 Vsw/目标变量 的 Pearson r、RMSE、相对基线变化，以及趋势是否改善。
+2. 科学假设解释：判断方向匹配、幅度匹配、失败归因与下一轮建议。
+如果结果不理想，优先指出数据问题、特征问题、模型问题、假设问题、实验设计问题中的最可能项。"""
 
     def __init__(
         self,
@@ -86,7 +90,10 @@ class ScientificInterpreterLLM:
         baseline_interpretation = baseline[0].interpretation if baseline else "当前仍需保守解释。"
         return ScientificInterpreterLLMResponse(
             target_hypothesis_id=top_hypothesis.hypothesis_id if top_hypothesis else None,
-            interpretation=baseline_interpretation,
+            interpretation=(
+                f"{baseline_interpretation} 同时需要补充目标变量预测效果分析："
+                f"关注 Pearson r 相对基线的变化、RMSE 是否下降，以及当前结果对 Vsw 预测是否形成真实增益。"
+            ),
             related_uncertainty_ids=[top_uncertainty.uncertainty_id] if top_uncertainty else [],
             impact_direction="supports"
             if planner_input.evaluation_summary.delta_pearson_r and planner_input.evaluation_summary.delta_pearson_r > 0

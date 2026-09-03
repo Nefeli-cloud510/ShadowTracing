@@ -145,6 +145,7 @@ export interface KnowledgeMemoryViewModel {
 
 export interface ExperimentEvaluationViewModel {
   recommendedExperimentId?: string
+  executionPlanSummary?: string
   candidateExperiments: any[]
   experimentEntries: any[]
   latestEvaluation?: EvaluationPreview
@@ -286,6 +287,10 @@ export interface ApprovalOverlayViewModel {
     recommended: boolean
     relatedUncertainties: string[]
     testedHypotheses: string[]
+    controlVariables: string[]
+    treatmentVariables: string[]
+    experimentMode: 'baseline' | 'comparative'
+    hasFeatureDifference: boolean
   }>
   competitionChecklist: Array<{
     label: string

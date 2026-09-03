@@ -3,8 +3,7 @@ import { resetWorkflow } from '../api/liveWorkflow'
 import { PageTabs } from '../components/PageTabs'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
 import { useTabs } from '../contexts/TabContext'
-import { clearDataDictionaryDraft } from '../utils/dataDictionaryDraft'
-import { clearMissionControllerDraft, clearUploadFiles, notifyWorkspaceReset } from '../utils/missionControllerPersistence'
+import { resetClientWorkspaceState } from '../utils/missionControllerPersistence'
 
 export function ClosedLoopTimelinePage() {
   const { data, loading, error, refreshing, refresh } = useTimelineBundle()
@@ -48,11 +47,12 @@ export function ClosedLoopTimelinePage() {
   async function handleClearMemory() {
     try {
       setResetting(true)
-      await resetWorkflow()
-      clearDataDictionaryDraft()
-      clearMissionControllerDraft()
-      await clearUploadFiles()
-      notifyWorkspaceReset()
+      try {
+        await resetWorkflow()
+      } catch {
+        // Frontend state should still be cleared even if the live server is unavailable.
+      }
+      await resetClientWorkspaceState()
       await refresh()
     } finally {
       setResetting(false)

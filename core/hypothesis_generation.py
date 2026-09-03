@@ -181,8 +181,9 @@ class HypothesisGenerationService:
             for feature in _unique_preserve_order([*planner_features, *mediators, *feature_pool])
             if feature not in {competition_feature, primary_x, target}
         ]
-        for feature in _unique_preserve_order(root_branch_features)[:root_branch_budget]:
+        for branch_index, feature in enumerate(_unique_preserve_order(root_branch_features)[:root_branch_budget], start=1):
             is_mediator = feature in mediators
+            support_score = max(0.24, (0.4 if is_mediator else 0.35) - 0.02 * (branch_index - 1))
             branch_node = HypothesisNode(
                 hypothesis_id=_unique_hypothesis_id(f"{primary_x}_branch_{feature}", existing_ids),
                 statement=(
@@ -192,7 +193,7 @@ class HypothesisGenerationService:
                 ),
                 level=1,
                 status="active",
-                support_score=0.38 if is_mediator else 0.34,
+                support_score=round(support_score, 3),
                 activation_condition="kept active as an alternative first-order explanation",
                 created_at_round=current_round,
                 updated_at_round=current_round,

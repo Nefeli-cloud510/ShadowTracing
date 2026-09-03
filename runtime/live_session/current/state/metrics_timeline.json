@@ -1,0 +1,23 @@
+{
+  "task_id": "ST_LIVE_20260903_151104",
+  "current_round": 1,
+  "last_updated": "2026-09-03T15:12:24.396209",
+  "entries": [
+    {
+      "round_id": 1,
+      "experiment_id": "E_R01_S1",
+      "execution_status": "completed",
+      "baseline_rmse": 49.25384857191404,
+      "treatment_rmse": 48.42758229119842,
+      "baseline_pearson_r": 0.39448958586943433,
+      "treatment_pearson_r": 0.4119936080368105,
+      "delta_rmse": -0.8262662807156218,
+      "delta_pearson_r": 0.017504022167376176,
+      "stable": true,
+      "support_mean": 0.0175,
+      "support_max": 0.0175,
+      "unresolved_uncertainty_count": 0,
+      "recorded_at": "2026-09-03T15:12:24.396209"
+    }
+  ]
+}
