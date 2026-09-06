@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PageTabs } from '../components/PageTabs'
+import { inspectStagedDataFiles } from '../api/liveWorkflow'
 import {
+  mergeDataDictionaryDraft,
   readDataDictionaryDraft,
   validateDataDictionaryDraft,
   writeDataDictionaryDraft,
@@ -13,7 +15,7 @@ import { WORKSPACE_RESET_EVENT } from '../utils/missionControllerPersistence'
 const CATEGORY_OPTIONS: Array<{ value: VariableCategory; label: string }> = [
   { value: 'core_explanatory', label: '核心解释变量' },
   { value: 'target', label: '目标变量' },
-  { value: 'candidate_mediator', label: '候选中介因素' },
+  { value: 'candidate_mediator', label: '候选特征' },
   { value: 'deprecated', label: '弃用变量' },
 ]
 
@@ -29,6 +31,26 @@ export function DataDictionaryConfigPage() {
     }
     window.addEventListener(WORKSPACE_RESET_EVENT, handleWorkspaceReset)
     return () => window.removeEventListener(WORKSPACE_RESET_EVENT, handleWorkspaceReset)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function refreshFromBackendFiles() {
+      try {
+        const inspection = await inspectStagedDataFiles()
+        if (!cancelled && inspection && inspection.tables.length > 0) {
+          const nextDraft = mergeDataDictionaryDraft(inspection, readDataDictionaryDraft())
+          setDraft(nextDraft)
+          writeDataDictionaryDraft(nextDraft)
+        }
+      } catch {
+        // 后端暂存文件不可用时保留本地草稿。
+      }
+    }
+    void refreshFromBackendFiles()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const groupedFields = useMemo(() => {
@@ -65,6 +87,45 @@ export function DataDictionaryConfigPage() {
     })
   }
 
+  function updatePhysicalMeaning(fileName: string, fieldName: string, value: string) {
+    const field = draft?.fields.find((item) => item.fileName === fileName && item.fieldName === fieldName)
+    const syncDisplayName = Boolean(
+      field && (!field.displayName.trim() || field.displayName === field.physicalMeaning),
+    )
+    updateField(fileName, fieldName, {
+      physicalMeaning: value,
+      ...(syncDisplayName ? { displayName: value } : {}),
+    })
+  }
+
+  function formatDataType(dataType: string): string {
+    const normalized = dataType.toLowerCase()
+    if (normalized.startsWith('float')) {
+      return '浮点数'
+    }
+    if (normalized.startsWith('int') || normalized.startsWith('uint')) {
+      return '整数'
+    }
+    if (normalized.startsWith('bool')) {
+      return '布尔值'
+    }
+    if (normalized.startsWith('datetime') || normalized.startsWith('timestamp') || normalized.includes('date')) {
+      return '日期时间'
+    }
+    if (
+      normalized.startsWith('object') ||
+      normalized.startsWith('string') ||
+      normalized.startsWith('category') ||
+      normalized.startsWith('str')
+    ) {
+      return '文本'
+    }
+    if (normalized.startsWith('complex')) {
+      return '复数'
+    }
+    return dataType
+  }
+
   const summary = useMemo(() => {
     const fields = draft?.fields ?? []
     return {
@@ -81,7 +142,15 @@ export function DataDictionaryConfigPage() {
       setSubmitMessage(validationError)
       return
     }
-    setSubmitMessage('数据字典配置已确认，现返回智能体交互控制台。')
+    if (draft) {
+      const confirmedDraft = {
+        ...draft,
+        updatedAt: new Date().toISOString(),
+        confirmedAt: new Date().toISOString(),
+      }
+      writeDataDictionaryDraft(confirmedDraft)
+    }
+    setSubmitMessage('数据变量库已确认，现返回智能体交互控制台。')
     navigate('/dialogue')
   }
 
@@ -96,8 +165,8 @@ export function DataDictionaryConfigPage() {
           <header className="workspace-page__header">
             <div>
               <span className="timeline-header__eyebrow">Data Dictionary</span>
-              <h1>数据字典配置</h1>
-              <p>为每个表头补充物理量释义，并人工划分变量类别。后续假设生成、科学质询与不确定性队列将严格基于这里的选定变量。</p>
+              <h1>数据变量库</h1>
+              <p>后续假设生成、科学质询与不确定性队列将严格基于这里的选定变量。</p>
             </div>
 
             <div className="detail-page__meta">
@@ -110,14 +179,14 @@ export function DataDictionaryConfigPage() {
                 <strong>{summary.target}</strong>
               </div>
               <div className="status-chip">
-                <span>候选中介</span>
+                <span>候选特征</span>
                 <strong>{summary.mediator}</strong>
               </div>
             </div>
           </header>
 
           {!draft ? (
-            <div className="timeline-empty-state">请先在智能体交互控制台上传实验数据，系统解析表头后才可配置数据字典。</div>
+            <div className="timeline-empty-state">请先在智能体交互控制台上传实验数据，系统解析表头后才可配置数据变量库。</div>
           ) : (
             <>
               <section className="detail-card detail-card--wide">
@@ -153,14 +222,15 @@ export function DataDictionaryConfigPage() {
                       <span>数据类型</span>
                       <span>缺失率</span>
                       <span>变量类别</span>
-                      <span>物理量释义</span>
+                      <span>物理量名称</span>
+                      <span>展示名称</span>
                     </div>
                     {fields.map((field) => (
                       <div key={`${fileName}-${field.fieldName}`} className="data-dictionary-table__row">
                         <span className="data-dictionary-table__field">
                           <strong>{field.fieldName}</strong>
                         </span>
-                        <span>{field.dataType}</span>
+                        <span>{formatDataType(field.dataType)}</span>
                         <span>{(field.missingRate * 100).toFixed(1)}%</span>
                         <select
                           className="controller-inline-input"
@@ -176,8 +246,15 @@ export function DataDictionaryConfigPage() {
                         <input
                           className="controller-inline-input"
                           value={field.physicalMeaning}
-                          onChange={(event) => updateField(fileName, field.fieldName, { physicalMeaning: event.target.value })}
-                          placeholder={field.category === 'deprecated' ? '弃用字段无需填写物理量释义' : '填写物理量释义，例如太阳风速度、日影南北偏移'}
+                          onChange={(event) => updatePhysicalMeaning(fileName, field.fieldName, event.target.value)}
+                          placeholder={field.category === 'deprecated' ? '弃用字段无需填写物理量名称' : '请填写物理量名称，例如太阳风速度'}
+                          disabled={field.category === 'deprecated'}
+                        />
+                        <input
+                          className="controller-inline-input"
+                          value={field.displayName}
+                          onChange={(event) => updateField(fileName, field.fieldName, { displayName: event.target.value })}
+                          placeholder={field.category === 'deprecated' ? '弃用字段暂不展示' : '填写面向 LLM 与前端展示的名称，例如太阳风速度'}
                           disabled={field.category === 'deprecated'}
                         />
                       </div>
@@ -187,10 +264,10 @@ export function DataDictionaryConfigPage() {
               ))}
 
               <div className="detail-links">
-                <button type="button" className="detail-link detail-link--button detail-link--accent" onClick={handleConfirmSubmit}>
+                <button type="button" className="detail-link detail-link--button detail-link--panel-button" onClick={handleConfirmSubmit}>
                   确认提交
                 </button>
-                <button type="button" className="detail-link detail-link--button detail-link--accent" onClick={() => navigate('/dialogue')}>
+                <button type="button" className="detail-link detail-link--button detail-link--panel-button" onClick={() => navigate('/dialogue')}>
                   返回智能体交互控制台
                 </button>
               </div>

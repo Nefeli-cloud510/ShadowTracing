@@ -11,7 +11,7 @@ const API_ROOT =
 export interface StartWorkflowPayload {
   question: string
   knowledgeFiles: File[]
-  dataFiles: File[]
+  dataFiles?: File[]
   model?: string
   rounds?: number
   xVariable?: string
@@ -25,6 +25,7 @@ export interface StartWorkflowPayload {
       file_name?: string
       category?: string
       physical_meaning?: string
+      display_name?: string
     }>
   }
 }
@@ -35,7 +36,27 @@ export interface LiveWorkflowResponse {
   planning_status?: string
   message?: string
   question?: string
+  currentRound?: number
   runRoot?: string
+}
+
+export interface UncertaintyRecoveryResult extends LiveWorkflowResponse {
+  mode?: 'extend' | 'retry' | 'manual'
+  currentRound?: number
+  targetCount?: number
+  activeCount?: number
+  addedCount?: number
+  added?: string[]
+  skippedDuplicates?: number
+  sourceDetailCounts?: Record<string, number>
+}
+
+export interface ManualUncertaintyItem {
+  question: string
+  description?: string
+  priority?: 'low' | 'medium' | 'high'
+  relatedHypotheses?: string[]
+  features?: string[]
 }
 
 export interface QuestionAnalysis {
@@ -55,6 +76,7 @@ export interface DataInspectionColumn {
   missing_rate: number
   suggested_category: string
   physical_meaning: string
+  display_name?: string
 }
 
 export interface DataInspectionTable {
@@ -96,7 +118,7 @@ export async function startWorkflow(payload: StartWorkflowPayload): Promise<Live
 
   const formData = new FormData()
   formData.append('question', payload.question)
-  formData.append('model', payload.model ?? 'qwen-plus')
+  formData.append('model', payload.model ?? 'qwen3.8-flash')
   formData.append('rounds', String(payload.rounds ?? 2))
   if (payload.xVariable?.trim()) {
     formData.append('x_variable', payload.xVariable.trim())
@@ -117,7 +139,7 @@ export async function startWorkflow(payload: StartWorkflowPayload): Promise<Live
   for (const file of payload.knowledgeFiles) {
     formData.append('knowledge_files', file, file.name)
   }
-  for (const file of payload.dataFiles) {
+  for (const file of payload.dataFiles ?? []) {
     formData.append('data_files', file, file.name)
   }
 
@@ -134,13 +156,21 @@ export async function startWorkflow(payload: StartWorkflowPayload): Promise<Live
   return result
 }
 
-export async function resetWorkflow(): Promise<LiveWorkflowResponse> {
+export async function resetWorkflow(
+  options: { preserveUploadedFiles?: boolean } = {},
+): Promise<LiveWorkflowResponse> {
   if (!API_ROOT) {
     return { status: 'idle' }
   }
 
   const response = await fetch(`${API_ROOT}/session/reset`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      preserve_uploaded_files: options.preserveUploadedFiles === true,
+    }),
   })
   const result = await parseJsonResponse(response)
 
@@ -151,7 +181,7 @@ export async function resetWorkflow(): Promise<LiveWorkflowResponse> {
   return result
 }
 
-export async function analyzeQuestion(question: string, model = 'qwen-plus'): Promise<QuestionAnalysis> {
+export async function analyzeQuestion(question: string, model = 'qwen3.8-flash'): Promise<QuestionAnalysis> {
   if (!API_ROOT) {
     throw new Error('本地运行服务未配置，无法解析科学问题。')
   }
@@ -200,6 +230,48 @@ export async function inspectDataFiles(dataFiles: File[]): Promise<DataInspectio
   }
 }
 
+export async function stageDataFiles(dataFiles: File[]): Promise<DataInspectionResult> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法上传实验数据。')
+  }
+  if (dataFiles.length === 0) {
+    throw new Error('请先上传实验数据文件。')
+  }
+
+  const formData = new FormData()
+  for (const file of dataFiles) {
+    formData.append('data_files', file, file.name)
+  }
+
+  const response = await fetch(`${API_ROOT}/session/stage-data`, {
+    method: 'POST',
+    body: formData,
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '实验数据上传后端失败。')
+  }
+  return (result as LiveWorkflowResponse & { inspection?: DataInspectionResult }).inspection ?? {
+    tables: [],
+    suggested: { candidate_mediators: [] },
+  }
+}
+
+export async function inspectStagedDataFiles(): Promise<DataInspectionResult | null> {
+  if (!API_ROOT) {
+    return null
+  }
+
+  const response = await fetch(`${API_ROOT}/session/staged-inspect`, {
+    method: 'GET',
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    return null
+  }
+  return (result as LiveWorkflowResponse & { inspection?: DataInspectionResult }).inspection ?? null
+}
+
 export async function submitApprovalAction(payload: {
   action: 'approve' | 'modify' | 'reject' | 'pause'
   candidateId?: string
@@ -244,4 +316,203 @@ export async function submitRoundDecision(payload: {
     throw new Error(result.message ?? '整轮反馈提交失败。')
   }
   return result
+}
+
+export async function confirmHypothesisTree(payload?: {
+  humanNotes?: string
+  nodes?: Array<Record<string, unknown>>
+}): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法确认假设树。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/confirm-hypothesis`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload ?? {}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '假设树确认失败。')
+  }
+  return result
+}
+
+export async function runScientificQuestioning(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法启动科学质询。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/scientific-questioning`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '科学质询启动失败。')
+  }
+  return result
+}
+
+export async function rerunScientificQuestioning(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法重新生成科学质询。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/scientific-questioning/rerun`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '科学质询重新生成失败。')
+  }
+  return result
+}
+
+export async function undoScientificQuestioning(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法撤销科学质询。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/scientific-questioning/undo`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '科学质询撤销失败。')
+  }
+  return result
+}
+
+export async function startUncertaintyIdentification(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法进入不确定性识别。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/start-uncertainty-identification`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '不确定性识别启动失败。')
+  }
+  return result
+}
+
+export async function regenerateCandidatePlan(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法重新生成候选实验。')
+  }
+
+  const response = await fetch(`${API_ROOT}/workflow/regenerate-candidate-plan`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  const result = await parseJsonResponse(response)
+  if (!response.ok) {
+    throw new Error(result.message ?? '候选实验重新生成失败。')
+  }
+  return result
+}
+
+export async function fetchLiveSession(): Promise<LiveWorkflowResponse> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法读取会话状态。')
+  }
+
+  const response = await fetch(`${API_ROOT}/session`, {
+    method: 'GET',
+  })
+  const result = (await parseJsonResponse(response)) as LiveWorkflowResponse
+  if (!response.ok) {
+    throw new Error(result.message ?? '会话状态读取失败。')
+  }
+  return result
+}
+
+export async function waitForLiveStage(options: {
+  accept: (session: LiveWorkflowResponse) => boolean
+  reject?: (session: LiveWorkflowResponse) => boolean
+  timeoutMs?: number
+  intervalMs?: number
+}): Promise<LiveWorkflowResponse> {
+  const { accept, reject, timeoutMs = 240000, intervalMs = 5000 } = options
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const session = await fetchLiveSession()
+    if (reject?.(session)) {
+      throw new Error(session.message ?? '后台流程执行失败，请查看失败报告。')
+    }
+    if (accept(session)) {
+      return session
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs))
+  }
+
+  throw new Error('后台生成超时，请到不确定性队列页刷新状态后重试。')
+}
+
+async function postUncertaintyRecovery(
+  path: '/uncertainty/extend' | '/uncertainty/retry' | '/uncertainty/manual',
+  payload: Record<string, unknown>,
+): Promise<UncertaintyRecoveryResult> {
+  if (!API_ROOT) {
+    throw new Error('本地运行服务未配置，无法补足科学不确定性。')
+  }
+
+  const response = await fetch(`${API_ROOT}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  const result = (await parseJsonResponse(response)) as UncertaintyRecoveryResult
+  if (!response.ok) {
+    throw new Error(result.message ?? '科学不确定性补足失败。')
+  }
+  return result
+}
+
+export async function extendUncertaintyGeneration(
+  targetCount = 6,
+): Promise<UncertaintyRecoveryResult> {
+  return postUncertaintyRecovery('/uncertainty/extend', { targetCount })
+}
+
+export async function retryUncertaintyGeneration(
+  targetCount = 6,
+): Promise<UncertaintyRecoveryResult> {
+  return postUncertaintyRecovery('/uncertainty/retry', { targetCount })
+}
+
+export async function manualUncertaintySupplement(
+  items: ManualUncertaintyItem[],
+  targetCount?: number,
+): Promise<UncertaintyRecoveryResult> {
+  return postUncertaintyRecovery('/uncertainty/manual', {
+    items,
+    targetCount: targetCount ?? Math.max(items.length, 4),
+  })
 }

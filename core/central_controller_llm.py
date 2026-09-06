@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from core.llm_gateway import LLMGateway
+from core.prompt_rules import ELASTIC_NET_EXECUTION_RULE
 from core.planner_unified import ProgrammaticPlannerOutputBuilder
 from core.unified_schema import (
     CandidateExperimentSet,
@@ -14,6 +15,7 @@ from core.unified_schema import (
     ReasoningPlannerInput,
     ReasoningPlannerOutput,
 )
+from core.variable_semantic_service import VariableSemanticService
 
 
 class CentralControllerLLMResponse(BaseModel):
@@ -41,7 +43,7 @@ class CentralControllerLLM:
 输出下一轮规划的结构化裁决。你不能发明不存在的 candidate_id、hypothesis_id、
 uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化。
 
-输出必须是严格 JSON，且字段必须完整。"""
+输出必须是严格 JSON，且字段必须完整。""" + "\n\n" + ELASTIC_NET_EXECUTION_RULE
 
     def __init__(
         self,
@@ -109,6 +111,10 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
             "你只能使用候选计划里已有的 id。\n\n"
             f"planner_input={planner_input.to_central_controller_payload()}\n\n"
             f"candidate_plan_top={top_candidates}\n\n"
+            "data_dictionary_display_summary="
+            f"{_dictionary_display_block(planner_input.data_dictionary_summary)}\n"
+            "注意：feature_focus 与解释性文本中的变量必须使用展示名"
+            "（display_feature_candidates/display_target_candidates），禁止直接输出原始 csv 表头。\n"
             f"baseline_summary={baseline_output.summary}\n"
             f"baseline_protocol_refinement_count={len(baseline_output.protocol_refinements)}\n"
             "请输出 JSON，包括：summary、candidate_focus_ids、candidate_rationale、"
@@ -124,29 +130,48 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
         candidate_plan: CandidateExperimentSet,
         baseline_output: ReasoningPlannerOutput,
     ) -> CentralControllerLLMResponse:
-        top_candidate = candidate_plan.top_candidate() or (
-            candidate_plan.candidates[0] if candidate_plan.candidates else None
+        scored = sorted(
+            (
+                candidate
+                for candidate in candidate_plan.candidates
+                if candidate.utility_score is not None
+            ),
+            key=lambda item: item.utility_score or 0.0,
+            reverse=True,
         )
+        top_two = scored[:2] or candidate_plan.candidates[:2]
         top_hypothesis = planner_input.active_hypotheses[0] if planner_input.active_hypotheses else None
         top_uncertainty = (
             planner_input.unresolved_uncertainties[0] if planner_input.unresolved_uncertainties else None
         )
+        top_hypothesis_ref = (
+            top_hypothesis.statement if top_hypothesis and top_hypothesis.statement else "当前主假设"
+        )
+        if top_hypothesis and top_hypothesis.statement:
+            top_hypothesis_ref = (
+                top_hypothesis.statement
+                if len(top_hypothesis.statement) <= 56
+                else f"{top_hypothesis.statement[:56]}…"
+            )
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
         feature_focus = []
         feedback_text = (planner_input.human_feedback or "").lower()
         for feature in planner_input.data_dictionary_summary.feature_candidates:
-            if feature.lower() in feedback_text:
+            if semantic.matches_text(feature, feedback_text):
                 feature_focus.append(feature)
         return CentralControllerLLMResponse(
-            summary=baseline_output.summary or "中央控制器采用本地基线策略生成下一轮规划。",
-            candidate_focus_ids=[top_candidate.experiment_id] if top_candidate else [],
+            summary=baseline_output.summary or "中央控制器采用本地对照组/实验组策略生成下一轮规划。",
+            candidate_focus_ids=[candidate.experiment_id for candidate in top_two],
             candidate_rationale=(
-                f"优先细化 {top_candidate.experiment_id}，因为它在当前候选计划中综合价值较高，且更贴近最近反馈。"
-                if top_candidate
+                "优先细化 "
+                + "、".join(candidate.experiment_id for candidate in top_two)
+                + "，因为它们在当前候选计划中综合价值较高、设计互不相同，且更贴近最近反馈。"
+                if top_two
                 else "当前无候选可供细化。"
             ),
             target_hypothesis_id=top_hypothesis.hypothesis_id if top_hypothesis else None,
             interpretation=(
-                f"结合上一轮评价与当前分歧，继续围绕 {top_hypothesis.hypothesis_id} 做更保守、可验证的下一轮推进。"
+                f"结合上一轮评价与当前分歧，继续围绕“{top_hypothesis_ref}”做更保守、可验证的下一轮推进。"
                 if top_hypothesis
                 else "当前没有明确活跃假设，优先保持探索性规划。"
             ),
@@ -179,6 +204,8 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
         candidate_index = {candidate.experiment_id: candidate for candidate in candidate_plan.candidates}
         valid_hypothesis_ids = {item.hypothesis_id for item in planner_input.active_hypotheses}
         valid_uncertainty_ids = {item.uncertainty_id for item in planner_input.unresolved_uncertainties}
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
+        feature_focus_raw = semantic.raw_list(llm_response.feature_focus)
 
         focused_candidates = [
             candidate_index[candidate_id]
@@ -192,9 +219,20 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
         else:
             focused_candidates = [candidate.model_copy(deep=True) for candidate in focused_candidates[:2]]
 
+        primary_x = (
+            planner_input.data_dictionary_summary.feature_candidates[0]
+            if planner_input.data_dictionary_summary.feature_candidates
+            else None
+        )
         candidate_supplements: list[PlannerCandidateSupplement] = []
         for index, candidate in enumerate(focused_candidates, start=1):
-            for feature in llm_response.feature_focus:
+            _rewrite_candidate_design_focus(
+                candidate=candidate,
+                feature_focus_raw=feature_focus_raw,
+                primary_x=primary_x,
+                semantic=semantic,
+            )
+            for feature in feature_focus_raw:
                 note = f"llm_controller_feature_focus:{feature}"
                 if note not in candidate.design.notes:
                     candidate.design.notes.append(note)
@@ -259,7 +297,7 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
                 ),
                 suggested_feature_focus=[
                     feature
-                    for feature in llm_response.feature_focus
+                    for feature in feature_focus_raw
                     if feature in planner_input.data_dictionary_summary.feature_candidates
                 ],
                 protocol_notes=["llm_central_controller"] + llm_response.protocol_notes,
@@ -279,6 +317,67 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
         )
 
 
+def _rewrite_candidate_design_focus(
+    *,
+    candidate,
+    feature_focus_raw: list[str],
+    primary_x: str | None,
+    semantic: VariableSemanticService,
+) -> bool:
+    """Rebuild a selected candidate around the LLM's feature focus."""
+    new_focus = next((feature for feature in feature_focus_raw if feature), None)
+    if not new_focus:
+        return False
+
+    design = candidate.design
+    old_focus = design.design_focus
+    if old_focus == new_focus:
+        return False
+
+    control = [
+        feature
+        for feature in design.control
+        if feature not in {old_focus, new_focus}
+    ]
+    treatment = [
+        feature
+        for feature in design.treatment
+        if feature != old_focus
+    ]
+    treatment = list(dict.fromkeys([*control, *treatment, new_focus]))
+    control = list(dict.fromkeys(control))
+    treatment = list(dict.fromkeys(treatment))
+
+    design.control = control
+    design.treatment = treatment
+    design.design_focus = new_focus
+    if old_focus and old_focus in design.lags:
+        lag_values = design.lags.pop(old_focus)
+        design.lags[new_focus] = lag_values
+
+    display_old = semantic.to_display(old_focus) if old_focus else None
+    display_new = semantic.to_display(new_focus)
+    if display_old and display_old != display_new:
+        if candidate.purpose:
+            candidate.purpose = candidate.purpose.replace(display_old, display_new)
+        if candidate.distinguishing_insight:
+            candidate.distinguishing_insight = candidate.distinguishing_insight.replace(
+                display_old,
+                display_new,
+            )
+
+    design.notes = [
+        note for note in design.notes if not note.startswith("design_focus:")
+    ]
+    design.notes.append(f"design_focus:{new_focus}")
+    design.notes.append(f"llm_controller_focus_rewrite:{old_focus or 'none'}->{new_focus}")
+
+    design.display_design_focus = display_new
+    design.display_control = semantic.display_list(design.control)
+    design.display_treatment = semantic.display_list(design.treatment)
+    return True
+
+
 def _normalize_impact_direction(direction: str) -> str:
     if direction in {"supports", "weakens", "clarifies"}:
         return direction
@@ -289,6 +388,21 @@ def _normalize_priority_action(action: str) -> str:
     if action in {"increase", "decrease", "maintain"}:
         return action
     return "maintain"
+
+
+def _dictionary_display_block(summary) -> str:
+    display_features = list(summary.display_feature_candidates or summary.feature_candidates)
+    display_targets = list(summary.display_target_candidates or summary.target_candidates)
+    display_time = summary.display_time_column or summary.time_column
+    return (
+        "{"
+        f'"dataset_name": "{summary.dataset_name}", '
+        f'"display_time_column": "{display_time}", '
+        f'"display_target_candidates": {display_targets}, '
+        f'"display_feature_candidates": {display_features}, '
+        f'"raw_display_map": {dict(summary.raw_display_map or {})}'
+        "}"
+    )
 
 
 def _filter_model_parameters(parameters: dict[str, Any]) -> dict[str, Any]:

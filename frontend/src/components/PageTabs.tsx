@@ -1,10 +1,12 @@
 import { useTabs } from '../contexts/TabContext'
+import { WorkspaceRoundChip } from './WorkspaceRoundChip'
 
 export function PageTabs() {
   const { tabs, removeTab, activeTabId, setActiveTabId } = useTabs()
 
   return (
     <div className="page-tabs">
+      <WorkspaceRoundChip />
       {tabs.map((tab) => (
         <div
           key={tab.id}

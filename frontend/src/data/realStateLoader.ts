@@ -1,4 +1,5 @@
 import type {
+  DataCoverageViewModel,
   EvaluationPreview,
   ExperimentPreview,
   FrontendViewModels,
@@ -7,12 +8,14 @@ import type {
   KnowledgeMemoryViewModel,
   MissionViewModel,
   RoundData,
+  ThreeLayerConclusionViewModel,
   TimelineDataBundle,
   TimelineNodeData,
   TimelineNodeStatus,
   UncertaintyPreview,
 } from '../types/timeline'
 import { filterSelectableCandidateExperiments, getExperimentValidationSnapshot } from '../utils/experimentValidation'
+import { normalizeArmTerms } from '../utils/armTerminology'
 
 type NumericValue = number | string | { value?: number | string } | undefined
 
@@ -54,6 +57,8 @@ type RawProcess = {
 
 type RawHypothesisTreeNode = {
   hypothesis_id?: string
+  id?: string
+  display_hypothesis_id?: string
   statement?: string
   status?: string
   support_score?: number
@@ -65,11 +70,22 @@ type RawHypothesisTreeNode = {
     round?: number
     score?: number
   }>
+  questioning_records?: Array<{
+    round?: number
+    impact_direction?: string
+    impact_strength?: number
+    confidence?: number
+    rationale?: string
+    support_before?: number
+    support_after?: number
+    status?: string
+  }>
 }
 
 type RawHypothesisTree = {
   current_round?: number
   root_question?: string
+  generated_at?: string
   nodes?: RawHypothesisTreeNode[]
   tree_summary?: {
     total_nodes?: number
@@ -114,6 +130,8 @@ type RawExperimentEntry = {
   experiment_id?: string
   round_id?: number
   status?: string
+  created_at?: string
+  updated_at?: string
   protocol_path?: string
   result_path?: string
   evaluation_path?: string
@@ -132,6 +150,17 @@ type RawExperimentEntry = {
   }
   key_findings?: string[]
   visualizations?: string[]
+  data_coverage?: Array<{
+    source?: string
+    run_id?: string
+    expected_days?: number
+    observed_days?: number
+    missing_days?: number
+    coverage_ratio?: number
+    dropped_gap_windows?: number
+    interpolated_days?: number
+    note?: string
+  }>
   reasoning_traces?: Array<{
     trace_id?: string
     stage?: string
@@ -144,6 +173,77 @@ type RawExperimentEntry = {
 type RawExperimentMemory = {
   current_round?: number
   entries?: RawExperimentEntry[]
+}
+
+type RawThreeLayerConclusion = {
+  experiment_layer?: {
+    experiment_id?: string
+    design_summary?: string
+    probe_axis?: string
+    forecast_horizon_days?: number
+    baseline_rmse?: number
+    treatment_rmse?: number
+    baseline_pearson_r?: number
+    treatment_pearson_r?: number
+    skill_delta?: number
+    decisive?: boolean
+  }
+  hypothesis_layer?: Array<{
+    hypothesis_id?: string
+    display_hypothesis_id?: string
+    statement?: string
+    predicted_direction?: string
+    predicted_range?: number[]
+    actual_delta?: number
+    direction_matched?: boolean | string
+    magnitude_matched?: boolean | string
+    conclusion?: string
+    support_after?: number
+  }>
+  scientific_layer?: {
+    main_question?: string
+    answer?: string
+    path_question?: string
+    path_answer?: string
+    evidence_text?: string
+  }
+  data_layer?: {
+    rmse_attribution?: string
+    pearson_attribution?: string
+    skill_delta_meaning?: string
+    anomalies?: string[]
+    next_focus?: string
+  }
+  tracking_layer?: {
+    audit_items?: string[]
+    sources?: string[]
+    snapshot_refs?: string[]
+  }
+}
+
+type RoundHistoryArtifact = {
+  round_id?: number
+  created_at?: string
+  updated_at?: string
+  status?: string
+  source_experiment_id?: string
+  approved_candidate_id?: string
+  three_layer_conclusion?: RawThreeLayerConclusion
+  metrics_snapshot?: RawExperimentEntry['metrics_snapshot']
+  iterative_validations?: Array<{
+    item_id?: string
+    label?: string
+    passed?: boolean
+    expected?: unknown
+    actual?: unknown
+    detail?: string
+  }>
+  iteration_input_sources?: string[]
+}
+
+type RawRoundHistory = {
+  current_round?: number
+  entries?: RoundHistoryArtifact[]
 }
 
 type RawDecision = {
@@ -177,6 +277,35 @@ type RawCandidateExperiment = {
   scientific_question?: string
   purpose?: string
   tested_hypotheses?: string[]
+  related_uncertainties?: string[]
+  distinguishing_insight?: string
+  design?: {
+    target?: string
+    control?: string[]
+    treatment?: string[]
+    display_target?: string
+    display_control?: string[]
+    display_treatment?: string[]
+    display_design_focus?: string
+    design_focus?: string
+    probe_axis?: string
+    lags?: Record<string, number[]>
+    forecast_horizon_days?: number
+    past_lag_days?: number
+    window_size?: number
+    control_lag_days?: number
+    treatment_lag_days?: number
+    notes?: string[]
+    model?: unknown
+    evaluation_metrics?: string[]
+  }
+  hypothesis_predictions?: Record<
+    string,
+    {
+      expected_effect?: string
+      expected_range?: [number, number]
+    }
+  >
   estimated_information_gain?: NumericValue
   estimated_performance_gain?: NumericValue
   estimated_risk?: NumericValue
@@ -235,8 +364,24 @@ type RawPlannerInput = {
   data_dictionary_summary?: {
     dataset_name?: string
     time_column?: string
+    display_time_column?: string
     feature_candidates?: string[]
+    display_feature_candidates?: string[]
+    target_candidates?: string[]
+    display_target_candidates?: string[]
+    raw_display_map?: Record<string, string>
   }
+}
+
+export function toDisplayText(text: string, dictionary?: RawPlannerInput['data_dictionary_summary']): string {
+  const source = String(text ?? '')
+  const rawMap = dictionary?.raw_display_map ?? {}
+  const rawNames = Object.keys(rawMap).filter((key) => rawMap[key] && rawMap[key] !== key)
+  if (!source || rawNames.length === 0) {
+    return source
+  }
+  const sorted = [...rawNames].sort((a, b) => b.length - a.length)
+  return sorted.reduce((result, raw) => result.split(raw).join(rawMap[raw] ?? raw), source)
 }
 
 type RawUploadManifest = {
@@ -272,6 +417,7 @@ type LoaderSnapshot = {
   hypothesisTree: RawHypothesisTree
   uncertainties: RawUncertainties
   experimentMemory: RawExperimentMemory
+  roundHistory: RawRoundHistory
   candidateExperiments: RawCandidateExperiments
   plannerInput: RawPlannerInput
   plannerOutput: unknown | null
@@ -313,6 +459,10 @@ const STAGE_LABELS: Record<string, string> = {
   waiting_input: '等待任务录入',
   not_started: '尚未开始',
   workspace_preparing: '准备运行环境',
+  awaiting_hypothesis_confirmation: '假设树待确认',
+  hypothesis_tree_confirmed: '假设树已确认',
+  awaiting_scientific_questioning: '科学质询待开始',
+  awaiting_uncertainty_identification: '等待进入不确定性识别',
   awaiting_human_approval: '等待 PI 审批',
   round_running: '本轮执行中',
   round_completed: '本轮已完成',
@@ -348,6 +498,7 @@ const SOURCE_FILES = {
   hypothesisTree: 'hypothesis_tree.json',
   uncertainties: 'uncertainties.json',
   experimentMemory: 'experiment_memory.json',
+  roundHistory: 'round_history.json',
   decisionLog: 'decision_log.json',
   candidateExperiments: 'candidate_experiments.json',
   plannerInput: 'planner_input.json',
@@ -363,70 +514,70 @@ const NODE_DEFINITIONS: Array<
     id: 'Q',
     shortLabel: 'Q',
     title: '科学问题输入',
-    summary: '任务定义、目标变量与约束。',
+    summary: '任务定义、目标变量与约束',
     relatedPage: 'dialogue',
   },
   {
     id: 'K',
     shortLabel: 'K',
     title: '知识注入 / RAG',
-    summary: '项目资料与文献知识命中。',
+    summary: '项目资料与文献知识命中',
     relatedPage: 'dialogue',
   },
   {
     id: 'H',
     shortLabel: 'H',
     title: '假设生成',
-    summary: '竞争假设树与支持度演化。',
+    summary: '竞争假设树与支持度演化',
     relatedPage: 'hypotheses',
   },
   {
     id: 'C',
     shortLabel: 'C',
     title: '科学质询',
-    summary: '质询点、分歧与关键缺口。',
+    summary: '质询点、分歧与关键缺口',
     relatedPage: 'hypotheses',
   },
   {
     id: 'U',
     shortLabel: 'U',
     title: '不确定性识别',
-    summary: '未解决的不确定性与优先队列。',
+    summary: '未解决的不确定性与优先队列',
     relatedPage: 'uncertainties',
   },
   {
     id: 'E',
     shortLabel: 'E',
     title: '候选实验',
-    summary: '候选实验与综合价值比较。',
+    summary: '候选实验与综合价值比较',
     relatedPage: 'approval',
   },
   {
     id: 'P',
     shortLabel: 'P',
     title: 'PI 审批',
-    summary: '人在环审批与实验选择。',
+    summary: '人在环审批与实验选择',
     relatedPage: 'approval',
   },
   {
     id: 'X',
     shortLabel: 'X',
     title: '实验执行',
-    summary: '实验协议、执行状态与产物。',
+    summary: '实验协议、执行状态与产物',
     relatedPage: 'execution',
   },
   {
     id: 'A',
     shortLabel: 'A',
-    title: '分析评价',
-    summary: 'baseline / treatment 指标与解释。',
+    title: '实验指标与对照解释',
+    summary: '对照组/实验组 Pearson r 与推理对照',
     relatedPage: 'execution',
   },
   {
     id: 'W',
     shortLabel: 'W',
     title: '状态回写',
-    summary: '假设树、不确定性与下一轮输入回写。',
+    summary: '假设树、不确定性与下一轮输入回写',
     relatedPage: 'report',
   },
 ]
@@ -472,7 +623,7 @@ function readWorkspaceResetAt(): string | null {
 }
 
 async function readJsonText(path: string): Promise<string | null> {
-  const response = await fetch(path)
+  const response = await fetch(path, { cache: 'no-store' })
   if (!response.ok) {
     return null
   }
@@ -605,6 +756,10 @@ function createEmptySnapshot(session?: SessionStatus | null): LoaderSnapshot {
       current_round: 0,
       entries: [],
     } as RawExperimentMemory,
+    roundHistory: {
+      current_round: 0,
+      entries: [],
+    } as RawRoundHistory,
     candidateExperiments: {
       round: 0,
       candidates: [],
@@ -666,12 +821,18 @@ function getVisualizationLabel(path: string): string {
   return fileName.replace(/\.(png|jpg|jpeg|webp)$/i, '').replace(/_/g, ' ')
 }
 
-function getVisualizationPreviewUrl(path: string): string {
+function getVisualizationPreviewUrl(path: string, version?: string): string {
   const normalizedPath = path.replace(/^\/+/, '')
-  if (API_IMAGE_BASE) {
-    return `${API_IMAGE_BASE.replace(/\/+$/, '')}/${normalizedPath}`
-  }
-  return normalizedPath
+  const url = API_IMAGE_BASE
+    ? `${API_IMAGE_BASE.replace(/\/+$/, '')}/${normalizedPath}`
+    : normalizedPath
+  const query = [
+    version ? `v=${encodeURIComponent(version)}` : '',
+    `t=${Date.now()}`,
+  ]
+    .filter(Boolean)
+    .join('&')
+  return `${url}${url.includes('?') ? '&' : '?'}${query}`
 }
 
 function candidateMetrics(item?: RawCandidateExperiment) {
@@ -706,6 +867,31 @@ function uniqueStrings(values: unknown[], maxLength = 180): string[] {
 
 function getSelectableCandidates(snapshot: LoaderSnapshot): RawCandidateExperiment[] {
   return filterSelectableCandidateExperiments([...(snapshot.candidateExperiments.candidates ?? [])])
+}
+
+function candidateBelongsToRound(
+  candidate: RawCandidateExperiment,
+  snapshot: LoaderSnapshot,
+  roundNumber: number,
+): boolean {
+  const explicitRound = Number((candidate as RawCandidateExperiment & { round_id?: NumericValue }).round_id)
+  if (Number.isFinite(explicitRound) && explicitRound > 0) {
+    return explicitRound === roundNumber
+  }
+  const bundleRound = Number(snapshot.candidateExperiments.round)
+  if (Number.isFinite(bundleRound) && bundleRound > 0) {
+    return bundleRound === roundNumber
+  }
+  return true
+}
+
+function getSelectableCandidatesForRound(
+  snapshot: LoaderSnapshot,
+  roundNumber: number,
+): RawCandidateExperiment[] {
+  return getSelectableCandidates(snapshot).filter((candidate) =>
+    candidateBelongsToRound(candidate, snapshot, roundNumber),
+  )
 }
 
 function toNumber(value: NumericValue): number {
@@ -781,6 +967,22 @@ function formatConstraintEntry(key: string, value: unknown): string {
   if (normalizedKey === 'validation_feedback_allowed') {
     return `允许基于验证结果迭代：${value ? '是' : '否'}`
   }
+  if (normalizedKey === 'final_test_blind') {
+    return `最终测试对模型保持盲测：${value ? '是' : '否'}`
+  }
+  if (normalizedKey === 'max_hypotheses_per_level') {
+    return `每层假设数量上限：${String(value)}`
+  }
+  if (normalizedKey === 'min_active_hypotheses') {
+    return `最低活跃假设数：${String(value)}`
+  }
+  if (normalizedKey === 'max_experiments_per_round') {
+    return `每轮候选实验上限：${String(value)}`
+  }
+  if (normalizedKey === 'notes') {
+    const notes = Array.isArray(value) ? value.join('；') : String(value ?? '')
+    return `人工备注：${notes}`
+  }
   if (normalizedKey === 'max_rounds') {
     return `最大闭环轮数：${String(value)}`
   }
@@ -807,6 +1009,9 @@ function formatBudgetLabel(label: string): string {
 function mapHypothesisStatus(status?: string): HypothesisPreviewNode['status'] {
   if (status === 'active') return 'active'
   if (status === 'observing') return 'observing'
+  if (status === 'converged') return 'converged'
+  if (status === 'pruned') return 'pruned'
+  if (status === 'draft' || status === 'pending') return 'pending'
   return 'weakened'
 }
 
@@ -845,7 +1050,15 @@ function getPlanningStepOrder(step?: string): number {
   return Number.isFinite(value) ? value : 0
 }
 
-function supportScoreAtRound(node: RawHypothesisTreeNode, roundNumber: number): number {
+function supportScoreAtRound(
+  node: RawHypothesisTreeNode,
+  roundNumber: number,
+  currentRound: number,
+): number {
+  if (roundNumber === currentRound) {
+    return node.support_score ?? 0
+  }
+
   const history = [...(node.support_history ?? [])]
     .filter((item) => (item.round ?? 0) <= roundNumber)
     .sort((a, b) => (b.round ?? 0) - (a.round ?? 0))
@@ -1028,16 +1241,54 @@ function buildHypothesisPreviews(
   roundNumber: number,
   currentRound: number,
   hypothesisTree: RawHypothesisTree,
+  plannerInput: RawPlannerInput,
 ): HypothesisPreviewNode[] {
+  const canonicalIds = new Set([
+    'H_shadow_incremental_gain',
+    'H_by_mediated_path',
+    'H_by_beyond_effect',
+    'H_lead_time_window',
+    'H_window_stability',
+  ])
+  const displayOrder = new Map([
+    ['H1', 0],
+    ['H2', 1],
+    ['H3', 2],
+    ['H4', 3],
+    ['H5', 4],
+  ])
+  const labelRank = (label: string): number => {
+    const match = /^H(\d+)$/.exec(label)
+    return match ? Number(match[1]) : 99
+  }
   return (hypothesisTree.nodes ?? [])
-    .filter((item) => (item.activated_at_round ?? 0) <= roundNumber)
-    .sort((a, b) => supportScoreAtRound(b, roundNumber) - supportScoreAtRound(a, roundNumber))
-    .slice(0, roundNumber === currentRound ? 4 : 3)
+    .filter(
+      (item) =>
+        (canonicalIds.has(String(item.hypothesis_id ?? '')) ||
+          String(item.hypothesis_id ?? '').startsWith('H_supplemental_')) &&
+        (item.activated_at_round ?? 0) <= roundNumber,
+    )
+    .sort((a, b) => {
+      const orderA =
+        displayOrder.get(String(a.display_hypothesis_id ?? '')) ??
+        labelRank(String(a.display_hypothesis_id ?? ''))
+      const orderB =
+        displayOrder.get(String(b.display_hypothesis_id ?? '')) ??
+        labelRank(String(b.display_hypothesis_id ?? ''))
+      return orderA - orderB
+    })
+    .slice(0, roundNumber === currentRound ? 6 : 3)
     .map((item, index) => ({
       id: item.hypothesis_id ?? `H${index + 1}`,
-      label: sanitizeText(item.statement ?? '未命名假设', 96),
+      displayLabel: item.display_hypothesis_id,
+      label: sanitizeText(
+        normalizeArmTerms(
+          toDisplayText(item.statement ?? '未命名假设', plannerInput.data_dictionary_summary),
+        ),
+        96,
+      ),
       status: hypothesisStatusAtRound(item, roundNumber, currentRound),
-      supportScore: supportScoreAtRound(item, roundNumber),
+      supportScore: supportScoreAtRound(item, roundNumber, currentRound),
       level: item.level,
     }))
 }
@@ -1056,9 +1307,21 @@ function buildUncertaintyPreviews(
     }
   }
 
+  const recordsFromRound = (uncertainties.records ?? []).filter((item) => {
+    if (roundNumber !== currentRound) {
+      return (item.created_at_round ?? 0) <= roundNumber
+    }
+    const touchedInRound =
+      Number(item.created_at_round ?? 0) === roundNumber ||
+      (item.history ?? []).some((entry) => Number(entry.round ?? 0) === roundNumber)
+    return touchedInRound
+  })
+  const unresolvedFromRound = (roundNumber === currentRound ? (plannerInput.unresolved_uncertainties ?? []) : [])
+    .filter((item) => Number(item.created_at_round ?? roundNumber) === roundNumber)
+
   const candidates = [
-    ...(uncertainties.records ?? []).filter((item) => (item.created_at_round ?? 0) <= roundNumber),
-    ...((roundNumber === currentRound ? plannerInput.unresolved_uncertainties : []) ?? []),
+    ...recordsFromRound,
+    ...(unresolvedFromRound ?? []),
   ]
 
   const uniqueMap = new Map<string, RawUncertaintyRecord>()
@@ -1084,7 +1347,15 @@ function buildUncertaintyPreviews(
     .slice(0, maxItems)
     .map((item, index) => ({
       id: item.uncertainty_id ?? `U${index + 1}`,
-      title: sanitizeText(item.question ?? item.description ?? '未命名不确定性', 116),
+      title: sanitizeText(
+        normalizeArmTerms(
+          toDisplayText(
+            item.question ?? item.description ?? '未命名不确定性',
+            plannerInput.data_dictionary_summary,
+          ),
+        ),
+        116,
+      ),
       priority: priorityToLevel(item.priority),
       resolutionStatus: mapResolutionStatus(item.resolution_status),
       relatedHypotheses: item.related_hypotheses ?? [],
@@ -1096,7 +1367,26 @@ function buildExperimentPreviews(
   currentRound: number,
   candidateExperiments: RawCandidateExperiments,
   experimentMemory: RawExperimentMemory,
+  hypothesisTree: RawHypothesisTree,
+  plannerInput: RawPlannerInput,
 ): ExperimentPreview[] {
+  const hypothesisIdToStatement = new Map<string, string>()
+  for (const node of hypothesisTree?.nodes ?? []) {
+    if (node.hypothesis_id && node.statement) {
+      hypothesisIdToStatement.set(node.hypothesis_id, node.statement)
+    }
+  }
+  const hypothesisLabel = (id?: string) => {
+    if (!id) {
+      return '待定目标假设'
+    }
+    const statement = hypothesisIdToStatement.get(id)
+    return (
+      normalizeArmTerms(
+        toDisplayText(statement ?? id, plannerInput.data_dictionary_summary),
+      ) || id
+    )
+  }
   const selectableCandidates = filterSelectableCandidateExperiments([...(candidateExperiments.candidates ?? [])])
   if (roundNumber === currentRound && (candidateExperiments.round ?? currentRound) >= roundNumber) {
     return selectableCandidates
@@ -1104,12 +1394,20 @@ function buildExperimentPreviews(
       .slice(0, 3)
       .map((item, index) => ({
         id: item.experiment_id ?? `E_${index + 1}`,
-        targetHypothesis: item.tested_hypotheses?.[0] ?? 'unknown',
+        targetHypothesis: hypothesisLabel(item.tested_hypotheses?.[0]),
         utility: toNumber(item.utility_score),
         informationGain: toNumber(item.estimated_information_gain),
         performanceGain: toNumber(item.estimated_performance_gain),
         status: index === 0 ? 'recommended' : 'candidate',
-        scientificQuestion: sanitizeText(item.scientific_question ?? item.purpose, 160),
+        scientificQuestion: sanitizeText(
+          normalizeArmTerms(
+            toDisplayText(
+              item.scientific_question ?? item.purpose ?? '',
+              plannerInput.data_dictionary_summary,
+            ),
+          ),
+          160,
+        ),
       }))
   }
 
@@ -1118,12 +1416,20 @@ function buildExperimentPreviews(
     .slice(0, 3)
     .map((entry) => ({
       id: entry.experiment_id ?? `E_R${roundNumber}_00`,
-      targetHypothesis: entry.tested_hypotheses?.[0] ?? 'executed',
+      targetHypothesis: hypothesisLabel(entry.tested_hypotheses?.[0]),
       utility: 0,
       informationGain: 0,
       performanceGain: entry.metrics_snapshot?.delta?.pearson_r ?? 0,
       status: 'completed',
-      scientificQuestion: sanitizeText(entry.scientific_question ?? entry.key_findings?.[0], 160),
+      scientificQuestion: sanitizeText(
+        normalizeArmTerms(
+          toDisplayText(
+            entry.scientific_question ?? entry.key_findings?.[0] ?? '',
+            plannerInput.data_dictionary_summary,
+          ),
+        ),
+        160,
+      ),
     }))
 }
 
@@ -1150,6 +1456,31 @@ function buildEvaluationPreview(
   }
 
   return undefined
+}
+
+function buildRoundConclusion(roundNumber: number, snapshot: LoaderSnapshot): string {
+  const dictionary = snapshot.plannerInput.data_dictionary_summary
+  const artifacts = [...(snapshot.roundHistory.entries ?? [])].filter(
+    (item) => (item.round_id ?? 0) === roundNumber,
+  )
+  const conclusionText = artifacts
+    .flatMap((item) => [
+      item.three_layer_conclusion?.scientific_layer?.answer ?? '',
+      item.three_layer_conclusion?.scientific_layer?.evidence_text ?? '',
+      item.three_layer_conclusion?.scientific_layer?.path_answer ?? '',
+    ])
+    .map((text) => String(text ?? '').trim())
+    .find((text) => text.length > 0)
+  if (conclusionText) {
+    return truncateText(normalizeArmTerms(toDisplayText(conclusionText, dictionary)), 132)
+  }
+
+  const finding = [...(snapshot.experimentMemory.entries ?? [])]
+    .filter((entry) => (entry.round_id ?? 0) === roundNumber)
+    .flatMap((entry) => entry.key_findings ?? [])
+    .map((text) => String(text ?? '').trim())
+    .find((text) => text.length > 0)
+  return finding ? truncateText(normalizeArmTerms(toDisplayText(finding, dictionary)), 132) : ''
 }
 
 function collectRagSummaries(plannerInput: RawPlannerInput): KnowledgeMemoryViewModel['ragSummaries'] {
@@ -1263,8 +1594,8 @@ function buildNodeDetails(
     case 'A':
       return evaluation
         ? [
-            `基线相关性：${(evaluation.baselinePearsonR ?? 0).toFixed(4)}`,
-            `实验后相关性：${(evaluation.treatmentPearsonR ?? 0).toFixed(4)}`,
+            `对照组相关性：${(evaluation.baselinePearsonR ?? 0).toFixed(4)}`,
+            `实验组相关性：${(evaluation.treatmentPearsonR ?? 0).toFixed(4)}`,
             `改善幅度：${evaluation.deltaPearsonR.toFixed(4)}`,
           ]
         : ['暂无评价结果']
@@ -1319,7 +1650,7 @@ function buildRoundData(
   currentRound: number,
   snapshot: LoaderSnapshot,
 ): RoundData {
-  const hypotheses = buildHypothesisPreviews(roundNumber, currentRound, snapshot.hypothesisTree)
+  const hypotheses = buildHypothesisPreviews(roundNumber, currentRound, snapshot.hypothesisTree, snapshot.plannerInput)
   const uncertainties = buildUncertaintyPreviews(
     roundNumber,
     currentRound,
@@ -1331,6 +1662,8 @@ function buildRoundData(
     currentRound,
     snapshot.candidateExperiments,
     snapshot.experimentMemory,
+    snapshot.hypothesisTree,
+    snapshot.plannerInput,
   )
   const evaluation = buildEvaluationPreview(roundNumber, snapshot.experimentMemory, snapshot.plannerInput)
 
@@ -1341,6 +1674,7 @@ function buildRoundData(
     subtitle: roundNumber === currentRound ? humanizePhase(snapshot.process.current_phase) : '本轮已归档',
     stateLabel: roundNumber === currentRound ? humanizeStage(snapshot.process.current_stage) : '已归档',
     questionSummary: getQuestionText(snapshot.task, snapshot.plannerInput),
+    conclusion: buildRoundConclusion(roundNumber, snapshot),
     isCurrent: roundNumber === currentRound,
     isCollapsed: roundNumber !== currentRound,
     nodes: buildTimelineNodesForRound(
@@ -1359,13 +1693,34 @@ function buildRoundData(
   }
 }
 
-function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
+function buildMissionViewModel(snapshot: LoaderSnapshot, currentRound: number): MissionViewModel {
   const constraints = (snapshot.task.payload?.constraints ?? {}) as Record<string, unknown>
   const evaluation = snapshot.task.payload?.evaluation ?? {}
   const dataSources = (snapshot.task.payload?.data_sources ?? {}) as Record<
     string,
     { path?: string; time_column?: string; target_column?: string }
   >
+  const dictionary = snapshot.plannerInput.data_dictionary_summary
+  const rawQuestion = snapshot.task.payload?.research_question ?? {}
+  const rawVariables = rawQuestion.variables ?? {}
+
+  const seenDataPaths = new Set<string>()
+  const uniqueDataSources = Object.entries(dataSources).map(([id, item]) => ({
+    id,
+    path: item.path,
+    timeColumn: item.time_column,
+    targetColumn: item.target_column,
+  })).filter((item) => {
+    const key = (item.path ?? item.id).replace(/\\/g, '/').toLowerCase()
+    if (seenDataPaths.has(key)) {
+      return false
+    }
+    seenDataPaths.add(key)
+    return true
+  }).map((item) => ({
+    ...item,
+    path: summarizePath(item.path),
+  }))
 
   const guidance = uniqueStrings(
     [
@@ -1389,12 +1744,16 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
           ? ('user' as const)
           : item.made_by?.includes('controller')
             ? ('agent' as const)
+            : item.made_by === 'scientific_questioner_llm'
+              ? ('agent' as const)
             : ('system' as const),
       speaker:
         item.made_by === 'human_pi'
           ? 'PI'
           : item.made_by === 'central_controller'
             ? '中央进程控制者'
+            : item.made_by === 'scientific_questioner_llm'
+              ? '科学质询 LLM'
             : item.made_by ?? '系统',
       content: sanitizeText(item.summary ?? '', 180),
       timestamp: item.timestamp,
@@ -1411,6 +1770,19 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
     .sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''))
     .slice(-8)
 
+  const currentRoundCandidates = getSelectableCandidatesForRound(snapshot, currentRound)
+  const currentRoundUncertaintyCount = (snapshot.uncertainties.records ?? []).filter((item) => {
+    return (
+      Number(item.created_at_round ?? 0) === currentRound ||
+      (item.history ?? []).some((entry) => Number(entry.round ?? 0) === currentRound)
+    )
+  }).length
+  const currentRoundEvaluated = (snapshot.experimentMemory.entries ?? []).some(
+    (entry) =>
+      (entry.round_id ?? 0) === currentRound &&
+      Boolean(entry.metrics_snapshot || (entry.key_findings ?? []).length > 0),
+  )
+
   const expertStates: MissionViewModel['expertStates'] = [
     {
       id: 'central-controller',
@@ -1421,14 +1793,14 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
     {
       id: 'hypothesis-proposer',
       label: '假设提出者',
-      status: (snapshot.plannerInput.active_hypotheses?.length ?? 0) > 0 ? 'completed' : 'waiting',
-      summary: `${snapshot.plannerInput.active_hypotheses?.length ?? 0} 个活跃假设`,
+      status: (snapshot.hypothesisTree.nodes?.length ?? 0) > 0 ? 'completed' : 'waiting',
+      summary: `${snapshot.hypothesisTree.nodes?.length ?? 0} 个假设节点`,
     },
     {
       id: 'scientific-questioner',
       label: '科学质询者',
-      status: (snapshot.plannerInput.unresolved_uncertainties?.length ?? 0) > 0 ? 'completed' : 'waiting',
-      summary: `${snapshot.plannerInput.unresolved_uncertainties?.length ?? 0} 个关键不确定性`,
+      status: currentRoundUncertaintyCount > 0 ? 'completed' : 'waiting',
+      summary: `${currentRoundUncertaintyCount} 个关键不确定性`,
     },
     {
       id: 'experiment-planner',
@@ -1436,10 +1808,10 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
       status:
         snapshot.process.current_phase === 'experiment_planning'
           ? 'running'
-          : getSelectableCandidates(snapshot).length > 0
+          : currentRoundCandidates.length > 0
             ? 'completed'
             : 'waiting',
-      summary: `${getSelectableCandidates(snapshot).length} 个候选实验`,
+      summary: `${currentRoundCandidates.length} 个候选实验`,
     },
     {
       id: 'scientific-interpreter',
@@ -1447,26 +1819,30 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
       status:
         snapshot.process.current_phase === 'result_analysis'
           ? 'running'
-          : snapshot.plannerInput.evaluation_summary
+          : currentRoundEvaluated
             ? 'completed'
             : 'waiting',
-      summary: snapshot.plannerInput.evaluation_summary?.experiment_id
-        ? `解释 ${snapshot.plannerInput.evaluation_summary.experiment_id}`
+      summary: (snapshot.experimentMemory.entries ?? []).find(
+        (entry) => (entry.round_id ?? 0) === currentRound && entry.metrics_snapshot,
+      )?.experiment_id
+        ? `解释 ${(snapshot.experimentMemory.entries ?? []).find(
+            (entry) => (entry.round_id ?? 0) === currentRound && entry.metrics_snapshot,
+          )?.experiment_id}`
         : '等待实验结果',
     },
   ]
 
   return {
     scientificQuestion: getQuestionText(snapshot.task, snapshot.plannerInput),
-    target: snapshot.task.payload?.research_question?.target ?? '未定义',
+    target: toDisplayText(rawQuestion.target ?? '未定义', dictionary),
     questionType: humanizeQuestionType(snapshot.task.payload?.research_question?.question_type),
     variables: {
-      x: snapshot.task.payload?.research_question?.variables?.x,
-      y: snapshot.task.payload?.research_question?.variables?.y,
-      mCandidates: snapshot.task.payload?.research_question?.variables?.m_candidates ?? [],
+      x: toDisplayText(rawVariables.x ?? '待确认', dictionary),
+      y: toDisplayText(rawVariables.y ?? '待确认', dictionary),
+      mCandidates: (rawVariables.m_candidates ?? []).map((item) => toDisplayText(item, dictionary)),
     },
     constraints: uniqueStrings(
-      Object.entries(constraints).map(([key, value]) => formatConstraintEntry(key, value)),
+      Object.entries(constraints).map(([key, value]) => toDisplayText(formatConstraintEntry(key, value), dictionary)),
       160,
     ),
     metrics: uniqueStrings(
@@ -1474,15 +1850,10 @@ function buildMissionViewModel(snapshot: LoaderSnapshot): MissionViewModel {
         humanizeMetric(evaluation.primary_metric),
         ...(evaluation.secondary_metrics ?? []).map((item) => humanizeMetric(item)),
         ...(evaluation.visual_analysis ?? []).map((item) => humanizeMetric(item)),
-      ],
+      ].filter((item) => item !== '平均绝对误差 MAE'),
       80,
     ),
-    dataSources: Object.entries(dataSources).map(([id, item]) => ({
-      id,
-        path: summarizePath(item.path),
-      timeColumn: item.time_column,
-      targetColumn: item.target_column,
-    })),
+    dataSources: uniqueDataSources,
     piGuidance: guidance.map((content, index) => ({
       id: `guidance-${index + 1}`,
       content,
@@ -1508,7 +1879,12 @@ function buildKnowledgeMemoryViewModel(snapshot: LoaderSnapshot): KnowledgeMemor
       prunedCount: snapshot.hypothesisTree.tree_summary?.pruned_count ?? 0,
       pendingCount: snapshot.hypothesisTree.tree_summary?.pending_count ?? 0,
     },
-    highlightedHypotheses: buildHypothesisPreviews(currentRound, currentRound, snapshot.hypothesisTree),
+    highlightedHypotheses: buildHypothesisPreviews(
+      currentRound,
+      currentRound,
+      snapshot.hypothesisTree,
+      snapshot.plannerInput,
+    ),
     allHypotheses: snapshot.hypothesisTree.nodes ?? [],
     uncertaintyQueue: (snapshot.uncertainties.priority_queue?.queue ?? []).map((item) => ({
       id: item.uncertainty_id ?? 'unknown',
@@ -1527,12 +1903,142 @@ function buildKnowledgeMemoryViewModel(snapshot: LoaderSnapshot): KnowledgeMemor
   }
 }
 
+function findLatestCompletedExperiment(
+  snapshot: LoaderSnapshot,
+  roundNumber?: number,
+): RawExperimentEntry | null {
+  return (
+    [...(snapshot.experimentMemory.entries ?? [])]
+      .filter(
+        (entry) =>
+          (entry.status === 'completed' || entry.metrics_snapshot) &&
+          (roundNumber === undefined || (entry.round_id ?? 0) === roundNumber),
+      )
+      .sort((a, b) => (b.round_id ?? 0) - (a.round_id ?? 0))[0] ?? null
+  )
+}
+
+function findProtocolDecisionForExperiment(
+  decisions: RawDecision[] | undefined,
+  experiment: RawExperimentEntry | null,
+): RawDecision | undefined {
+  if (!experiment || typeof experiment.round_id !== 'number') {
+    return undefined
+  }
+  return [...(decisions ?? [])]
+    .filter(
+      (item) =>
+        item.decision_type === 'protocol_generated' &&
+        (item.round_id ?? experiment.round_id) === experiment.round_id,
+    )
+    .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))[0]
+}
+
+function buildModelTuningViewModel(
+  latestProtocolDecision: RawDecision | undefined,
+): {
+  modelParameters?: Record<string, unknown>
+  tuningNarrative?: string
+  tuningEntries?: Array<{
+    refinementType?: string
+    rationale?: string
+    modelParameters?: Record<string, unknown>
+    protocolNotes?: string[]
+  }>
+} {
+  const details = (latestProtocolDecision?.details ?? {}) as Record<string, unknown>
+  const asDict = (value: unknown): Record<string, unknown> | undefined =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined
+  const tuningEntries = Array.isArray(details.tuning_entries)
+    ? details.tuning_entries.map((item) => {
+        const entry = asDict(item) ?? {}
+        return {
+          refinementType: typeof entry.refinement_type === 'string' ? entry.refinement_type : undefined,
+          rationale: typeof entry.rationale === 'string' ? entry.rationale : undefined,
+          modelParameters: asDict(entry.model_parameters),
+          protocolNotes: Array.isArray(entry.protocol_notes)
+            ? entry.protocol_notes.map((note) => String(note))
+            : [],
+        }
+      })
+    : undefined
+  return {
+    modelParameters: asDict(details.model_parameters),
+    tuningNarrative: typeof details.tuning_narrative === 'string' ? details.tuning_narrative : undefined,
+    tuningEntries: tuningEntries && tuningEntries.length > 0 ? tuningEntries : undefined,
+  }
+}
+
+function getCandidateDesignInfo(candidate: RawCandidateExperiment | undefined) {
+  if (!candidate) {
+    return {
+      focus: '',
+      displayFocus: '',
+      treatment: [] as string[],
+      displayTreatment: [] as string[],
+    }
+  }
+  const record = candidate as unknown as Record<string, unknown>
+  const design = (record.design ?? {}) as Record<string, unknown>
+  const rawFocus = String(design.design_focus ?? design.display_design_focus ?? '')
+  const displayFocus = String(design.display_design_focus ?? design.design_focus ?? '')
+  const treatment = Array.isArray(design.treatment) ? (design.treatment as string[]) : []
+  const displayTreatment = Array.isArray(design.display_treatment)
+    ? (design.display_treatment as string[])
+    : treatment
+  const purpose = candidate.scientific_question ?? candidate.purpose ?? ''
+
+  return {
+    focus: rawFocus || sanitizeText(purpose, 140),
+    displayFocus: displayFocus || rawFocus || sanitizeText(purpose, 140),
+    treatment,
+    displayTreatment: displayTreatment.length > 0 ? displayTreatment : treatment,
+  }
+}
+
+function extractVariableGroupsFromPlan(plan?: string) {
+  const text = String(plan ?? '')
+  const splitList = (label: string) =>
+    text
+      .match(new RegExp(`${label}：([^；;]+)`))
+      ?.[1]
+      ?.split('、')
+      .map((item) => item.trim())
+      .filter(Boolean) ?? []
+
+  return {
+    control: splitList('对照组变量'),
+    treatment: splitList('实验组变量'),
+  }
+}
+
+function mapDataCoverage(raw?: RawExperimentEntry['data_coverage']): DataCoverageViewModel[] {
+  const seen = new Set<string>()
+  return (raw ?? []).flatMap((item) => {
+    const key = `${item.run_id ?? 'run'}:${item.source ?? ''}`
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [{
+      source: item.source,
+      runId: item.run_id,
+      expectedDays: item.expected_days,
+      observedDays: item.observed_days,
+      missingDays: item.missing_days,
+      coverageRatio: item.coverage_ratio,
+      droppedGapWindows: item.dropped_gap_windows,
+      interpolatedDays: item.interpolated_days,
+      note: item.note,
+    }]
+  })
+}
+
 function buildExperimentEvaluationViewModel(
   snapshot: LoaderSnapshot,
   currentRound: number,
 ): FrontendViewModels['experimentEvaluation'] {
-  const candidateExperiments = [...(snapshot.candidateExperiments.candidates ?? [])]
-    .filter((item) => filterSelectableCandidateExperiments([item]).length > 0)
+  const candidateExperiments = getSelectableCandidatesForRound(snapshot, currentRound)
     .sort((a, b) => toNumber(b.utility_score) - toNumber(a.utility_score))
     .map((item) => ({
       ...item,
@@ -1540,16 +2046,29 @@ function buildExperimentEvaluationViewModel(
       purpose: sanitizeText(item.purpose ?? item.scientific_question, 220),
     }))
 
-  const experimentEntries = [...(snapshot.experimentMemory.entries ?? [])].sort(
-    (a, b) => (b.round_id ?? 0) - (a.round_id ?? 0),
+  const experimentEntries = [...(snapshot.experimentMemory.entries ?? [])]
+    .filter((entry) => (entry.round_id ?? 0) === currentRound)
+    .sort((a, b) => (b.round_id ?? 0) - (a.round_id ?? 0))
+  const latestEntry =
+    [...(snapshot.experimentMemory.entries ?? [])]
+      .filter(
+        (entry) =>
+          (entry.round_id ?? 0) === currentRound &&
+          (entry.status === 'completed' || entry.metrics_snapshot),
+      )
+      .sort((a, b) => (b.round_id ?? 0) - (a.round_id ?? 0))[0] ?? null
+  const imageVersion = latestEntry?.updated_at ?? latestEntry?.created_at ?? ''
+  const latestProtocolDecision = findProtocolDecisionForExperiment(
+    snapshot.decisionLog.decisions,
+    latestEntry,
   )
-  const latestEntry = experimentEntries[0]
-  const latestProtocolDecision = [...(snapshot.decisionLog.decisions ?? [])]
-    .reverse()
-    .find((item) => item.decision_type === 'protocol_generated')
+  const modelTuning = buildModelTuningViewModel(latestProtocolDecision)
 
   return {
     recommendedExperimentId: candidateExperiments[0]?.experiment_id,
+    executedExperimentId: latestEntry?.experiment_id,
+    evaluatedRound: latestEntry?.round_id,
+    executionPlanExperimentId: latestEntry?.experiment_id,
     executionPlanSummary: sanitizeText(
       String(
         latestProtocolDecision?.details?.plan_summary
@@ -1558,10 +2077,12 @@ function buildExperimentEvaluationViewModel(
       ),
       320,
     ) || undefined,
+    ...modelTuning,
     candidateExperiments,
     experimentEntries,
-    latestEvaluation: buildEvaluationPreview(currentRound - 1, snapshot.experimentMemory, snapshot.plannerInput)
-      ?? buildEvaluationPreview(currentRound, snapshot.experimentMemory, snapshot.plannerInput),
+    latestEvaluation: latestEntry
+      ? buildEvaluationPreview(latestEntry.round_id ?? 0, snapshot.experimentMemory, snapshot.plannerInput)
+      : undefined,
     metricComparison: latestEntry?.metrics_snapshot
       ? {
           baselineRmse: latestEntry.metrics_snapshot.baseline_rmse,
@@ -1572,11 +2093,12 @@ function buildExperimentEvaluationViewModel(
           deltaRmse: latestEntry.metrics_snapshot.delta?.rmse,
         }
       : undefined,
+    dataCoverage: mapDataCoverage(latestEntry?.data_coverage),
     visualizationPaths: latestEntry?.visualizations ?? [],
     visualizationItems: (latestEntry?.visualizations ?? []).map((item) => ({
       path: item,
       label: getVisualizationLabel(item),
-      previewUrl: getVisualizationPreviewUrl(item),
+      previewUrl: getVisualizationPreviewUrl(item, imageVersion),
       variant: item.includes('/baseline/')
         ? 'baseline'
         : item.includes('/treatment/')
@@ -1597,8 +2119,9 @@ function buildGovernanceViewModel(
   const approvalByRound = new Map<number, RawDecision>()
   const reviewByRound = new Map<number, RawDecision>()
   const candidateById = new Map<string, RawCandidateExperiment>()
+  const currentCandidates: RawCandidateExperiment[] = getSelectableCandidatesForRound(snapshot, currentRound)
 
-  for (const candidate of getSelectableCandidates(snapshot)) {
+  for (const candidate of currentCandidates) {
     if (candidate.experiment_id) {
       candidateById.set(candidate.experiment_id, candidate)
     }
@@ -1624,6 +2147,12 @@ function buildGovernanceViewModel(
         (item.round_id ?? currentRound) === currentRound &&
         item.decision_type?.includes('requested'),
     )
+  const pendingCandidate: RawCandidateExperiment | undefined =
+    (pendingApproval?.details?.candidate_id &&
+      candidateById.get(String(pendingApproval.details.candidate_id))) ||
+    (snapshot.process.current_stage === 'awaiting_human_approval'
+      ? [...currentCandidates].sort((a, b) => toNumber(b.utility_score) - toNumber(a.utility_score))[0]
+      : undefined)
 
   return {
     processSummary: {
@@ -1635,9 +2164,17 @@ function buildGovernanceViewModel(
     },
     pendingApproval: pendingApproval
       ? {
-          candidateId: String(pendingApproval.details?.candidate_id ?? ''),
-          utilityScore: toNumber(pendingApproval.details?.utility_score as NumericValue),
-          summary: sanitizeText(pendingApproval.summary ?? '等待审批', 180),
+          candidateId: pendingCandidate?.experiment_id ?? String(pendingApproval.details?.candidate_id ?? ''),
+          utilityScore: toNumber(
+            pendingCandidate?.utility_score ?? (pendingApproval.details?.utility_score as NumericValue),
+          ),
+          summary: sanitizeText(
+            pendingCandidate?.scientific_question
+              ?? pendingCandidate?.purpose
+              ?? pendingApproval.summary
+              ?? '等待审批',
+            180,
+          ),
         }
       : undefined,
     approvals: decisions.filter(
@@ -1668,15 +2205,28 @@ function buildGovernanceViewModel(
         const approvedDetails = (approvedDecision?.details ?? {}) as Record<string, any>
         const details = (reviewDecision?.details ?? {}) as Record<string, any>
         const evaluationSummary = (details.evaluation_summary ?? {}) as Record<string, any>
+        const requestedCandidate =
+          (String(requestedDetails.candidate_id ?? '') && candidateById.get(String(requestedDetails.candidate_id ?? ''))) ||
+          (roundNumber === currentRound
+            ? [...currentCandidates].sort((a, b) => toNumber(b.utility_score) - toNumber(a.utility_score))[0]
+            : undefined)
 
         return {
           roundNumber,
           requested: {
-            candidateId: String(requestedDetails.candidate_id ?? ''),
-            utilityScore: toNumber(requestedDetails.utility_score as NumericValue),
-            summary: sanitizeText(requestedDecision?.summary ?? 'experiment requested', 180),
+            candidateId: requestedCandidate?.experiment_id ?? String(requestedDetails.candidate_id ?? ''),
+            utilityScore: toNumber(
+              requestedCandidate?.utility_score ?? (requestedDetails.utility_score as NumericValue),
+            ),
+            summary: sanitizeText(
+              requestedCandidate?.scientific_question
+                ?? requestedCandidate?.purpose
+                ?? requestedDecision?.summary
+                ?? 'experiment requested',
+              180,
+            ),
             metrics: candidateMetrics(
-              candidateById.get(String(requestedDetails.candidate_id ?? '')),
+              requestedCandidate ?? candidateById.get(String(requestedDetails.candidate_id ?? '')),
             ),
           },
           approved: approvedDecision
@@ -1718,6 +2268,9 @@ function buildProcessMonitorViewModel(
   const currentStepOrder = getPlanningStepOrder(snapshot.process.current_step)
   const latestDecisions = [...(snapshot.decisionLog.decisions ?? [])]
     .sort((a, b) => `${b.timestamp ?? ''}`.localeCompare(a.timestamp ?? ''))
+  const currentRoundDecisions = latestDecisions.filter(
+    (item) => (item.round_id ?? currentRound) === currentRound,
+  )
 
   const planningSteps = [
     { id: 'step_1', label: '识别不确定性' },
@@ -1730,7 +2283,7 @@ function buildProcessMonitorViewModel(
   const executionPhase = (snapshot.process as RawProcess & {
     phases?: Record<string, { steps?: Record<string, { name?: string; status?: string }> }>
   }).phases?.experiment_execution
-  const executionSteps = Object.entries((executionPhase?.steps ?? {}) as Record<string, { name?: string; status?: string }>).map(
+  const rawExecutionSteps = Object.entries((executionPhase?.steps ?? {}) as Record<string, { name?: string; status?: string }>).map(
     ([id, step]) => {
       const status: 'completed' | 'running' | 'pending' =
         step?.status === 'completed' ? 'completed' : step?.status === 'in_progress' ? 'running' : 'pending'
@@ -1741,6 +2294,20 @@ function buildProcessMonitorViewModel(
       }
     },
   )
+  const latestCompletedExperiment = findLatestCompletedExperiment(snapshot, currentRound)
+  const executionPassed =
+    currentPhaseIndex > getPhaseIndex('experiment_execution') ||
+    (currentPhaseIndex === getPhaseIndex('experiment_execution') && Boolean(latestCompletedExperiment))
+  const fallbackExecutionSteps = latestCompletedExperiment && executionPassed
+    ? [
+        { id: 'data_loading', label: '数据加载与校验', status: 'completed' as const },
+        { id: 'baseline_execution', label: '对照组实验执行', status: 'completed' as const },
+        { id: 'treatment_execution', label: '实验组实验执行', status: 'completed' as const },
+        { id: 'evaluation', label: '结果评价与解释', status: 'completed' as const },
+        { id: 'state_writeback', label: '结果产物回写', status: 'completed' as const },
+      ]
+    : []
+  const executionSteps = rawExecutionSteps.length > 0 ? rawExecutionSteps : fallbackExecutionSteps
 
   const stages: FrontendViewModels['processMonitor']['stages'] = PHASE_ORDER.map((phase, index) => ({
     id: phase,
@@ -1751,7 +2318,7 @@ function buildProcessMonitorViewModel(
         : index === currentPhaseIndex
           ? 'running'
           : 'pending',
-    timestamp: latestDecisions.find((item) => item.phase === phase)?.timestamp,
+    timestamp: currentRoundDecisions.find((item) => item.phase === phase)?.timestamp,
     steps:
       phase === 'experiment_planning'
         ? planningSteps.map((step, stepIndex) => ({
@@ -1773,9 +2340,8 @@ function buildProcessMonitorViewModel(
         : undefined,
   }))
 
-  const pendingApproval = [...latestDecisions].find(
+  const pendingApproval = currentRoundDecisions.find(
     (item) =>
-      (item.round_id ?? currentRound) === currentRound &&
       item.decision_type === 'experiment_selection_requested',
   )
 
@@ -1793,13 +2359,13 @@ function buildProcessMonitorViewModel(
           ? `Step ${currentStepOrder || 1}: ${planningSteps[Math.max(currentStepOrder - 1, 0)]?.label ?? '实验规划'}`
           : PHASE_LABELS[snapshot.process.current_phase ?? ''] ?? '当前步骤',
       status: humanizeStage(snapshot.process.current_stage),
-      candidateCount: getSelectableCandidates(snapshot).length,
+      candidateCount: getSelectableCandidatesForRound(snapshot, currentRound).length,
       recommendedExperimentId:
-        getSelectableCandidates(snapshot).sort(
+        getSelectableCandidatesForRound(snapshot, currentRound).sort(
           (a, b) => toNumber(b.utility_score) - toNumber(a.utility_score),
         )[0]?.experiment_id,
     },
-    recentLogs: latestDecisions.slice(0, 8).map((item, index) => ({
+    recentLogs: currentRoundDecisions.slice(0, 8).map((item, index) => ({
       id: item.decision_id ?? `log-${index + 1}`,
       timestamp: item.timestamp,
       summary: sanitizeText(item.summary ?? item.decision_type ?? '', 180),
@@ -1807,16 +2373,160 @@ function buildProcessMonitorViewModel(
   }
 }
 
+function buildThreeLayerConclusionViewModel(
+  raw: RawThreeLayerConclusion | undefined,
+  dictionary?: RawPlannerInput['data_dictionary_summary'],
+): ThreeLayerConclusionViewModel | undefined {
+  if (!raw?.experiment_layer || !raw?.scientific_layer) {
+    return undefined
+  }
+  const experiment = raw.experiment_layer
+  const scientific = raw.scientific_layer
+  const rawRows = raw.hypothesis_layer ?? []
+  const usedIds = new Set<string>()
+  const hypothesisLayer = rawRows.map((row, index) => {
+    const rawId = String(row.hypothesis_id ?? '')
+    let displayHypothesisId = String(row.display_hypothesis_id ?? '')
+    if (!displayHypothesisId || usedIds.has(displayHypothesisId)) {
+      displayHypothesisId = `H${index + 1}`
+    }
+    usedIds.add(displayHypothesisId)
+    let conclusionText = toDisplayText(String(row.conclusion ?? ''), dictionary)
+    const translatedRawId = rawId ? toDisplayText(rawId, dictionary) : ''
+    const conclusionIdPrefix = translatedRawId || rawId
+    if (conclusionIdPrefix && conclusionText.startsWith(conclusionIdPrefix)) {
+      conclusionText = conclusionText
+        .slice(conclusionIdPrefix.length)
+        .replace(/^[\s:：\-_]+/, '')
+    }
+    const predictedRange =
+      Array.isArray(row.predicted_range) && row.predicted_range.length >= 2
+        ? ([Number(row.predicted_range[0]), Number(row.predicted_range[1])] as [number, number])
+        : undefined
+    return {
+      hypothesisId: rawId,
+      displayHypothesisId,
+      statement: toDisplayText(String(row.statement ?? ''), dictionary),
+      predictedDirection: row.predicted_direction,
+      predictedRange,
+      actualDelta: row.actual_delta,
+      directionMatched: row.direction_matched,
+      magnitudeMatched: row.magnitude_matched,
+      conclusion: conclusionText,
+      supportAfter: row.support_after,
+    }
+  })
+  return {
+    experimentLayer: {
+      experimentId: String(experiment.experiment_id ?? ''),
+      designSummary: normalizeArmTerms(
+        toDisplayText(String(experiment.design_summary ?? ''), dictionary),
+      ),
+      probeAxis: experiment.probe_axis
+        ? toDisplayText(String(experiment.probe_axis), dictionary)
+        : undefined,
+      forecastHorizonDays: experiment.forecast_horizon_days,
+      baselineRmse: experiment.baseline_rmse,
+      treatmentRmse: experiment.treatment_rmse,
+      baselinePearsonR: experiment.baseline_pearson_r,
+      treatmentPearsonR: experiment.treatment_pearson_r,
+      skillDelta: experiment.skill_delta,
+      decisive: experiment.decisive === true,
+    },
+    hypothesisLayer,
+    scientificLayer: {
+      mainQuestion: normalizeArmTerms(
+        toDisplayText(String(scientific.main_question ?? ''), dictionary),
+      ),
+      answer: normalizeArmTerms(toDisplayText(String(scientific.answer ?? ''), dictionary)),
+      pathQuestion: scientific.path_question
+        ? normalizeArmTerms(toDisplayText(String(scientific.path_question), dictionary))
+        : undefined,
+      pathAnswer: scientific.path_answer
+        ? normalizeArmTerms(toDisplayText(String(scientific.path_answer), dictionary))
+        : undefined,
+      evidenceText: scientific.evidence_text
+        ? normalizeArmTerms(toDisplayText(String(scientific.evidence_text), dictionary))
+        : undefined,
+    },
+    dataLayer: raw.data_layer
+      ? {
+          rmseAttribution: raw.data_layer.rmse_attribution
+            ? toDisplayText(String(raw.data_layer.rmse_attribution), dictionary)
+            : undefined,
+          pearsonAttribution: raw.data_layer.pearson_attribution
+            ? toDisplayText(String(raw.data_layer.pearson_attribution), dictionary)
+            : undefined,
+          skillDeltaMeaning: raw.data_layer.skill_delta_meaning
+            ? toDisplayText(String(raw.data_layer.skill_delta_meaning), dictionary)
+            : undefined,
+          anomalies: (raw.data_layer.anomalies ?? []).map((item) =>
+            toDisplayText(String(item ?? ''), dictionary),
+          ),
+          nextFocus: raw.data_layer.next_focus
+            ? toDisplayText(String(raw.data_layer.next_focus), dictionary)
+            : undefined,
+        }
+      : undefined,
+    trackingLayer: raw.tracking_layer
+      ? {
+          auditItems: (raw.tracking_layer.audit_items ?? []).map((item) =>
+            String(item ?? ''),
+          ),
+          sources: (raw.tracking_layer.sources ?? []).map((item) =>
+            String(item ?? ''),
+          ),
+          snapshotRefs: (raw.tracking_layer.snapshot_refs ?? []).map((item) =>
+            String(item ?? ''),
+          ),
+        }
+      : undefined,
+  }
+}
+
 function buildRoundReportViewModel(
   snapshot: LoaderSnapshot,
   currentRound: number,
 ): FrontendViewModels['roundReport'] {
-  const reportRound = Math.max(1, currentRound - (snapshot.process.current_phase === 'next_round' ? 0 : 1))
-  const latestEntry =
-    [...(snapshot.experimentMemory.entries ?? [])]
-      .filter((item) => (item.round_id ?? 0) <= reportRound)
-      .sort((a, b) => (b.round_id ?? 0) - (a.round_id ?? 0))[0] ?? null
-  const highlightedHypotheses = buildHypothesisPreviews(reportRound, currentRound, snapshot.hypothesisTree)
+  const latestEntry = findLatestCompletedExperiment(snapshot)
+  const reportRound = Math.max(1, latestEntry?.round_id ?? Math.max(1, currentRound - 1))
+  const latestProtocolDecision = findProtocolDecisionForExperiment(
+    snapshot.decisionLog.decisions,
+    latestEntry,
+  )
+  const modelTuning = buildModelTuningViewModel(latestProtocolDecision)
+  const previousObjective = normalizeArmTerms(
+    String(latestProtocolDecision?.details?.scientific_objective ?? ''),
+  )
+  const previousPlan = normalizeArmTerms(
+    String(latestProtocolDecision?.details?.plan_summary ?? ''),
+  )
+  const previousFocusText = normalizeArmTerms(
+    sanitizeText(previousObjective || previousPlan, 220),
+  )
+  const previousVariableGroups = extractVariableGroupsFromPlan(previousPlan)
+  const nextCandidates = getSelectableCandidatesForRound(snapshot, currentRound).sort(
+    (a, b) => toNumber(b.utility_score) - toNumber(a.utility_score),
+  )
+  const nextCandidate = nextCandidates[0]
+  const nextDesign = getCandidateDesignInfo(nextCandidate)
+  const currentRoundArtifact = [...(snapshot.roundHistory.entries ?? [])].find(
+    (item) => (item.round_id ?? 0) === currentRound,
+  )
+  const reportArtifacts = [...(snapshot.roundHistory.entries ?? [])].filter(
+    (item) => (item.round_id ?? 0) === reportRound,
+  )
+  const reportArtifact = latestEntry
+    ? (reportArtifacts.find(
+        (item) => item.source_experiment_id === latestEntry.experiment_id,
+      ) ?? reportArtifacts[0])
+    : reportArtifacts[0]
+  const highlightedHypotheses = buildHypothesisPreviews(
+    reportRound,
+    currentRound,
+    snapshot.hypothesisTree,
+    snapshot.plannerInput,
+  )
   const unresolvedQuestions = buildUncertaintyPreviews(
     reportRound,
     currentRound,
@@ -1824,9 +2534,22 @@ function buildRoundReportViewModel(
     snapshot.plannerInput,
     12,
   ).map((item) => item.title)
+  const hypothesisIdToStatement = new Map<string, string>()
+  for (const node of snapshot.hypothesisTree?.nodes ?? []) {
+    if (node.hypothesis_id && node.statement) {
+      hypothesisIdToStatement.set(node.hypothesis_id, node.statement)
+    }
+  }
+  const previousFocus = previousFocusText || previousVariableGroups.treatment.join('、') || undefined
 
   return {
     roundNumber: reportRound,
+    sourceExperimentId: latestEntry?.experiment_id,
+    sourceUpdatedAt: reportArtifact?.updated_at ?? latestEntry?.updated_at,
+    threeLayerConclusion: buildThreeLayerConclusionViewModel(
+      reportArtifact?.three_layer_conclusion,
+      snapshot.plannerInput.data_dictionary_summary,
+    ),
     recommendedAction:
       snapshot.process.user_requests?.stop_requested
         ? 'stop'
@@ -1841,21 +2564,64 @@ function buildRoundReportViewModel(
       treatmentRmse: latestEntry?.metrics_snapshot?.treatment_rmse,
       deltaRmse: latestEntry?.metrics_snapshot?.delta?.rmse,
     },
+    dataCoverage: mapDataCoverage(latestEntry?.data_coverage),
     scientificConclusions: uniqueStrings(
       [
+        ...(
+          reportArtifact?.three_layer_conclusion?.scientific_layer?.answer
+            ? [reportArtifact.three_layer_conclusion.scientific_layer.answer]
+            : []
+        ),
         ...(latestEntry?.key_findings ?? []),
         ...(snapshot.plannerInput.recent_hypothesis_assessments ?? []).map(
-          (item) =>
-            `${item.hypothesis_id} ${Number(item.support_after ?? 0) >= Number(item.support_before ?? 0) ? '获得加强' : '被削弱'} (${Number(
+          (item) => {
+            const statement = hypothesisIdToStatement.get(item.hypothesis_id ?? '') ?? item.hypothesis_id ?? ''
+            const label = toDisplayText(String(statement ?? ''), snapshot.plannerInput.data_dictionary_summary)
+            return `${label} ${Number(item.support_after ?? 0) >= Number(item.support_before ?? 0) ? '获得加强' : '被削弱'} (${Number(
               item.support_after ?? 0,
-            ).toFixed(3)})`,
+            ).toFixed(3)})`
+          },
         ),
       ],
       160,
-    ).slice(0, 5),
+    )
+      .map(normalizeArmTerms)
+      .slice(0, 5),
     highlightedHypotheses,
     unresolvedQuestions,
     decisionOptions: ['进入下一轮', '调整方向', '停止实验'],
+    iterationEvidence: {
+      sourceRound: latestEntry?.round_id ?? Math.max(1, currentRound - 1),
+      inputSources: currentRoundArtifact?.iteration_input_sources ?? [],
+      validations: (currentRoundArtifact?.iterative_validations ?? []).map((item) => ({
+        itemId: item.item_id ?? 'validation',
+        label: item.label ?? '迭代校验',
+        passed: item.passed === true,
+        detail: item.detail,
+      })),
+      previousFocus,
+      nextFocus: nextDesign.displayFocus || nextDesign.focus || undefined,
+      previousExperimentId: latestEntry?.experiment_id,
+      nextExperimentId: nextCandidate?.experiment_id,
+    },
+    candidateEvolution: latestEntry && nextCandidate
+      ? {
+          previousId: latestEntry.experiment_id,
+          nextId: nextCandidate.experiment_id,
+          previousFocus,
+          nextFocus: nextDesign.displayFocus || nextDesign.focus || undefined,
+          previousTreatment: previousVariableGroups.treatment,
+          nextTreatment:
+            nextDesign.displayTreatment.length > 0
+              ? nextDesign.displayTreatment
+              : nextDesign.treatment,
+          summary:
+            nextDesign.displayFocus || nextDesign.focus
+              ? `上一轮实验 ${latestEntry.experiment_id} 已验证，本轮候选 ${nextCandidate.experiment_id} 将设计焦点推进到「${nextDesign.displayFocus || nextDesign.focus}」。`
+              : `上一轮实验 ${latestEntry.experiment_id} 已验证，本轮候选 ${nextCandidate.experiment_id} 将继续围绕上一轮遗留不确定性做区分实验。`,
+        }
+      : undefined,
+    ...modelTuning,
   }
 }
 
@@ -1863,7 +2629,7 @@ function buildApprovalOverlayViewModel(
   snapshot: LoaderSnapshot,
   currentRound: number,
 ): FrontendViewModels['approvalOverlay'] {
-  const sortedCandidates = getSelectableCandidates(snapshot).sort(
+  const sortedCandidates = getSelectableCandidatesForRound(snapshot, currentRound).sort(
     (a, b) => toNumber(b.utility_score) - toNumber(a.utility_score),
   )
   const topCandidate = sortedCandidates[0]
@@ -1998,7 +2764,7 @@ function buildDataManagerViewModel(
       : []),
     ...((variables.m_candidates ?? []) as string[]).map((item) => ({
       field: item,
-      meaning: '候选中介 / 控制变量',
+      meaning: '候选特征 / 控制变量',
       source: sourceEntries.find((entry) => entry.id === 'omni')?.id ?? '辅助数据源',
     })),
   ]
@@ -2131,6 +2897,7 @@ async function loadSnapshotFromSource(source: StateSource): Promise<LoaderSnapsh
     hypothesisTree,
     uncertainties,
     experimentMemory,
+    roundHistory,
     decisionLog,
     candidateExperiments,
     plannerInput,
@@ -2144,6 +2911,7 @@ async function loadSnapshotFromSource(source: StateSource): Promise<LoaderSnapsh
     readJson<RawHypothesisTree>(joinSourcePath(source.baseUrl, SOURCE_FILES.hypothesisTree)),
     readJson<RawUncertainties>(joinSourcePath(source.baseUrl, SOURCE_FILES.uncertainties)),
     readJson<RawExperimentMemory>(joinSourcePath(source.baseUrl, SOURCE_FILES.experimentMemory)),
+    readJsonOptional<RawRoundHistory>(joinSourcePath(source.baseUrl, SOURCE_FILES.roundHistory)),
     readJson<RawDecisionLog>(joinSourcePath(source.baseUrl, SOURCE_FILES.decisionLog)),
     readJsonOptional<RawCandidateExperiments>(joinSourcePath(source.baseUrl, SOURCE_FILES.candidateExperiments)),
     readJsonOptional<RawPlannerInput>(joinSourcePath(source.baseUrl, SOURCE_FILES.plannerInput)),
@@ -2160,6 +2928,7 @@ async function loadSnapshotFromSource(source: StateSource): Promise<LoaderSnapsh
     hypothesisTree,
     uncertainties,
     experimentMemory,
+    roundHistory: roundHistory ?? { current_round: 0, entries: [] },
     candidateExperiments: candidateExperiments ?? ({} as RawCandidateExperiments),
     plannerInput: plannerInput ?? ({} as RawPlannerInput),
     plannerOutput,
@@ -2235,7 +3004,7 @@ export function buildViewModels(snapshot: LoaderSnapshot): FrontendViewModels {
     currentNodeId,
     progressPercentage: snapshot.process.progress_percentage ?? 0,
     processStage: snapshot.process.current_stage ?? 'unknown',
-    mission: buildMissionViewModel(snapshot),
+    mission: buildMissionViewModel(snapshot, currentRound),
     knowledgeMemory: buildKnowledgeMemoryViewModel(snapshot),
     experimentEvaluation: buildExperimentEvaluationViewModel(snapshot, currentRound),
     governance: buildGovernanceViewModel(snapshot, currentRound),

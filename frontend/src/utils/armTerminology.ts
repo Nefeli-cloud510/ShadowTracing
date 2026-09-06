@@ -1,0 +1,30 @@
+export function normalizeArmTerms(text: string | null | undefined): string {
+  if (!text) {
+    return ''
+  }
+  return String(text)
+    .replace(/\b基准组\b/g, '对照组')
+    .replace(/\b处理组\b/g, '实验组')
+    .replace(/基线臂/g, '对照组')
+    .replace(/基准臂/g, '对照组')
+    .replace(/处理臂/g, '实验组')
+    .replace(/基线条件/g, '对照组条件')
+    .replace(/基准条件/g, '对照组条件')
+    .replace(/处理条件/g, '实验组条件')
+    .replace(/基线实验组/g, '对照组')
+    .replace(/基准实验组/g, '对照组')
+    .replace(/单组基线/g, '单组对照组')
+    .replace(/基线变量/g, '对照组变量')
+    .replace(/基线实验/g, '对照组实验')
+    .replace(/基线训练/g, '对照组训练')
+    .replace(/基线特征/g, '对照组特征')
+    .replace(/基准特征/g, '对照组特征')
+    .replace(/相对基线/g, '相对对照组')
+    .replace(/超越基线/g, '超越对照组')
+    .replace(/超越基准/g, '超越对照组')
+    .replace(/校准基线/g, '校准对照组')
+    .replace(/\bbaseline arm\b/gi, '对照组')
+    .replace(/\btreatment arm\b/gi, '实验组')
+    .replace(/\btreatment\b/gi, '实验组')
+    .replace(/\bbaseline\b/gi, '对照组')
+}

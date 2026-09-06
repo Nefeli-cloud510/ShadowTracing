@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import traceback
 import urllib.error
@@ -21,8 +22,16 @@ from pydantic import BaseModel
 
 from core.central_controller_llm import CentralControllerLLM, CentralControllerLLMResponse
 from core.control_unified import HumanControlService
-from core.experiment_planner_llm import ExperimentPlannerLLM
-from core.hypothesis_proposer_llm import HypothesisProposerLLM, HypothesisProposerResponse
+from core.experiment_planner_llm import (
+    CandidateExperimentDesignerLLM,
+    CandidateExperimentWriterLLM,
+    ExperimentPlannerLLM,
+)
+from core.hypothesis_proposer_llm import (
+    HypothesisProposerLLM,
+    HypothesisProposerResponse,
+    _display_dictionary_block,
+)
 from core.llm_gateway import LLMGateway, _extract_json_payload
 from core.planner_unified import PlannerOutputBuilder
 from core.rag_service import RAGContextBundle, RAGEvidenceSnippet, RAGService
@@ -48,6 +57,7 @@ from core.unified_schema import (
     UncertaintyRecord,
     VariableBinding,
 )
+from core.variable_semantic_service import VariableSemanticService
 
 
 @dataclass
@@ -76,7 +86,7 @@ class ObservedLLMGateway(LLMGateway):
         return OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=90,
+            timeout=300,
         )
 
     def generate_structured(
@@ -86,6 +96,7 @@ class ObservedLLMGateway(LLMGateway):
         user_prompt: str,
         response_model: type[BaseModel],
         fallback_factory: Callable[[], BaseModel | dict[str, Any]] | None = None,
+        payload_fixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         temperature: float | None = None,
     ) -> BaseModel:
         event: dict[str, Any] = {
@@ -116,6 +127,8 @@ class ObservedLLMGateway(LLMGateway):
             )
             content = response.choices[0].message.content or ""
             payload = _normalize_llm_payload(response_model, _extract_json_payload(content))
+            if payload_fixer is not None:
+                payload = payload_fixer(payload)
             event["response_chars"] = len(content)
             self.call_history.append(event)
             return response_model.model_validate(payload)
@@ -211,6 +224,57 @@ def _normalize_llm_payload(response_model: type[BaseModel], payload: dict[str, A
             normalized["proposed_uncertainties"] = repaired
         return normalized
 
+    if model_name == "HypothesisProposerResponse":
+        proposed = normalized.get("proposed_hypotheses")
+        if isinstance(proposed, list):
+            repaired = []
+            for index, item in enumerate(proposed, start=1):
+                if isinstance(item, dict):
+                    fixed = dict(item)
+                    fixed["statement"] = (
+                        fixed.get("statement")
+                        or fixed.get("question")
+                        or fixed.get("summary")
+                        or f"围绕下一轮候选方向提出待验证假设 {index}"
+                    )
+                    fixed["display_hypothesis_id"] = (
+                        fixed.get("display_hypothesis_id")
+                        or fixed.get("hypothesis_id")
+                        or f"H{index}"
+                    )
+                    predictions = fixed.get("predictions")
+                    if isinstance(predictions, list):
+                        for prediction in predictions:
+                            if not isinstance(prediction, dict):
+                                continue
+                            raw_range = prediction.get("expected_range")
+                            parsed_range = _parse_range_pair(raw_range)
+                            if parsed_range is not None:
+                                prediction["expected_range"] = parsed_range
+                            elif isinstance(raw_range, str):
+                                prediction["expected_range"] = None
+                                observable = str(
+                                    prediction.get("expected_observable") or ""
+                                ).strip()
+                                if observable:
+                                    prediction["expected_observable"] = (
+                                        f"{observable}；{raw_range}"
+                                    )
+                                else:
+                                    prediction["expected_observable"] = raw_range
+                    repaired.append(fixed)
+                else:
+                    repaired.append(
+                        {
+                            "display_hypothesis_id": f"H{index}",
+                            "statement": str(item),
+                            "falsification": "",
+                            "expected_effect": "",
+                        }
+                    )
+            normalized["proposed_hypotheses"] = repaired
+        return normalized
+
     if model_name == "ExperimentPlannerLLMResponse":
         extra_steps = normalized.get("extra_steps")
         if isinstance(extra_steps, list):
@@ -226,6 +290,26 @@ def _normalize_llm_payload(response_model: type[BaseModel], payload: dict[str, A
         return normalized
 
     return normalized
+
+
+def _parse_range_pair(value: Any) -> list[float] | None:
+    """Best-effort parse of an LLM-provided numeric [low, high] range."""
+    if isinstance(value, list):
+        try:
+            numbers = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+        return [min(numbers[0], numbers[-1]), max(numbers[0], numbers[-1])] if numbers else None
+    if not isinstance(value, str):
+        return None
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", value)
+    if len(numbers) < 2:
+        return None
+    try:
+        first, last = float(numbers[0]), float(numbers[-1])
+    except ValueError:
+        return None
+    return [min(first, last), max(first, last)]
 
 
 class ObservedRAGService(RAGService):
@@ -375,32 +459,15 @@ class CompactHypothesisProposerLLM(HypothesisProposerLLM):
         planner_input,
         rag_context,
     ) -> HypothesisProposerResponse:
-        compact = {
-            "question": planner_input.scientific_question,
-            "target": planner_input.target,
-            "human_feedback": planner_input.human_feedback,
-            "evaluation": {
-                "delta_pearson_r": planner_input.evaluation_summary.delta_pearson_r,
-                "stable": planner_input.evaluation_summary.stable,
-            },
-            "active_hypotheses": [
-                {"hypothesis_id": item.hypothesis_id, "statement": item.statement}
-                for item in planner_input.active_hypotheses[:3]
-            ],
-            "unresolved_uncertainties": [
-                {"uncertainty_id": item.uncertainty_id, "question": item.question}
-                for item in planner_input.unresolved_uncertainties[:3]
-            ],
-            "planner_guidance": planner_input.planner_guidance[:5],
-            "rag_notes": rag_context.guidance_notes()[:4],
-        }
-        return self.gateway.generate_structured(
-            system_prompt=self.SYSTEM_PROMPT,
-            user_prompt=f"context={compact}\n请输出 focus_features、guidance_notes、proposal_summaries。",
-            response_model=HypothesisProposerResponse,
-            fallback_factory=lambda: self._fallback(planner_input, rag_context),
-        )
+        """Delegate to the canonical real-LLM proposer.
 
+        The base implementation owns the strict H1..H5 validation, provenance
+        fields (source/model/generated_at) and the no-fallback policy.
+        """
+        return super().propose(
+            planner_input=planner_input,
+            rag_context=rag_context,
+        )
 
 class CompactScientificQuestionerLLM(ScientificQuestionerLLM):
     def question(
@@ -408,10 +475,13 @@ class CompactScientificQuestionerLLM(ScientificQuestionerLLM):
         *,
         planner_input,
         rag_context,
+        mined_candidates: list[dict[str, object]] | None = None,
     ) -> ScientificQuestionerResponse:
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
         compact = {
-            "question": planner_input.scientific_question,
-            "target": planner_input.target,
+            "question": semantic.display_text(planner_input.scientific_question),
+            "display_target": semantic.to_display(planner_input.target),
+            "display_dictionary": _display_dictionary_block(planner_input.data_dictionary_summary),
             "human_feedback": planner_input.human_feedback,
             "evaluation": {
                 "delta_pearson_r": planner_input.evaluation_summary.delta_pearson_r,
@@ -419,11 +489,17 @@ class CompactScientificQuestionerLLM(ScientificQuestionerLLM):
                 "key_findings": planner_input.evaluation_summary.key_findings[:2],
             },
             "active_hypotheses": [
-                {"hypothesis_id": item.hypothesis_id, "statement": item.statement}
+                {
+                    "hypothesis_id": item.hypothesis_id,
+                    "statement": semantic.display_text(item.statement),
+                }
                 for item in planner_input.active_hypotheses[:3]
             ],
             "unresolved_uncertainties": [
-                {"uncertainty_id": item.uncertainty_id, "question": item.question}
+                {
+                    "uncertainty_id": item.uncertainty_id,
+                    "question": semantic.display_text(item.question),
+                }
                 for item in planner_input.unresolved_uncertainties[:3]
             ],
             "recent_disagreement_updates": [
@@ -435,10 +511,22 @@ class CompactScientificQuestionerLLM(ScientificQuestionerLLM):
                 for item in planner_input.recent_disagreement_updates[:2]
             ],
             "rag_notes": rag_context.guidance_notes()[:4],
+            "mined_candidates": (mined_candidates or [])[:8],
         }
         return self.gateway.generate_structured(
             system_prompt=self.SYSTEM_PROMPT,
-            user_prompt=f"context={compact}\n请输出 challenge_points、guidance_notes、proposed_uncertainties。",
+            user_prompt=(
+                f"context={compact}\n"
+                "科学书写规则：proposed_uncertainties 必须写成自然、专业、物理语义清晰的科学问题，"
+                "明确自变量、因变量与物理路径关系，并结合假设分歧、残差模式、支持度变化和失败归因；"
+                "禁止输出“关于 A 与 B 的解释是否仍受约束”这类固定填空句式。\n"
+                "名称规则：问题文本、description、features 一律使用 display_dictionary 中的展示名，"
+                "例如“宇宙线日影南北偏移”“太阳风速度”“行星际磁场Y分量”，"
+                "禁止输出原始表头或“SW Plasma Speed, km/s”这类英文单位标签。\n"
+                "related_hypotheses 只能填 active_hypotheses 中确实相关的假设编号，没有明确对应时留空；"
+                "请结合 mined_candidates 的假设冲突、残差、支持度变化与失败归因线索归纳去重，"
+                "输出 6-10 条有效 uncertainty，并尽量保留 mining_sources 来源标签。"
+            ),
             response_model=ScientificQuestionerResponse,
             fallback_factory=lambda: self._fallback(planner_input, rag_context),
         )
@@ -524,7 +612,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the real-API two-round Shadow Tracing demo.")
     parser.add_argument(
         "--model",
-        default="qwen-plus",
+        default=get_default_llm_model(),
         help="Model used by the demo-time LLM roles. Does not modify the main project default.",
     )
     parser.add_argument(
@@ -826,6 +914,8 @@ def build_real_llm_control(
     proposer_gateway = ObservedLLMGateway(role_name="hypothesis_proposer", **gateway_kwargs)
     questioner_gateway = ObservedLLMGateway(role_name="scientific_questioner", **gateway_kwargs)
     planner_gateway = ObservedLLMGateway(role_name="experiment_planner", **gateway_kwargs)
+    designer_gateway = ObservedLLMGateway(role_name="experiment_designer", **gateway_kwargs)
+    writer_gateway = ObservedLLMGateway(role_name="experiment_writer", **gateway_kwargs)
     rag_service = ObservedRAGService(project_root=run_root)
 
     control = HumanControlService(
@@ -842,6 +932,8 @@ def build_real_llm_control(
         hypothesis_proposer=CompactHypothesisProposerLLM(gateway=proposer_gateway),
         scientific_questioner=CompactScientificQuestionerLLM(gateway=questioner_gateway),
         experiment_planner=ExperimentPlannerLLM(gateway=planner_gateway),
+        experiment_designer=CandidateExperimentDesignerLLM(gateway=designer_gateway),
+        experiment_writer=CandidateExperimentWriterLLM(gateway=writer_gateway),
     )
     return {
         "control": control,
@@ -852,6 +944,8 @@ def build_real_llm_control(
             "hypothesis_proposer": proposer_gateway,
             "scientific_questioner": questioner_gateway,
             "experiment_planner": planner_gateway,
+            "experiment_designer": designer_gateway,
+            "experiment_writer": writer_gateway,
         },
     }
 

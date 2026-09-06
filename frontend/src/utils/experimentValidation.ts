@@ -23,8 +23,17 @@ function normalizeVariables(values: unknown): string[] {
 }
 
 export function getExperimentValidationSnapshot(candidate: any): ExperimentValidationSnapshot {
-  const controlVariables = normalizeVariables(candidate?.design?.control)
-  const treatmentVariables = normalizeVariables(candidate?.design?.treatment)
+  const design = candidate?.design ?? {}
+  const controlVariables = normalizeVariables(
+    Array.isArray(design.display_control) && design.display_control.length > 0
+      ? design.display_control
+      : design.control,
+  )
+  const treatmentVariables = normalizeVariables(
+    Array.isArray(design.display_treatment) && design.display_treatment.length > 0
+      ? design.display_treatment
+      : design.treatment,
+  )
   const experimentMode = candidate?.type === 'baseline_benchmark' ? 'baseline' : 'comparative'
   const hasFeatureDifference = experimentMode === 'baseline'
     || JSON.stringify([...controlVariables].sort()) !== JSON.stringify([...treatmentVariables].sort())

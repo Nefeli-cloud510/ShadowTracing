@@ -77,11 +77,11 @@ export function ExperimentEvaluationPage() {
                   {experiment.latestEvaluation ? (
                     <div className="metrics-grid metrics-grid--two">
                       <div className="metric-box">
-                        <span className="metric-box__label">Baseline r</span>
+                        <span className="metric-box__label">对照组 r</span>
                         <span className="metric-box__value">{(experiment.latestEvaluation.baselinePearsonR ?? 0).toFixed(4)}</span>
                       </div>
                       <div className="metric-box">
-                        <span className="metric-box__label">Treatment r</span>
+                        <span className="metric-box__label">实验组 r</span>
                         <span className="metric-box__value">{(experiment.latestEvaluation.treatmentPearsonR ?? 0).toFixed(4)}</span>
                       </div>
                       <div className="metric-box metric-box--highlight">
@@ -108,17 +108,17 @@ export function ExperimentEvaluationPage() {
 
                 <section className="detail-card">
                   <span className="detail-card__eyebrow">Metric Comparison</span>
-                  <h2>Baseline / Treatment 对照</h2>
+                  <h2>对照组 / 实验组对照</h2>
                   {experiment.metricComparison ? (
                     <div className="comparison-list">
                       <div className="comparison-row">
                         <span className="comparison-row__label">Pearson r</span>
                         <div className="comparison-row__bars">
                           <div className="comparison-bar comparison-bar--baseline">
-                            <span>Baseline {(experiment.metricComparison.baselinePearsonR ?? 0).toFixed(4)}</span>
+                            <span>对照组 {(experiment.metricComparison.baselinePearsonR ?? 0).toFixed(4)}</span>
                           </div>
                           <div className="comparison-bar comparison-bar--treatment">
-                            <span>Treatment {(experiment.metricComparison.treatmentPearsonR ?? 0).toFixed(4)}</span>
+                            <span>实验组 {(experiment.metricComparison.treatmentPearsonR ?? 0).toFixed(4)}</span>
                           </div>
                         </div>
                       </div>
@@ -126,10 +126,10 @@ export function ExperimentEvaluationPage() {
                         <span className="comparison-row__label">RMSE</span>
                         <div className="comparison-row__bars">
                           <div className="comparison-bar comparison-bar--baseline">
-                            <span>Baseline {(experiment.metricComparison.baselineRmse ?? 0).toFixed(3)}</span>
+                            <span>对照组 {(experiment.metricComparison.baselineRmse ?? 0).toFixed(3)}</span>
                           </div>
                           <div className="comparison-bar comparison-bar--treatment">
-                            <span>Treatment {(experiment.metricComparison.treatmentRmse ?? 0).toFixed(3)}</span>
+                            <span>实验组 {(experiment.metricComparison.treatmentRmse ?? 0).toFixed(3)}</span>
                           </div>
                         </div>
                       </div>
@@ -177,7 +177,7 @@ export function ExperimentEvaluationPage() {
                             alt={item.label}
                             loading="lazy"
                           />
-                          <span>{item.variant === 'baseline' ? 'Baseline' : item.variant === 'treatment' ? 'Treatment' : 'Artifact'}</span>
+                          <span>{item.variant === 'baseline' ? '对照组' : item.variant === 'treatment' ? '实验组' : 'Artifact'}</span>
                         </div>
                         <strong>{item.label}</strong>
                         <p>{item.path}</p>

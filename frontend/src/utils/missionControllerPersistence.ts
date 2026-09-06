@@ -251,6 +251,10 @@ export async function resetClientWorkspaceState() {
   notifyWorkspaceReset()
 }
 
+export async function resetHypothesisSpaceClientState() {
+  clearWorkflowStartState()
+}
+
 export function mergeSelectedFiles(existingFiles: File[], incomingFiles: File[]) {
   const merged = [...existingFiles]
   const seen = new Set(existingFiles.map((file) => `${file.name}::${file.lastModified}::${file.size}`))

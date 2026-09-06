@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.hypothesis_state_machine import EvidenceSource, OBSERVING_LOW, resolve_status
+
 
 @dataclass(frozen=True)
 class SupportUpdateOutcome:
@@ -101,21 +103,51 @@ def compute_support_update_from_reasoning(
     impact_direction: str,
     impact_strength: float,
     confidence: float,
+    falsification_basis: str | None = None,
+    previous_status: str | None = None,
+    support_history: list | None = None,
+    current_round: int | None = None,
+    parent_support: float | None = None,
+    draft_to_pending: bool = False,
+    evidence_source: EvidenceSource = "advisory",
 ) -> SupportUpdateOutcome:
+    advisory = evidence_source == "advisory"
+    effective_direction = impact_direction
+    effective_strength = impact_strength
+    if (
+        advisory
+        and impact_direction == "weakens"
+        and not (falsification_basis or "").strip()
+    ):
+        # 只有“表达担忧”没有可证否依据时，最多算澄清，不允许产生负分。
+        effective_direction = "clarifies"
+        effective_strength = 0.0
     direction_scale = {
         "supports": 1.0,
-        "weakens": -1.0,
+        "weakens": -0.4,
         "clarifies": 0.35,
-    }.get(impact_direction, 0.0)
-    support_delta = round(direction_scale * impact_strength * confidence * 0.18, 4)
-    support_after = round(min(max(current_support + support_delta, 0.0), 1.0), 4)
+    }.get(effective_direction, 0.0)
+    support_delta = round(direction_scale * effective_strength * confidence * 0.18, 4)
+    support_after = current_support + support_delta
+    # 顾问意见第一次把支持度打到 20% 以下时，先垫到观察下限，避免越级剪枝。
+    if advisory and support_after < OBSERVING_LOW:
+        support_after = OBSERVING_LOW
+    support_after = round(min(max(support_after, 0.0), 1.0), 4)
     direction_matched = {
         "supports": True,
         "weakens": False,
         "clarifies": "partial",
-    }.get(impact_direction, "partial")
-    magnitude_matched = True if impact_strength >= 0.6 else "partial"
-    status = _status_after_reasoning(support_after, impact_direction)
+    }.get(effective_direction, "partial")
+    magnitude_matched = True if effective_strength >= 0.6 else "partial"
+    status = resolve_status(
+        previous_status=previous_status or "active",
+        support_after=support_after,
+        support_history=support_history or [],
+        current_round=current_round,
+        parent_support=parent_support,
+        draft_to_pending=draft_to_pending,
+        evidence_source=evidence_source,
+    )
     return SupportUpdateOutcome(
         support_before=current_support,
         support_after=support_after,
@@ -183,13 +215,3 @@ def _assessment_status(direction_matched: bool | str, magnitude_matched: bool | 
     if direction_matched is False:
         return "weakened"
     return "partially_supported"
-
-
-def _status_after_reasoning(after: float, impact_direction: str) -> str:
-    if after < 0.20:
-        return "pruned"
-    if after >= 0.72 and impact_direction in {"supports", "clarifies"}:
-        return "converged"
-    if impact_direction == "weakens" and after < 0.40:
-        return "observing"
-    return "active" if after >= 0.40 else "observing"

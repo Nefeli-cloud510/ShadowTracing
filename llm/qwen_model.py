@@ -1,14 +1,22 @@
-import os
 import json
 from openai import OpenAI
 
+from core.prompt_rules import ELASTIC_NET_EXECUTION_RULE
+from core.runtime_config import (
+    get_dasyscope_api_key,
+    get_dasyscope_base_url,
+    get_default_llm_model,
+    load_project_env,
+)
 
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+
+load_project_env()
+DASHSCOPE_API_KEY = get_dasyscope_api_key()
 client = None
 if DASHSCOPE_API_KEY:
     client = OpenAI(
         api_key=DASHSCOPE_API_KEY,
-        base_url="https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+        base_url=get_dasyscope_base_url(),
     )
 
 
@@ -38,7 +46,7 @@ SYSTEM_PROMPT = """你是一个科学实验规划智能体。
     "l1_ratio": 0.5,
     "reasoning": "当前R²较低，建议加入时滞特征并调整窗口大小"
 }
-"""
+""" + "\n\n" + ELASTIC_NET_EXECUTION_RULE
 
 
 def generate_next_plan(previous_result: dict) -> str:
@@ -62,7 +70,7 @@ def generate_next_plan(previous_result: dict) -> str:
 - 测试集 RMSE: {metrics.get('test_rmse', 'N/A')}
 - 测试集 R²: {metrics.get('test_r2', 'N/A')}
 - 测试集 Pearson r: {metrics.get('test_pearson_r', 'N/A')}
-- 基线 RMSE: {metrics.get('baseline_test_rmse', 'N/A')}
+- 对照组 RMSE: {metrics.get('baseline_test_rmse', 'N/A')}
 - 特征数量: {metrics.get('n_features', 'N/A')}
 
 请分析当前效果，并提出下一轮实验的配置，如进行入参和出参调整。
@@ -77,7 +85,7 @@ def generate_next_plan(previous_result: dict) -> str:
     else:
         try:
             response = client.chat.completions.create(
-                model="qwen-plus",
+                model=get_default_llm_model(),
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}

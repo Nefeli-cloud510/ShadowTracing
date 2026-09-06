@@ -11,11 +11,17 @@ from core.decision_unified import (
 )
 from core.state_repository import UnifiedStateRepository
 from core.unified_schema import (
+    CandidateExperiment,
+    CandidateExperimentSet,
     DataDictionary,
     EvaluationSpec,
+    ExperimentDesign,
     ExperimentMemoryEntry,
     FieldDescriptor,
+    HypothesisGenerationRationale,
     HypothesisNode,
+    HypothesisSourceSignal,
+    LatestTreeUpdate,
     MetricDelta,
     PerformanceMetrics,
     ResearchQuestion,
@@ -25,6 +31,58 @@ from core.unified_schema import (
     UncertaintyRecord,
     VariableBinding,
 )
+
+
+class StubCandidateExperimentDesigner:
+    def design(self, **kwargs) -> bool:
+        return False
+
+
+class StubCandidateExperimentWriter:
+    """Offline writer that fills candidate prose without calling an LLM."""
+
+    def write_all(
+        self,
+        candidates,
+        *,
+        task=None,
+        semantic_service=None,
+        node_index=None,
+        round_id=None,
+        max_workers=4,
+    ) -> None:
+        for candidate in candidates:
+            target = (
+                candidate.design.display_target
+                or candidate.design.target
+                or "目标变量"
+            )
+            candidate.purpose = (
+                f"验证 {target} 预测中焦点变量的独立贡献（stub writer）"
+            )
+            candidate.distinguishing_insight = (
+                "比较对照组（不含待验证焦点变量）与实验组（加入待验证焦点变量）"
+                "的实证差异，判断增量贡献是否成立。"
+            )
+            candidate.value_analysis = "\n".join(
+                [
+                    "信息增益分析：当前 IG 表示候选实验对竞争假设的区分能力。",
+                    "性能增益分析：PG 置 0 表示本场景未启用历史性能信息。",
+                    "风险分析：风险分由支持度先验与执行条件加权，整体处于可接受水平。",
+                    "成本分析：成本分来自令牌预算与人工审核估算，本轮整体较低。",
+                    "综合价值判断：综合 IG、PG、风险与成本，本实验值得进入审批。",
+                ]
+            )
+
+
+def _freeze_tree(repository: UnifiedStateRepository) -> None:
+    tree = repository.load_hypothesis_tree()
+    tree.latest_update = LatestTreeUpdate(
+        round=max(int(tree.current_round or 0), 1),
+        event="hypothesis_tree_confirmed",
+        description="test fixture freezes the hypothesis tree",
+    )
+    repository.save_hypothesis_tree(tree)
 
 
 class DecisionLayerTest(unittest.TestCase):
@@ -112,6 +170,7 @@ class DecisionLayerTest(unittest.TestCase):
             ],
             overwrite=True,
         )
+        _freeze_tree(self.repository)
         uncertainties = self.repository.load_uncertainties()
         uncertainties.current_round = 1
         self.repository.save_uncertainties(uncertainties)
@@ -145,7 +204,11 @@ class DecisionLayerTest(unittest.TestCase):
         self.assertTrue(any("disagreement_hypotheses" in note for note in review_candidates[0].design.notes))
 
     def test_service_saves_candidate_plan(self) -> None:
-        service = DecisionLayerService(self.repository)
+        service = DecisionLayerService(
+            self.repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         plan = service.build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
 
         self.assertTrue(plan.candidates)
@@ -157,12 +220,34 @@ class DecisionLayerTest(unittest.TestCase):
         repository = UnifiedStateRepository(self.project_root / "generated")
         repository.initialize_state_skeleton(
             self.task,
+            initial_hypotheses=[
+                HypothesisNode(
+                    hypothesis_id="H10",
+                    statement="DeltaDec 提供独立于 By 的增量信息",
+                    level=1,
+                    status="active",
+                    support_score=0.6,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="independent_increment_found",
+                        summary="DeltaDec 与太阳风速度预测残差相关",
+                        derived_features=["DeltaDec"],
+                        source_signals=[
+                            HypothesisSourceSignal(
+                                signal_type="residual_correlation",
+                                source_id="demo",
+                                excerpt="DeltaDec 与预测残差相关",
+                            )
+                        ],
+                    ),
+                )
+            ],
             initial_uncertainties=[
                 UncertaintyRecord(
                     uncertainty_id="U10",
                     question="DeltaDec 的贡献是否独立于 By？",
                     description="需要区分独立增量与中介解释。",
-                    related_hypotheses=[],
+                    related_hypotheses=["H10"],
                     status="active",
                     priority="high",
                     created_at_round=0,
@@ -172,16 +257,24 @@ class DecisionLayerTest(unittest.TestCase):
             data_dictionary=self.dictionary,
             overwrite=True,
         )
-        service = DecisionLayerService(repository)
+        service = DecisionLayerService(
+            repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         plan = service.build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
 
         review_candidates = [candidate for candidate in plan.candidates if candidate.requires_human_review]
         self.assertTrue(review_candidates)
         self.assertTrue(any("hypothesis_triggers:" in note for note in review_candidates[0].design.notes))
-        self.assertIn("区分这些假设来源", review_candidates[0].distinguishing_insight)
+        self.assertIn("实证差异", review_candidates[0].distinguishing_insight)
 
     def test_service_injects_human_feedback_into_next_round_candidates(self) -> None:
-        service = DecisionLayerService(self.repository)
+        service = DecisionLayerService(
+            self.repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         plan = service.build_candidate_plan(
             task=self.task,
             data_dictionary=self.dictionary,
@@ -194,9 +287,229 @@ class DecisionLayerTest(unittest.TestCase):
         self.assertTrue(focused)
         review_candidates = [candidate for candidate in focused if candidate.requires_human_review]
         self.assertTrue(review_candidates)
-        self.assertEqual(review_candidates[0].design.treatment, ["By"])
+        self.assertIn("DeltaDec", review_candidates[0].design.treatment)
+        self.assertIn("By", review_candidates[0].design.control)
         self.assertIn("human_feedback_focus_single_feature:By", review_candidates[0].design.notes)
         self.assertIn("human_feedback", plan.note)
+
+    def test_uncertainty_specific_focus_produces_distinct_candidate_designs(self) -> None:
+        repository = UnifiedStateRepository(self.project_root / "focused")
+        repository.initialize_state_skeleton(
+            self.task,
+            initial_hypotheses=[
+                HypothesisNode(
+                    hypothesis_id="H_independent",
+                    statement="DeltaDec 提供独立增量信息",
+                    level=1,
+                    status="active",
+                    support_score=0.65,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="task_bootstrap",
+                        summary="主变量效果",
+                        derived_features=["DeltaDec", "Vsw"],
+                    ),
+                ),
+                HypothesisNode(
+                    hypothesis_id="H_via_by",
+                    statement="DeltaDec 主要通过 By 起作用",
+                    level=1,
+                    status="active",
+                    support_score=0.45,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="mediator_bootstrap",
+                        summary="By 中介路径",
+                        derived_features=["DeltaDec", "By", "Vsw"],
+                    ),
+                ),
+                HypothesisNode(
+                    hypothesis_id="H_via_bz",
+                    statement="DeltaDec 主要通过 Bz 起作用",
+                    level=1,
+                    status="active",
+                    support_score=0.35,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="mediator_bootstrap",
+                        summary="Bz 中介路径",
+                        derived_features=["DeltaDec", "Bz", "Vsw"],
+                    ),
+                ),
+            ],
+            initial_uncertainties=[
+                UncertaintyRecord(
+                    uncertainty_id="U_BY",
+                    question="DeltaDec 是否独立于 By 提供增量信息？",
+                    description="需要区分独立增量与 By 中介解释。",
+                    related_hypotheses=["H_via_by", "H_independent"],
+                    status="active",
+                    priority="high",
+                    created_at_round=1,
+                    created_by="tester",
+                ),
+                UncertaintyRecord(
+                    uncertainty_id="U_IND",
+                    question="DeltaDec 是否具有独立增量信息？",
+                    description="需要检验主变量的独立预测价值。",
+                    related_hypotheses=["H_independent"],
+                    status="active",
+                    priority="medium",
+                    created_at_round=1,
+                    created_by="tester",
+                ),
+                UncertaintyRecord(
+                    uncertainty_id="U_BZ",
+                    question="DeltaDec 是否独立于 Bz 提供增量信息？",
+                    description="需要区分独立增量与 Bz 中介解释。",
+                    related_hypotheses=["H_via_bz", "H_independent"],
+                    status="active",
+                    priority="medium",
+                    created_at_round=1,
+                    created_by="tester",
+                ),
+            ],
+            overwrite=True,
+        )
+        service = DecisionLayerService(
+            repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
+        plan = service.build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
+        designs = [candidate.design for candidate in plan.candidates]
+        treatment_signatures = {tuple(design.treatment) for design in designs}
+        self.assertGreaterEqual(len(treatment_signatures), 2)
+        by_candidate = next(
+            candidate for candidate in plan.candidates if candidate.design.control == ["By"]
+        )
+        bz_candidate = next(
+            candidate for candidate in plan.candidates if candidate.design.control == ["Bz"]
+        )
+        self.assertNotEqual(by_candidate.design.treatment, bz_candidate.design.treatment)
+        self.assertNotEqual(by_candidate.design.control, bz_candidate.design.control)
+
+    def test_uncertainty_types_produce_structurally_distinct_candidate_designs(self) -> None:
+        repository = UnifiedStateRepository(self.project_root / "structural")
+        repository.initialize_state_skeleton(
+            self.task,
+            initial_hypotheses=[
+                HypothesisNode(
+                    hypothesis_id="H_independent",
+                    statement="DeltaDec 提供独立增量信息",
+                    level=1,
+                    status="active",
+                    support_score=0.65,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="task_bootstrap",
+                        summary="主变量效果",
+                        derived_features=["DeltaDec", "Vsw"],
+                    ),
+                ),
+                HypothesisNode(
+                    hypothesis_id="H_null_by",
+                    statement="By 是主要竞争解释",
+                    level=1,
+                    status="active",
+                    support_score=0.42,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="competition_bootstrap",
+                        summary="By 竞争路径",
+                        derived_features=["DeltaDec", "By", "Vsw"],
+                    ),
+                ),
+                HypothesisNode(
+                    hypothesis_id="H_branch_bz",
+                    statement="Bz 条件下存在路径变化",
+                    level=1,
+                    status="active",
+                    support_score=0.36,
+                    activation_condition="always",
+                    generation_rationale=HypothesisGenerationRationale(
+                        trigger="branch_bootstrap",
+                        summary="Bz 条件路径",
+                        derived_features=["DeltaDec", "Bz", "Vsw"],
+                    ),
+                ),
+            ],
+            initial_uncertainties=[
+                UncertaintyRecord(
+                    uncertainty_id="U_IND",
+                    question="DeltaDec 是否具有独立增量信息？",
+                    description="需要检验主变量的独立预测价值。",
+                    related_hypotheses=["H_independent"],
+                    status="active",
+                    priority="high",
+                    created_at_round=2,
+                    created_by="tester",
+                ),
+                UncertaintyRecord(
+                    uncertainty_id="U_COMP",
+                    question="DeltaDec 是否超越 By 的竞争解释提供增量信息？",
+                    description="需要区分独立增量与竞争解释。",
+                    related_hypotheses=["H_null_by", "H_independent"],
+                    status="active",
+                    priority="high",
+                    created_at_round=2,
+                    created_by="tester",
+                    notes="mining_sources:from_hypothesis_conflict;mining_features:DeltaDec,SW Plasma Speed, km/s,By;question_type:independent_gain",
+                ),
+                UncertaintyRecord(
+                    uncertainty_id="U_COND",
+                    question="DeltaDec 与 Bz 的条件路径是否受未建模条件约束？",
+                    description="需要区分受 Bz 条件约束的路径。",
+                    related_hypotheses=["H_branch_bz", "H_independent"],
+                    status="active",
+                    priority="medium",
+                    created_at_round=2,
+                    created_by="tester",
+                    notes="mining_sources:from_missing_evidence;mining_features:DeltaDec,SW Plasma Speed, km/s,Bz;question_type:conditioned_path",
+                ),
+            ],
+            overwrite=True,
+        )
+        service = DecisionLayerService(
+            repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
+        plan = service.build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
+
+        designs = [candidate.design for candidate in plan.candidates]
+        self.assertEqual(len({tuple(design.control) for design in designs}), 3)
+        self.assertEqual(len({tuple(design.treatment) for design in designs}), 3)
+        self.assertFalse(
+            any(
+                "generic distinguishing experiment" in note
+                for design in designs
+                for note in design.notes
+            )
+        )
+
+        by_candidate = next(
+            candidate for candidate in plan.candidates if candidate.design.control == ["By"]
+        )
+        bz_candidate = next(
+            candidate for candidate in plan.candidates if candidate.design.control == ["Bz"]
+        )
+        self.assertEqual(by_candidate.design.control, ["By"])
+        self.assertEqual(by_candidate.design.treatment, ["By", "DeltaDec"])
+        self.assertEqual(bz_candidate.design.control, ["Bz"])
+        self.assertEqual(bz_candidate.design.treatment, ["Bz", "DeltaDec"])
+        ig_values = {
+            candidate.estimated_information_gain.value
+            for candidate in plan.candidates
+            if candidate.estimated_information_gain
+        }
+        utility_values = {
+            candidate.utility_score
+            for candidate in plan.candidates
+            if candidate.utility_score is not None
+        }
+        self.assertGreaterEqual(len(ig_values), 2)
+        self.assertGreaterEqual(len(utility_values), 2)
 
     def test_partially_resolved_uncertainty_turns_into_validation_followup(self) -> None:
         tree = self.repository.load_hypothesis_tree()
@@ -206,7 +519,11 @@ class DecisionLayerTest(unittest.TestCase):
         self.repository.save_uncertainties(uncertainties)
 
         prioritized = UncertaintyPrioritizer().prioritize(uncertainties, tree)
-        service = DecisionLayerService(self.repository)
+        service = DecisionLayerService(
+            self.repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         plan = service.build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
 
         candidate = next(
@@ -241,6 +558,7 @@ class DecisionLayerTest(unittest.TestCase):
 
         tree = self.repository.load_hypothesis_tree()
         uncertainties = self.repository.load_uncertainties()
+        UncertaintyPrioritizer().prioritize(uncertainties, tree)
         candidates = CandidateExperimentGenerator().generate(
             task=self.task,
             data_dictionary=self.dictionary,
@@ -262,6 +580,62 @@ class DecisionLayerTest(unittest.TestCase):
         ]
         self.assertTrue(positive_gain_candidates)
         self.assertIn("PG_expected(E)", positive_gain_candidates[0].estimated_performance_gain.rationale)
+
+    def test_utility_scorer_demotes_candidates_duplicating_executed_history(self) -> None:
+        experiment_memory = self.repository.load_experiment_memory()
+        experiment_memory.entries.append(
+            ExperimentMemoryEntry(
+                experiment_id="E_HIST_01",
+                round_id=1,
+                status="completed",
+                tested_hypotheses=["H1"],
+                metrics_snapshot=PerformanceMetrics(
+                    experiment_id="E_HIST_01",
+                    round_id=1,
+                    baseline_rmse=12.0,
+                    treatment_rmse=11.0,
+                    delta=MetricDelta(rmse=-1.0, pearson_r=0.04),
+                ),
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+        )
+        self.repository.save_experiment_memory(experiment_memory)
+
+        candidate = CandidateExperiment(
+            experiment_id="E_R02_01",
+            type="distinguishing",
+            purpose="resolve U01: test focus",
+            tested_hypotheses=["H1"],
+            design=ExperimentDesign(
+                target="Vsw",
+                control=["DeltaDec"],
+                treatment=["DeltaDec", "By"],
+                design_focus="By",
+            ),
+        )
+        candidate_set = CandidateExperimentSet(
+            round=2,
+            generated_at=datetime.now(),
+            candidates=[candidate],
+        )
+        scored = UtilityScorer().score(candidate_set, experiment_memory=experiment_memory)
+        penalized = [
+            candidate
+            for candidate in scored.candidates
+            if any(
+                note.startswith("selection_penalty:executed_history_similarity")
+                for note in candidate.design.notes
+            )
+        ]
+        self.assertTrue(penalized)
+        self.assertTrue(
+            all(
+                any("E_HIST_01" in note for note in candidate.design.notes)
+                for candidate in penalized
+            )
+        )
+        self.assertTrue(all(candidate.utility_score is not None for candidate in scored.candidates))
 
 
 if __name__ == "__main__":

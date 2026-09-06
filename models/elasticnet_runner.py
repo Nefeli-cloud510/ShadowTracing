@@ -1,5 +1,6 @@
 import json
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
@@ -26,6 +27,7 @@ class FileConfig(BaseModel):
     time_column: str
     target_column: str
     feature_columns: List[str]
+    sparse_sources: List[str] = Field(default_factory=list, description="需要缺失记录剔除审计的源名称")
 
     def model_post_init(self, __context):
         if not self.omni_file_path.exists():
@@ -41,6 +43,8 @@ class TimeWindowConfig(BaseModel):
     test_split_ratio: float = Field(ge=0.1, le=0.5)
     use_lag_feature: bool
     max_lag_day: int = Field(ge=0, le=10)
+    forecast_horizon_days: int = Field(default=0, ge=0, le=30, description="预测超前天数，0 表示同天")
+    past_lag_days: int | None = Field(default=None, ge=1, le=196, description="仅保留最近 N 天滞后特征")
 
 class ElasticNetConfig(BaseModel):
     alpha: float
@@ -51,6 +55,54 @@ class ExperimentConfig(BaseModel):
     file_config: FileConfig
     time_window_config: TimeWindowConfig
     elasticnet_config: ElasticNetConfig
+
+
+@dataclass
+class DataCoverageReport:
+    """单个数据源的日历覆盖统计。"""
+
+    source: str
+    expected_days: int = 0
+    observed_days: int = 0
+    missing_days: int = 0
+    coverage_ratio: float = 1.0
+    interpolated_days: int = 0
+    note: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "source": self.source,
+            "expected_days": self.expected_days,
+            "observed_days": self.observed_days,
+            "missing_days": self.missing_days,
+            "coverage_ratio": self.coverage_ratio,
+            "interpolated_days": self.interpolated_days,
+            "note": self.note,
+        }
+
+
+@dataclass
+class MergedLoadResult:
+    """数据合并结果，附带来源覆盖与稀疏源识别信息。"""
+
+    X: pd.DataFrame
+    y: pd.Series
+    time: pd.Series
+    coverage: list[DataCoverageReport]
+    active_sparse_sources: list[str]
+    merged_sources: list[str]
+
+
+@dataclass
+class SlidingWindowResult:
+    """滑动窗口构造结果。窗口直接基于合并后剩余行构造。"""
+
+    X_all: np.ndarray
+    y_all: np.ndarray
+    time_all: np.ndarray
+    feature_names: list[str]
+    dropped_gap_windows: int = 0
+    total_windows: int = 0
 
 def load_llm_json_config(json_path: str | Path) -> ExperimentConfig:
     try:
@@ -93,20 +145,20 @@ def _normalize_time_column(series: pd.Series) -> pd.Series:
         raise ValueError(f"TIME列存在无法解析的日期值: {bad_values}")
     return normalized
 
-def load_and_merge_data(cfg: ExperimentConfig):
+def load_and_merge_data(cfg: ExperimentConfig) -> MergedLoadResult:
     file_cfg = cfg.file_config
     unique_sources: list[tuple[str, Path]] = []
     seen_paths: set[str] = set()
-    for label, path in [
-        ("OMNI", file_cfg.omni_file_path),
-        ("LHAASO", file_cfg.lhaaso_file_path),
-        *[(path.stem, path) for path in file_cfg.extra_file_paths],
+    for path in [
+        file_cfg.omni_file_path,
+        file_cfg.lhaaso_file_path,
+        *file_cfg.extra_file_paths,
     ]:
         resolved = str(path.resolve())
         if resolved in seen_paths:
             continue
         seen_paths.add(resolved)
-        unique_sources.append((label, path))
+        unique_sources.append((path.stem, path))
     data_frames = [(label, _read_table(path)) for label, path in unique_sources]
 
     normalized_frames: list[pd.DataFrame] = []
@@ -117,9 +169,83 @@ def load_and_merge_data(cfg: ExperimentConfig):
         next_frame[file_cfg.time_column] = _normalize_time_column(next_frame[file_cfg.time_column])
         normalized_frames.append(next_frame)
 
-    df_merge = normalized_frames[0]
-    for frame in normalized_frames[1:]:
-        df_merge = pd.merge(df_merge, frame, on=file_cfg.time_column, how="inner")
+    source_index = {label: idx for idx, (label, _) in enumerate(data_frames)}
+    source_columns = {
+        label: set(normalized_frames[idx].columns)
+        for label, idx in source_index.items()
+    }
+
+    # 只合并当前实验臂实际使用到的源：目标列来源 + 特征列来源。
+    required_labels: set[str] = set()
+    target_sources = [
+        label for label, idx in source_index.items()
+        if file_cfg.target_column in source_columns[label]
+    ]
+    if not target_sources:
+        raise KeyError(f"没有任何数据源包含目标列: {file_cfg.target_column}")
+    required_labels.update(target_sources)
+    for col in file_cfg.feature_columns:
+        matches = [label for label, idx in source_index.items() if col in source_columns[label]]
+        required_labels.update(matches)
+
+    ordered_sources = [
+        label for label, _ in unique_sources if label in required_labels
+    ]
+    if not ordered_sources:
+        raise KeyError("没有可用的数据源")
+
+    # 期望日历范围只按本轮实际参与合并的源计算，未使用的文件（例如本轮未用到
+    # 的 PFSS）既不参与合并，也不该把其缺失天数计入覆盖率审计。
+    ordered_dates: set[pd.Timestamp] = set()
+    for label in ordered_sources:
+        frame = normalized_frames[source_index[label]]
+        ordered_dates.update(
+            pd.to_datetime(frame[file_cfg.time_column]).dt.normalize().unique()
+        )
+    if not ordered_dates:
+        raise ValueError("本轮使用的数据源均为空，无法确定日历范围")
+    expected_days = int((max(ordered_dates) - min(ordered_dates)).days + 1)
+
+    # 先构造覆盖报告，再按需合并。
+    coverage_reports: list[DataCoverageReport] = []
+    for label in ordered_sources:
+        frame = normalized_frames[source_index[label]]
+        observed_dates = pd.to_datetime(frame[file_cfg.time_column]).dt.normalize().unique()
+        observed_days = int(len(observed_dates))
+        missing_days = max(0, expected_days - observed_days)
+        coverage_ratio = observed_days / expected_days if expected_days else 1.0
+        coverage_reports.append(
+            DataCoverageReport(
+                source=label,
+                expected_days=expected_days,
+                observed_days=observed_days,
+                missing_days=missing_days,
+                coverage_ratio=round(coverage_ratio, 6),
+                note="缺失记录将按行剔除" if missing_days else None,
+            )
+        )
+
+    configured_sparse = set(file_cfg.sparse_sources)
+    # sparse_sources 为空代表本轮未显式启用任一稀疏源的缺失记录审计；只有配置了
+    # 源名称（且该源确有缺失日）才可能启用，不能让“未配置”退化成全员启用。
+    active_sparse_sources = (
+        [
+            report.source
+            for report in coverage_reports
+            if report.missing_days > 0 and report.source in configured_sparse
+        ]
+        if configured_sparse
+        else []
+    )
+
+    df_merge = normalized_frames[source_index[ordered_sources[0]]]
+    for label in ordered_sources[1:]:
+        df_merge = pd.merge(
+            df_merge,
+            normalized_frames[source_index[label]],
+            on=file_cfg.time_column,
+            how="inner",
+        )
 
     missing_features = [col for col in file_cfg.feature_columns if col not in df_merge.columns]
     if missing_features:
@@ -138,33 +264,60 @@ def load_and_merge_data(cfg: ExperimentConfig):
     X = df_merge[file_cfg.feature_columns].astype(float).copy()
     y = df_merge[file_cfg.target_column].astype(float).copy()
     time_raw = df_merge[file_cfg.time_column].copy()
-    print(f"数据合并完成，有效样本数: {len(df_merge)}")
-    return X, y, time_raw
+    print(
+        f"数据合并完成，有效样本数: {len(df_merge)}；"
+        f"缺失记录审计源: {active_sparse_sources or '无'}"
+    )
+    return MergedLoadResult(
+        X=X,
+        y=y,
+        time=time_raw,
+        coverage=coverage_reports,
+        active_sparse_sources=active_sparse_sources,
+        merged_sources=ordered_sources,
+    )
 
 
 # 时间窗构造与数据集切分
 
-def build_sliding_window(X_raw: pd.DataFrame, y_raw: pd.Series, time_raw: pd.Series, tw_cfg: TimeWindowConfig):
+def build_sliding_window(
+    X_raw: pd.DataFrame,
+    y_raw: pd.Series,
+    time_raw: pd.Series,
+    tw_cfg: TimeWindowConfig,
+) -> SlidingWindowResult:
     window_size = tw_cfg.window_size
-    if len(X_raw) <= window_size:
-        raise ValueError(f"有效样本数 {len(X_raw)} 小于窗口大小 {window_size}")
+    forecast_horizon = tw_cfg.forecast_horizon_days
+    past_lag_days = tw_cfg.past_lag_days or window_size
+    if len(X_raw) <= window_size + forecast_horizon:
+        raise ValueError(f"有效样本数 {len(X_raw)} 小于窗口大小 {window_size} 加超前天数 {forecast_horizon}")
 
     arr_x = X_raw.to_numpy(dtype=float)
     arr_y = y_raw.to_numpy(dtype=float)
     arr_t = pd.to_datetime(time_raw).to_numpy()
 
     X_all, y_all, time_all = [], [], []
+    dropped_gap_windows = 0
+    total_windows = 0
     feature_names = []
-    for lag in range(window_size, 0, -1):
+    for lag in range(past_lag_days, 0, -1):
         for col in X_raw.columns:
             feature_names.append(f"{col}_t-{lag}")
 
-    for i in range(window_size, len(arr_x)):
-        X_all.append(arr_x[i - window_size:i, :].reshape(-1))
-        y_all.append(arr_y[i])
-        time_all.append(arr_t[i])
+    for i in range(window_size, len(arr_x) - forecast_horizon):
+        total_windows += 1
+        X_all.append(arr_x[i - past_lag_days:i, :].reshape(-1))
+        y_all.append(arr_y[i + forecast_horizon])
+        time_all.append(arr_t[i + forecast_horizon])
 
-    return np.asarray(X_all), np.asarray(y_all), np.asarray(time_all), feature_names
+    return SlidingWindowResult(
+        X_all=np.asarray(X_all),
+        y_all=np.asarray(y_all),
+        time_all=np.asarray(time_all),
+        feature_names=feature_names,
+        dropped_gap_windows=dropped_gap_windows,
+        total_windows=total_windows,
+    )
 
 def split_and_scale_dataset(X_all: np.ndarray, y_all: np.ndarray, time_all: np.ndarray, test_rate: float, feature_names: List[str]):
     split_idx = int(len(X_all) * (1 - test_rate))
@@ -242,10 +395,24 @@ def plot_feature_coefficients(coef_df: pd.DataFrame, output_dir: Path, top_n: in
     plt.close()
     return save_path
 
-def plot_prediction_scatter(y_true: np.ndarray, y_pred: np.ndarray, metrics: dict, output_dir: Path):
-    min_val = min(np.min(y_true), np.min(y_pred))
-    max_val = max(np.max(y_true), np.max(y_pred))
+def plot_prediction_scatter(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    metrics: dict,
+    output_dir: Path,
+    *,
+    experiment_label: str = "",
+    train_true: np.ndarray | None = None,
+    train_pred: np.ndarray | None = None,
+):
+    min_val = min(float(np.min(y_true)), float(np.min(y_pred)))
+    max_val = max(float(np.max(y_true)), float(np.max(y_pred)))
+    if train_true is not None and train_pred is not None and len(train_true) > 0:
+        min_val = min(min_val, float(np.min(train_true)), float(np.min(train_pred)))
+        max_val = max(max_val, float(np.max(train_true)), float(np.max(train_pred)))
     plt.figure(figsize=(7, 6), dpi=300)
+    if train_true is not None and train_pred is not None and len(train_true) > 0:
+        plt.scatter(train_true, train_pred, alpha=0.32, s=16, c="#8aa5c2", label="Train")
     plt.scatter(y_true, y_pred, alpha=0.7, s=26, c="#2c3e50")
     plt.plot([min_val, max_val], [min_val, max_val], "r--", lw=2)
     text_info = (
@@ -256,7 +423,9 @@ def plot_prediction_scatter(y_true: np.ndarray, y_pred: np.ndarray, metrics: dic
     plt.text(0.03, 0.97, text_info, transform=plt.gca().transAxes, va="top", bbox=dict(boxstyle="round", fc="white", alpha=0.8))
     plt.xlabel("True Solar-Wind Speed (km/s)")
     plt.ylabel("Predicted Solar-Wind Speed (km/s)")
-    plt.title("True vs Predicted Scatter")
+    title = f"{experiment_label} True vs Predicted Scatter" if experiment_label else "True vs Predicted Scatter"
+    plt.title(title)
+    plt.legend()
     plt.grid(alpha=0.3)
     plt.tight_layout()
     save_path = output_dir / "elasticnet_scatter.png"
@@ -264,18 +433,82 @@ def plot_prediction_scatter(y_true: np.ndarray, y_pred: np.ndarray, metrics: dic
     plt.close()
     return save_path
 
-def plot_prediction_series(time_test: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, output_dir: Path):
-    plt.figure(figsize=(20, 5), dpi=300)
-    plt.plot(time_test, y_true, label="True", lw=1.8, color="#2c3e50")
-    plt.plot(time_test, y_pred, label="Predicted", lw=1.8, color="#c0392b")
-    plt.xlabel("Time")
-    plt.ylabel("Solar-Wind Speed (km/s)")
-    plt.title("Test Set Time-Series Comparison")
-    plt.legend()
-    plt.grid(alpha=0.3)
+def plot_prediction_series(
+    time_test: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    output_dir: Path,
+    *,
+    experiment_label: str = "",
+    time_train: np.ndarray | None = None,
+    train_true: np.ndarray | None = None,
+    train_pred: np.ndarray | None = None,
+    x_limits: tuple | None = None,
+    split_time=None,
+):
+    plt.figure(figsize=(9.25, 5), dpi=300)
+    ax = plt.gca()
+    if time_train is not None and train_true is not None and train_pred is not None and len(time_train) > 0:
+        ax.plot(
+            time_train,
+            train_true,
+            linestyle="-",
+            linewidth=1.2,
+            alpha=0.7,
+            color="#7f9ab3",
+            label="True (Train)",
+        )
+        ax.plot(
+            time_train,
+            train_pred,
+            linestyle="-",
+            linewidth=1.2,
+            alpha=0.7,
+            color="#d4a557",
+            label="Predicted (Train)",
+        )
+    if split_time is not None:
+        ax.axvline(split_time, color="#c0392b", linestyle=":", lw=1.6, label="Train / Test Split")
+    ax.plot(
+        time_test,
+        y_true,
+        linestyle="-",
+        linewidth=1.6,
+        alpha=0.9,
+        color="#2c3e50",
+        label="True",
+    )
+    ax.plot(
+        time_test,
+        y_pred,
+        linestyle="-",
+        linewidth=1.6,
+        alpha=0.9,
+        color="#c0392b",
+        label="Predicted",
+    )
+    if x_limits is not None:
+        ax.set_xlim(x_limits)
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Solar-Wind Speed (km/s)")
+    if x_limits is not None:
+        start_label = pd.Timestamp(x_limits[0]).strftime("%Y-%m-%d")
+        end_label = pd.Timestamp(x_limits[1]).strftime("%Y-%m-%d")
+        subtitle = f"Full Data Range {start_label} - {end_label}"
+    else:
+        subtitle = "Full Data Range"
+    title = (
+        f"{experiment_label} True vs Predicted Scatter (Time-Aligned) · {subtitle}"
+        if experiment_label
+        else f"True vs Predicted Scatter (Time-Aligned) · {subtitle}"
+    )
+    ax.set_title(title)
+    ax.grid(axis="x", linestyle=":", color="#d8dee8", alpha=0.9)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(framealpha=0.9, edgecolor="#dbe1ea", fontsize=8, loc="upper left")
     plt.tight_layout()
     save_path = output_dir / "elasticnet_timeseries.png"
-    plt.savefig(save_path, bbox_inches="tight")
+    plt.savefig(save_path)
     plt.close()
     return save_path
 
@@ -309,6 +542,12 @@ def plot_residual_histogram(residual: np.ndarray, output_dir: Path):
 # SHAP 解释
 
 def run_shap_analysis(model: ElasticNet, Xtr: pd.DataFrame, Xte: pd.DataFrame, output_dir: Path):
+    def split_feature_lag(feature):
+        name, _, lag_text = str(feature).rpartition("_t-")
+        if lag_text.isdigit():
+            return name, int(lag_text)
+        return str(feature), None
+
     explainer = shap.Explainer(model, Xtr)
     shap_values = explainer(Xte)
 
@@ -337,15 +576,39 @@ def run_shap_analysis(model: ElasticNet, Xtr: pd.DataFrame, Xte: pd.DataFrame, o
         "feature": Xte.columns,
         "mean_abs_shap": np.abs(shap_values.values).mean(axis=0)
     }).sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
+    shap_importance["variable"] = shap_importance["feature"].map(lambda item: split_feature_lag(item)[0])
+    shap_importance["lag"] = shap_importance["feature"].map(lambda item: split_feature_lag(item)[1])
+    variable_importance = (
+        shap_importance
+        .groupby("variable", as_index=False)["mean_abs_shap"]
+        .mean()
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+    lag_profile = (
+        shap_importance.loc[shap_importance["lag"].notna()]
+        .groupby("lag", as_index=False)["mean_abs_shap"]
+        .mean()
+        .sort_values("lag")
+        .reset_index(drop=True)
+    )
     shap_importance_path = output_dir / "elasticnet_shap_importance.csv"
+    variable_importance_path = output_dir / "elasticnet_shap_variable_importance.csv"
+    lag_profile_path = output_dir / "elasticnet_shap_lag_profile.csv"
     shap_importance.to_csv(shap_importance_path, index=False, encoding="utf-8-sig")
+    variable_importance.to_csv(variable_importance_path, index=False, encoding="utf-8-sig")
+    lag_profile.to_csv(lag_profile_path, index=False, encoding="utf-8-sig")
 
     return {
         "summary_path": summary_path,
         "bar_path": bar_path,
         "waterfall_path": waterfall_path,
         "importance": shap_importance,
-        "importance_path": shap_importance_path
+        "importance_path": shap_importance_path,
+        "variable_importance": variable_importance,
+        "variable_importance_path": variable_importance_path,
+        "lag_profile": lag_profile,
+        "lag_profile_path": lag_profile_path,
     }
 
 
@@ -356,8 +619,19 @@ def main(config_path: str):
     output_dir = Path(config_path).resolve().parent.parent / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    X_raw, y_raw, time_raw = load_and_merge_data(cfg)
-    X_all, y_all, time_all, feature_names = build_sliding_window(X_raw, y_raw, time_raw, cfg.time_window_config)
+    merged = load_and_merge_data(cfg)
+    window_result = build_sliding_window(
+        merged.X,
+        merged.y,
+        merged.time,
+        cfg.time_window_config,
+    )
+    X_all, y_all, time_all, feature_names = (
+        window_result.X_all,
+        window_result.y_all,
+        window_result.time_all,
+        window_result.feature_names,
+    )
     Xtr, Xte, ytr, yte, time_train, time_test, scaler = split_and_scale_dataset(
         X_all,
         y_all,
@@ -374,10 +648,34 @@ def main(config_path: str):
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
     residual = yte - yte_pred
+    full_time = np.concatenate([time_train, time_test])
+    full_y = np.concatenate([ytr, yte])
+    full_y_pred = np.concatenate([ytr_pred, yte_pred])
+    x_limits = (full_time.min(), full_time.max()) if len(full_time) > 0 else None
+    split_time = time_test[0] if len(time_test) > 0 else None
     figure_paths = {
         "coefficients": plot_feature_coefficients(coef_df, output_dir),
-        "scatter": plot_prediction_scatter(yte, yte_pred, metrics, output_dir),
-        "timeseries": plot_prediction_series(time_test, yte, yte_pred, output_dir),
+        "scatter": plot_prediction_scatter(
+            yte,
+            yte_pred,
+            metrics,
+            output_dir,
+            experiment_label="ElasticNet",
+            train_true=ytr,
+            train_pred=ytr_pred,
+        ),
+        "timeseries": plot_prediction_series(
+            time_test,
+            yte,
+            yte_pred,
+            output_dir,
+            experiment_label="ElasticNet",
+            time_train=time_train,
+            train_true=ytr,
+            train_pred=ytr_pred,
+            x_limits=x_limits,
+            split_time=split_time,
+        ),
         "residual_scatter": plot_residual_scatter(yte_pred, residual, output_dir),
         "residual_hist": plot_residual_histogram(residual, output_dir)
     }
@@ -385,12 +683,13 @@ def main(config_path: str):
 
     print("ElasticNet 训练完成")
     print(f"滑动窗口后样本数: {len(X_all)}")
+    print(f"滑动窗口共 {window_result.total_windows} 个")
     print(f"训练集 RMSE: {metrics['train_rmse']:.3f}")
     print(f"测试集 RMSE: {metrics['test_rmse']:.3f}")
     print(f"训练集 R2: {metrics['train_r2']:.3f}")
     print(f"测试集 R2: {metrics['test_r2']:.3f}")
     print(f"测试集 Pearson r: {metrics['test_pearson_r']:.3f}")
-    print(f"测试集均值基线 RMSE: {metrics['baseline_test_rmse']:.3f}")
+    print(f"测试集均值对照组 RMSE: {metrics['baseline_test_rmse']:.3f}")
     print("系数绝对值 Top 特征:")
     print(coef_df.head(10).to_string(index=False))
     print("SHAP 重要性 Top 特征:")

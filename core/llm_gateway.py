@@ -48,6 +48,7 @@ class LLMGateway:
         user_prompt: str,
         response_model: type[SchemaModelT],
         fallback_factory: Callable[[], SchemaModelT | dict[str, Any]] | None = None,
+        payload_fixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         temperature: float | None = None,
     ) -> SchemaModelT:
         if self.client is None:
@@ -66,6 +67,8 @@ class LLMGateway:
             )
             content = response.choices[0].message.content or ""
             payload = _extract_json_payload(content)
+            if payload_fixer is not None:
+                payload = payload_fixer(payload)
             return response_model.model_validate(payload)
         except Exception:
             if fallback_factory is None or not self.allow_fallback:
@@ -82,6 +85,8 @@ class LLMGateway:
         return OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=300,
+            max_retries=1,
         )
 
     @staticmethod

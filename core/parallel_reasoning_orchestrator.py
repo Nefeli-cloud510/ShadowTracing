@@ -37,6 +37,7 @@ class ParallelReasoningOrchestrator:
         *,
         planner_input: ReasoningPlannerInput,
         rag_context: RAGContextBundle,
+        mined_candidates: list[dict[str, object]] | None = None,
     ) -> ParallelReasoningBundle:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             proposer_future = executor.submit(
@@ -48,6 +49,7 @@ class ParallelReasoningOrchestrator:
                 self.scientific_questioner.question,
                 planner_input=planner_input,
                 rag_context=rag_context,
+                mined_candidates=mined_candidates,
             )
             return ParallelReasoningBundle(
                 proposer=proposer_future.result(),

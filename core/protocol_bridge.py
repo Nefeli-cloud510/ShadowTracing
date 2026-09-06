@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+from pydantic import Field
 
 from core.schema import ExperimentConfig as LegacyAdjustmentConfig
 from core.unified_schema import ExperimentProtocol, ModelSpec, ShadowBaseModel
@@ -21,6 +22,7 @@ class ElasticNetDataSourceConfig(ShadowBaseModel):
     omni_file_path: Path
     lhaaso_file_path: Path
     extra_file_paths: list[Path] = []
+    sparse_sources: list[str] = Field(default_factory=list, description="需要缺失记录剔除审计的源名称")
     time_column: str = "TIME"
     target_column: str = "SW Plasma Speed, km/s"
     column_aliases: dict[str, str] = {}
@@ -50,11 +52,25 @@ class ElasticNetProtocolBridge:
             raise KeyError(f"特征列在数据源中不存在: {missing}")
         return valid_columns
 
-    def build_runner_config(self, protocol: ExperimentProtocol, feature_columns: list[str]) -> RunnerExperimentConfig:
+    def build_runner_config(
+        self,
+        protocol: ExperimentProtocol,
+        feature_columns: list[str],
+        arm_overrides: dict | None = None,
+    ) -> RunnerExperimentConfig:
         feature_columns = self.validate_feature_columns(feature_columns)
         model_parameters = protocol.model.parameters
         available_columns = self._available_columns()
         target_column = self._resolve_column_name(self.data_source.target_column or protocol.target, available_columns) or protocol.target
+        overrides = arm_overrides or {}
+        window_size = int(overrides.get("window_size", model_parameters.get("window_size", 3)))
+        forecast_horizon_days = int(
+            overrides.get(
+                "forecast_horizon_days",
+                model_parameters.get("forecast_horizon_days", 0),
+            )
+        )
+        past_lag_days = overrides.get("past_lag_days", model_parameters.get("past_lag_days"))
 
         return RunnerExperimentConfig(
             file_config=RunnerFileConfig(
@@ -64,12 +80,15 @@ class ElasticNetProtocolBridge:
                 time_column=self.data_source.time_column,
                 target_column=target_column,
                 feature_columns=feature_columns,
+                sparse_sources=self.data_source.sparse_sources,
             ),
             time_window_config=RunnerTimeWindowConfig(
-                window_size=int(model_parameters.get("window_size", 3)),
+                window_size=window_size,
                 test_split_ratio=float(model_parameters.get("test_split_ratio", self.data_source.test_split_ratio)),
                 use_lag_feature=bool(model_parameters.get("use_lag_feature", False)),
                 max_lag_day=int(model_parameters.get("max_lag_day", 0)),
+                forecast_horizon_days=forecast_horizon_days,
+                past_lag_days=int(past_lag_days) if past_lag_days is not None else None,
             ),
             elasticnet_config=RunnerElasticNetConfig(
                 alpha=float(model_parameters.get("alpha", 0.5)),

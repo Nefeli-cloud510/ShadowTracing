@@ -10,11 +10,27 @@ DEFAULT_DASHSCOPE_BASE_URL = (
     "https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 )
 DEFAULT_ROLE_MODELS = {
-    "hypothesis_proposer": "qwen-plus",
-    "scientific_questioner": "qwen-plus",
-    "central_controller": "qwen3.8-max",
-    "experiment_planner": "qwen-plus",
-    "scientific_interpreter": "qwen3.8-max",
+    "hypothesis_proposer": "",
+    "scientific_questioner": "",
+    "central_controller": "",
+    "experiment_planner": "",
+    "experiment_designer": "",
+    "experiment_writer": "",
+    "scientific_interpreter": "",
+}
+
+# Per-million-token CNY prices (yuan). Flash pricing is the 2026-08-27
+# adjusted rate; Max remains unchanged from the user-provided table.
+BAILIAN_MODEL_PRICES: dict[str, dict[str, float]] = {
+    "qwen3.8-flash": {
+        "input": 0.80,
+        "output": 2.70,
+    },
+    "qwen3.8-max": {
+        "input": 12.00,
+        "output": 36.00,
+        "input_cached": 1.50,
+    },
 }
 
 
@@ -49,7 +65,51 @@ def get_dasyscope_base_url() -> str:
 
 
 def get_default_llm_model() -> str:
-    return get_runtime_setting("BAILIAN_MODEL", "qwen-plus") or "qwen-plus"
+    return get_runtime_setting("BAILIAN_MODEL", "qwen3.8-flash") or "qwen3.8-flash"
+
+
+def get_bailian_model_prices(model: str | None = None) -> dict[str, float]:
+    """Return per-million-token CNY price rates for the active Bailian model.
+
+    Prices can be overridden with BAILIAN_MODEL_PRICES as a JSON map of the
+    same shape, e.g. {"qwen3.8-flash": {"input": 0.80, "output": 2.70}}.
+    """
+    model_name = (model or get_default_llm_model()).strip().lower()
+    normalized = re.sub(r"[\s_/]+", "-", model_name)
+    prices_override = get_runtime_setting("BAILIAN_MODEL_PRICES")
+    if prices_override:
+        try:
+            parsed = json.loads(prices_override)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            for key, value in parsed.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    BAILIAN_MODEL_PRICES[str(key).strip().lower()] = {
+                        str(rate_key).strip().lower(): float(rate_value)
+                        for rate_key, rate_value in value.items()
+                    }
+                except (TypeError, ValueError):
+                    continue
+
+    prices = BAILIAN_MODEL_PRICES.get(normalized)
+    if prices is None:
+        if "3.8-max" in normalized or normalized.startswith("qwen3.8-max"):
+            prices = BAILIAN_MODEL_PRICES["qwen3.8-max"]
+        else:
+            prices = BAILIAN_MODEL_PRICES["qwen3.8-flash"]
+
+    resolved = dict(prices)
+    for rate_key in ("input", "output", "input_cached"):
+        env_value = get_runtime_setting(f"BAILIAN_MODEL_PRICE_{rate_key.upper()}")
+        if env_value:
+            try:
+                resolved[rate_key] = float(env_value)
+            except ValueError:
+                continue
+    return resolved
 
 
 def get_llm_role_models() -> dict[str, str]:

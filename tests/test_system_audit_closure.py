@@ -19,6 +19,10 @@ from core.unified_schema import (
     UncertaintyRecord,
     VariableBinding,
 )
+from tests.test_decision_layer import (
+    StubCandidateExperimentDesigner,
+    StubCandidateExperimentWriter,
+)
 
 
 class SystemAuditClosureTest(unittest.TestCase):
@@ -52,8 +56,8 @@ class SystemAuditClosureTest(unittest.TestCase):
                     max_experiments_per_round=3,
                     resource_budget={
                         "token_budget": 100000,
-                        "max_time_seconds_per_round": 300,
-                        "max_candidates": 3,
+                    "max_time_seconds_per_round": 300,
+                    "max_candidates": 6,
                     },
                 ),
                 data_sources={
@@ -108,7 +112,11 @@ class SystemAuditClosureTest(unittest.TestCase):
             data_dictionary=self.dictionary,
             overwrite=True,
         )
-        DecisionLayerService(self.repository).build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
+        DecisionLayerService(
+            self.repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        ).build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -134,7 +142,13 @@ class SystemAuditClosureTest(unittest.TestCase):
         lhaaso.to_csv(self.project_root / "data" / "raw" / "lhaaso.csv", index=False)
 
     def _run_two_rounds(self) -> dict[str, object]:
-        control = HumanControlService(self.repository, project_root=self.project_root, run_shap=False)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            run_shap=False,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
 
         initial_review = control.request_experiment_selection_review()
         round1 = control.approve_and_execute_candidate(
@@ -191,6 +205,37 @@ class SystemAuditClosureTest(unittest.TestCase):
         self.assertEqual(candidate_set.round, round2_protocol.round_id + 1)
         self.assertTrue(candidate_set.candidates)
         self.assertTrue(any(candidate.related_uncertainties for candidate in candidate_set.candidates))
+
+    def test_new_round_uncertainty_batch_drives_multi_candidates(self) -> None:
+        payload = self._run_two_rounds()
+        after_round1 = payload["after_round1"]
+        validations = {
+            item["item_id"]: item["passed"]
+            for item in after_round1["round_bootstrap"]["validations"]
+        }
+        for item_id in (
+            "round_incremented",
+            "hypothesis_tree_refreshed",
+            "uncertainty_queue_refreshed",
+            "uncertainty_batch_sufficient",
+        ):
+            self.assertTrue(validations.get(item_id), f"failed validation: {item_id}")
+
+        uncertainties = self.repository.load_uncertainties()
+        active_records = [
+            record
+            for record in uncertainties.records
+            if record.status not in {"resolved", "deprecated"}
+        ]
+        self.assertGreaterEqual(len(active_records), 4)
+        self.assertTrue(any(record.mining_sources for record in uncertainties.records))
+
+        candidate_set = after_round1["candidate_plan"]
+        self.assertGreaterEqual(len(candidate_set.candidates), 4)
+        self.assertGreaterEqual(
+            len({candidate.scientific_question for candidate in candidate_set.candidates}),
+            4,
+        )
 
     def test_state_and_logs_are_auditable_after_two_rounds(self) -> None:
         payload = self._run_two_rounds()

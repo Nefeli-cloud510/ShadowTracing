@@ -9,21 +9,33 @@ from core.central_controller_llm import CentralControllerLLM
 from core.decision_unified import DIFFERENTIATING_EXPERIMENT_ERROR
 from core.decision_unified import DecisionLayerService
 from core.evaluation_unified import evaluate_experiment, export_evaluation_result
-from core.experiment_planner_llm import ExperimentPlannerLLM
+from core.experiment_planner_llm import (
+    CandidateExperimentDesignerLLM,
+    CandidateExperimentWriterLLM,
+    ExperimentPlannerLLM,
+)
 from core.harness_unified import UnifiedExperimentHarness
 from core.hypothesis_proposer_llm import HypothesisProposerLLM
-from core.hypothesis_generation import HypothesisGenerationService
+from core.hypothesis_generation import HypothesisGenerationService, refresh_tree_metadata
+from core.hypothesis_state_machine import ACTIVE_LIKE
 from core.llm_gateway import LLMGateway
+from core.multi_source_uncertainty_miner import (
+    MiningContext,
+    MultiSourceUncertaintyMiner,
+)
 from core.parallel_reasoning_orchestrator import ParallelReasoningOrchestrator
 from core.planner_output_applier import PlannerOutputApplier
 from core.planner_unified import PlannerOutputBuilder, ReasoningPlannerInputBuilder
 from core.protocol_bridge import ElasticNetDataSourceConfig
 from core.rag_service import RAGContextBundle, RAGService
+from core.round_orchestrator import RoundOrchestrator
 from core.runtime_config import get_llm_model_for_role
-from core.scientific_interpreter_llm import ScientificInterpreterLLM
+from core.scientific_interpreter_llm import InterpreterRoundAnalysis, ScientificInterpreterLLM
 from core.scientific_questioner_llm import ProposedUncertainty, ScientificQuestionerLLM
 from core.state_repository import UnifiedStateRepository
 from core.state_updater import UnifiedStateUpdater
+from core.support_update_rules import compute_support_update_from_reasoning
+from core.tuning_narrative_llm import TuningNarrativeService
 from core.unified_schema import (
     CandidateExperiment,
     DataDictionary,
@@ -34,8 +46,10 @@ from core.unified_schema import (
     ExperimentProtocol,
     ExperimentResult,
     ExperimentStep,
+    HypothesisQuestioningRecord,
     HypothesisSnapshot,
     HumanFeedbackEntry,
+    LatestTreeUpdate,
     PlannerEvaluationSummary,
     PlannerDisagreementUpdateItem,
     PlannerReasoningTraceItem,
@@ -50,8 +64,10 @@ from core.unified_schema import (
     ReasoningPlannerOutput,
     ScientificTask,
     StopHistoryEntry,
+    SupportHistoryEntry,
     UncertaintyRecord,
 )
+from core.variable_semantic_service import VariableSemanticService
 
 
 class CandidateProtocolMapper:
@@ -72,7 +88,7 @@ class CandidateProtocolMapper:
         treatment_features = [item for item in candidate.design.treatment if item]
         if is_baseline_experiment:
             if not treatment_features:
-                raise ValueError("基线实验至少需要一组基线变量，无法生成执行协议。")
+                raise ValueError("对照组实验至少需要一组对照组变量，无法生成执行协议。")
             control_features = []
         else:
             if not control_features or not treatment_features:
@@ -81,12 +97,19 @@ class CandidateProtocolMapper:
                 raise ValueError(DIFFERENTIATING_EXPERIMENT_ERROR)
         candidate.design.control = control_features
         candidate.design.treatment = treatment_features
+        design = candidate.design
+        max_lag_day = max((max(values) for values in design.lags.values()), default=0)
+        forecast_horizon_days = design.forecast_horizon_days or max_lag_day or 3
+        past_lag_days = design.past_lag_days or min(max_lag_day, 3) or 1
+        window_size = design.window_size or 14
         parameters = {
-            "window_size": 3,
+            "window_size": window_size,
             "alpha": 0.3,
             "l1_ratio": 0.5,
             "use_lag_feature": bool(candidate.design.lags),
-            "max_lag_day": max((max(values) for values in candidate.design.lags.values()), default=0),
+            "max_lag_day": max_lag_day,
+            "forecast_horizon_days": forecast_horizon_days,
+            "past_lag_days": past_lag_days,
             "random_state": 42,
             "test_split_ratio": 0.2,
         }
@@ -101,6 +124,14 @@ class CandidateProtocolMapper:
             "control": list(control_features),
             "treatment": list(treatment_features),
             "lags": {key: list(values) for key, values in candidate.design.lags.items()},
+            "probe_axis": design.probe_axis,
+            "forecast_horizon_days": forecast_horizon_days,
+            "past_lag_days": past_lag_days,
+            "window_size": window_size,
+            "control_lag_days": design.control_lag_days,
+            "treatment_lag_days": design.treatment_lag_days,
+            "control_forecast_horizon_days": design.control_forecast_horizon_days,
+            "treatment_forecast_horizon_days": design.treatment_forecast_horizon_days,
         }
         if model_parameters:
             parameters.update(model_parameters)
@@ -110,8 +141,57 @@ class CandidateProtocolMapper:
             for refinement in protocol_refinements:
                 parameters.update(refinement.suggested_model_parameters)
                 refinement_notes.append(f"planner_refinement:{refinement.refinement_type}")
+                if refinement.rationale:
+                    refinement_notes.append(f"planner_rationale:{refinement.rationale}")
+                if refinement.suggested_model_parameters:
+                    refinement_notes.append(
+                        "planner_model_parameters:"
+                        + json.dumps(
+                            refinement.suggested_model_parameters,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    )
                 refinement_notes.extend(refinement.protocol_notes)
                 refinement_steps.extend(step.model_copy(deep=True) for step in refinement.suggested_steps)
+
+        if model_parameters:
+            # 用户在审批时显式给出的模型参数优先级最高，覆盖 LLM refinement 的自动建议。
+            parameters.update(model_parameters)
+            refinement_notes.append(
+                "planner_model_parameters:"
+                + json.dumps(model_parameters, ensure_ascii=False, separators=(",", ":"))
+            )
+            refinement_notes.append("planner_rationale:PI 在审批环节显式覆写模型参数")
+
+        # 时间窗必须使用最终生效的模型参数；仅当候选设计显式给出不同的双臂窗口
+        # （例如超前窗口轴）时才保留双臂差异，避免调参结果被旧默认值覆盖。
+        control_lag = int(parameters.get("past_lag_days", past_lag_days))
+        treatment_lag = int(parameters.get("past_lag_days", past_lag_days))
+        if (
+            design.control_lag_days is not None
+            and design.treatment_lag_days is not None
+            and design.control_lag_days != design.treatment_lag_days
+        ):
+            control_lag = design.control_lag_days
+            treatment_lag = design.treatment_lag_days
+        final_horizon = int(parameters.get("forecast_horizon_days", forecast_horizon_days))
+        final_window = int(parameters.get("window_size", window_size))
+        parameters["arm_time_windows"] = {
+            "baseline": {
+                "window_size": final_window,
+                "forecast_horizon_days": final_horizon,
+                "past_lag_days": control_lag,
+            },
+            "treatment": {
+                "window_size": final_window,
+                "forecast_horizon_days": final_horizon,
+                "past_lag_days": treatment_lag,
+            },
+        }
+        forecast_horizon_days = final_horizon
+        past_lag_days = control_lag
+        window_size = final_window
 
         base_steps = [ExperimentStep(step=1, action="data_quality_check")]
         if is_baseline_experiment:
@@ -146,7 +226,7 @@ class CandidateProtocolMapper:
             task_id=task.task_id,
             target=candidate.design.target,
             scientific_objective=candidate.scientific_question or candidate.purpose,
-            forecast_horizon_days=max((max(values) for values in candidate.design.lags.values()), default=3),
+            forecast_horizon_days=forecast_horizon_days,
             features=candidate.design,
             model={
                 "name": model_name,
@@ -187,6 +267,8 @@ class HumanControlService:
         hypothesis_proposer: HypothesisProposerLLM | None = None,
         scientific_questioner: ScientificQuestionerLLM | None = None,
         experiment_planner: ExperimentPlannerLLM | None = None,
+        experiment_designer: CandidateExperimentDesignerLLM | None = None,
+        experiment_writer: CandidateExperimentWriterLLM | None = None,
         parallel_reasoning_orchestrator: ParallelReasoningOrchestrator | None = None,
     ) -> None:
         self.repository = repository
@@ -222,6 +304,8 @@ class HumanControlService:
         self.experiment_planner = experiment_planner or ExperimentPlannerLLM(
             gateway=LLMGateway(model=get_llm_model_for_role("experiment_planner"))
         )
+        self.experiment_designer = experiment_designer or CandidateExperimentDesignerLLM()
+        self.experiment_writer = experiment_writer or CandidateExperimentWriterLLM()
         self.parallel_reasoning_orchestrator = parallel_reasoning_orchestrator or ParallelReasoningOrchestrator(
             hypothesis_proposer=self.hypothesis_proposer,
             scientific_questioner=self.scientific_questioner,
@@ -299,9 +383,683 @@ class HumanControlService:
                 uncertainties=uncertainties,
             )
             self.repository.save_uncertainties(uncertainties)
+        else:
+            planner_input, uncertainties = self._mine_programmatic_uncertainties(
+                planner_input=planner_input,
+                uncertainties=uncertainties,
+            )
+            self.repository.save_uncertainties(uncertainties)
         self.repository.save_planner_input(planner_input)
+        DecisionLayerService(
+            self.repository,
+            experiment_designer=self.experiment_designer,
+            experiment_writer=self.experiment_writer,
+        ).build_candidate_plan(
+            task=self.repository.load_task(),
+            data_dictionary=data_dictionary,
+            planner_input=planner_input,
+            target_round=planner_input.next_round_id,
+        )
         self._log_planner_input_prepared(planner_input)
         return planner_input
+
+    def prepare_initial_hypothesis_review_context(
+        self,
+        *,
+        data_dictionary: DataDictionary,
+    ) -> ReasoningPlannerInput:
+        """Phase 1 first-round bootstrap: H/C proposals and frozen hypothesis tree, then stop.
+
+        Uncertainty mining and candidate generation are intentionally deferred until
+        ``confirm_hypothesis_tree`` is called, so the downstream work always consumes
+        the exact tree the human PI has reviewed.
+        """
+        uncertainties = self.repository.load_uncertainties()
+        planner_input_builder = ReasoningPlannerInputBuilder(self.repository)
+        planner_input = planner_input_builder.build(
+            data_dictionary=data_dictionary,
+            source_round_id=0,
+            human_feedback=None,
+        )
+        if self.planner_mode == "llm":
+            planner_input = self._augment_hypothesis_context_with_llm_services(
+                planner_input=planner_input,
+                uncertainties=uncertainties,
+            )
+
+        task = self.repository.load_task()
+        generation_result = self.hypothesis_generator.build_tree(
+            task=task,
+            data_dictionary=data_dictionary,
+            uncertainties=uncertainties,
+            planner_input=planner_input,
+            existing_tree=self.repository.load_hypothesis_tree(),
+            current_round=planner_input.next_round_id,
+        )
+        uncertainties.records = list(generation_result.updated_uncertainties)
+        uncertainties.current_round = max(uncertainties.current_round, planner_input.next_round_id)
+        self.repository.save_uncertainties(uncertainties)
+
+        tree = generation_result.tree
+        if tree.latest_update is None or tree.latest_update.round < planner_input.next_round_id:
+            tree.latest_update = LatestTreeUpdate(
+                round=planner_input.next_round_id,
+                event="hypothesis_review_ready",
+                description="首轮竞争假设与科学质询已完成，等待人工确认后进入不确定性识别。",
+            )
+        self.repository.save_hypothesis_tree(tree)
+        if generation_result.generated_node_ids:
+            self._log_hypothesis_generation(
+                round_id=0,
+                next_round_id=planner_input.next_round_id,
+                generation_result=generation_result,
+                mode=generation_result.mode,
+            )
+
+        self.repository.save_planner_input(planner_input)
+        self._log_planner_input_prepared(planner_input)
+        process_state = self.repository.load_process_state()
+        process_state.current_round = max(process_state.current_round, planner_input.next_round_id)
+        self.repository.save_process_state(self._mark_hypothesis_confirmation_waiting(process_state))
+        return planner_input
+
+    def confirm_hypothesis_tree(
+        self,
+        *,
+        human_notes: str | None = None,
+        nodes: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Freeze the reviewed hypothesis tree and stop for scientific questioning."""
+        repository = self.repository
+        process_state = repository.load_process_state()
+        if process_state.current_stage != "awaiting_hypothesis_confirmation":
+            raise ValueError(
+                "当前不在假设树待确认状态；请先让系统生成假设树后再提交确认。"
+            )
+
+        decision_log = repository.load_decision_log()
+        decision_log.decisions.append(
+            DecisionEntry(
+                decision_id=self._next_decision_id(decision_log),
+                timestamp=datetime.now(),
+                round_id=process_state.current_round,
+                phase=process_state.current_phase or "hypothesis_generation",
+                    step="hypothesis_review",
+                    decision_type="hypothesis_tree_confirmed",
+                    made_by="human_pi",
+                summary="人工确认当前假设树，冻结后先进入科学质询再进入不确定性识别。",
+                details={"human_notes": human_notes},
+            )
+        )
+        repository.save_decision_log(decision_log)
+
+        if process_state.current_phase == "next_round":
+            return RoundOrchestrator(self).freeze_next_round_hypothesis_tree(
+                human_notes=human_notes,
+                nodes=nodes,
+            )
+
+        task = repository.load_task()
+        data_dictionary = repository.load_data_dictionary()
+        planner_input = repository.load_planner_input()
+        uncertainties = repository.load_uncertainties()
+        if nodes:
+            validated_nodes = [
+                node
+                for raw_node in nodes
+                if (node := self._coerce_hypothesis_node(raw_node)) is not None
+            ]
+            if not validated_nodes:
+                raise ValueError("假设树修改载荷无法通过校验，请刷新页面后重试。")
+            tree = self.hypothesis_generator.rebuild_tree(
+                task=task,
+                nodes=validated_nodes,
+                current_round=planner_input.next_round_id,
+                description="假设树经人工 PI 修改后冻结",
+                data_dictionary=data_dictionary,
+            )
+            repository.save_hypothesis_tree(tree)
+        else:
+            tree = repository.load_hypothesis_tree()
+            tree.latest_update = LatestTreeUpdate(
+                round=max(int(tree.current_round or 0), planner_input.next_round_id),
+                event="hypothesis_tree_confirmed",
+                description="人工确认当前假设树，冻结后先进入科学质询。",
+            )
+            repository.save_hypothesis_tree(tree)
+
+        repository.save_pre_questioning_tree(tree)
+        repository.save_planner_input(planner_input)
+        process_state = repository.load_process_state()
+        process_state.current_stage = "awaiting_scientific_questioning"
+        process_state.current_step = "scientific_questioning"
+        process_state.progress_percentage = 40
+        process_state.phases["hypothesis_generation"] = ProcessPhase(
+            status="in_progress",
+            started_at=process_state.phases.get("hypothesis_generation", ProcessPhase(status="in_progress")).started_at or datetime.now(),
+            steps={
+                "hypothesis_generation": ProcessStep(
+                    name="假设生成",
+                    status="completed",
+                    requires_user_approval=False,
+                ),
+                "hypothesis_review": ProcessStep(
+                    name="假设树确认",
+                    status="completed",
+                    requires_user_approval=True,
+                    notes="假设树已冻结，等待开始科学质询。",
+                ),
+                "scientific_questioning": ProcessStep(
+                    name="科学质询",
+                    status="in_progress",
+                    requires_user_approval=True,
+                    notes="LLM 将逐条质询假设并更新支持度与状态。",
+                ),
+            },
+        )
+        repository.save_process_state(process_state)
+        return {
+            "planning_status": "hypothesis_tree_frozen",
+            "status": "awaiting_scientific_questioning",
+            "message": "假设树已冻结，等待开始科学质询。",
+        }
+
+    def run_hypothesis_scientific_questioning(self) -> dict[str, Any]:
+        """Run the LLM scientific questioner and apply per-hypothesis support updates."""
+        repository = self.repository
+        process_state = repository.load_process_state()
+        if process_state.current_stage != "awaiting_scientific_questioning":
+            raise ValueError("当前不在科学质询待开始状态；请先确认假设树。")
+        if process_state.current_phase == "next_round":
+            return RoundOrchestrator(self).run_next_round_scientific_questioning()
+        return self._run_first_round_scientific_questioning()
+
+    def rerun_hypothesis_scientific_questioning(self) -> dict[str, Any]:
+        """Re-run LLM scientific questioning after it has already completed once."""
+        repository = self.repository
+        process_state = repository.load_process_state()
+        if process_state.current_stage not in {
+            "awaiting_scientific_questioning",
+            "awaiting_uncertainty_identification",
+        }:
+            raise ValueError("当前阶段不支持重新生成科学质询；请先完成假设树确认。")
+        if process_state.current_phase == "next_round":
+            return RoundOrchestrator(self).run_next_round_scientific_questioning()
+        return self._run_first_round_scientific_questioning()
+
+    def undo_scientific_questioning(self) -> dict[str, Any]:
+        """Restore the pre-questioning tree after the newest advisory pass."""
+        repository = self.repository
+        process_state = repository.load_process_state()
+        if process_state.current_stage != "awaiting_uncertainty_identification":
+            raise ValueError("当前阶段不是科学质询完成后，无法撤销本轮质询结果。")
+        pre_tree = repository.load_pre_questioning_tree()
+        if pre_tree is None:
+            raise ValueError("未找到质询前的假设树快照，无法撤销本轮质询。")
+        planner_input = repository.load_planner_input()
+        round_id = max(
+            int(pre_tree.current_round or 0),
+            int(process_state.current_round or 0),
+            int(planner_input.next_round_id or 0),
+        )
+        repository.save_hypothesis_tree(pre_tree)
+        trace_prefix = f"SQ{round_id:02d}"
+        planner_input.recent_reasoning_traces = [
+            trace
+            for trace in planner_input.recent_reasoning_traces
+            if not (trace.stage == "scientific_questioner" and trace.trace_id.startswith(trace_prefix))
+        ]
+        planner_input.planner_guidance = [
+            note
+            for note in planner_input.planner_guidance
+            if not note.startswith("supplemental_llm_hypothesis:")
+        ]
+        repository.save_planner_input(planner_input)
+        process_state.current_stage = "awaiting_scientific_questioning"
+        process_state.current_step = "scientific_questioning"
+        process_state.progress_percentage = 40
+        phase = process_state.phases.get("hypothesis_generation")
+        if phase is not None:
+            step = phase.steps.get("scientific_questioning")
+            if step is not None:
+                step.status = "in_progress"
+                step.notes = "人工 PI 撤销本轮科学质询，等待重新开始质询。"
+        repository.save_process_state(process_state)
+        decision_log = repository.load_decision_log()
+        decision_log.decisions.append(
+            DecisionEntry(
+                decision_id=self._next_decision_id(decision_log),
+                timestamp=datetime.now(),
+                round_id=round_id,
+                phase="hypothesis_generation",
+                step="scientific_questioning",
+                decision_type="scientific_questioning_undone",
+                made_by="human_pi",
+                summary="人工 PI 撤销本轮科学质询，假设树已恢复至质询前快照，等待重新质询。",
+                details={
+                    "restored_tree_path": repository.relativize(repository.paths.hypothesis_tree),
+                    "pre_questioning_snapshot": repository.pre_questioning_tree_path().name,
+                    "cleared_traces": "scientific_questioner",
+                    "cleared_trace_prefix": trace_prefix,
+                    "cleared_guidance": "supplemental_llm_hypothesis",
+                },
+            )
+        )
+        repository.save_decision_log(decision_log)
+        return {
+            "planning_status": "scientific_questioning_undone",
+            "status": "awaiting_scientific_questioning",
+            "message": "已撤销本轮科学质询，假设树恢复至确认时点，可以重新开始科学质询。",
+        }
+
+    def _run_first_round_scientific_questioning(self) -> dict[str, Any]:
+        repository = self.repository
+        task = repository.load_task()
+        data_dictionary = repository.load_data_dictionary()
+        planner_input = repository.load_planner_input()
+        tree = repository.load_hypothesis_tree()
+        rag_context = self.rag_service.build_context_bundle(planner_input)
+        questioner_output = self.scientific_questioner.challenge_hypothesis_tree(
+            planner_input=planner_input,
+            rag_context=rag_context,
+            tree=tree,
+        )
+        questioner_output = self._align_questioner_output_to_dictionary(
+            planner_input=planner_input,
+            questioner_output=questioner_output,
+        )
+        self._apply_hypothesis_updates_to_tree(
+            tree=tree,
+            updates=questioner_output.hypothesis_updates,
+            round_id=planner_input.next_round_id,
+        )
+        min_active = int(task.payload.constraints.min_active_hypotheses or 3)
+        self._propagate_tree_state_for_round(
+            tree=tree,
+            round_id=planner_input.next_round_id,
+            min_active_hypotheses=min_active,
+        )
+        refresh_tree_metadata(tree)
+        self._sync_questioning_record_statuses(
+            tree=tree,
+            round_id=planner_input.next_round_id,
+        )
+        supplemental = self._supplement_active_hypotheses_if_needed(
+            tree=tree,
+            task=task,
+            data_dictionary=data_dictionary,
+            planner_input=planner_input,
+            rag_context=rag_context,
+            min_active_hypotheses=min_active,
+        )
+        tree.latest_update = LatestTreeUpdate(
+            round=planner_input.next_round_id,
+            event="scientific_questioning_completed",
+            description=(
+                "科学质询完成，已按 LLM 逐假设结论更新支持度与状态"
+                + (
+                    f"；活跃假设不足下限，已由真实 LLM 补充生成 {supplemental.display_hypothesis_id}。"
+                    if supplemental is not None
+                    else "。"
+                )
+            ),
+        )
+        repository.save_hypothesis_tree(tree)
+        planner_input.planner_guidance.extend(
+            note
+            for note in questioner_output.guidance_notes
+            if note not in planner_input.planner_guidance
+        )
+        planner_input.recent_reasoning_traces.extend(
+            self._notes_to_traces(
+                notes=questioner_output.challenge_points,
+                round_id=planner_input.source_round_id,
+                stage="scientific_questioner",
+                prefix="SQ",
+            )
+        )
+        planner_input.recent_reasoning_traces = planner_input.recent_reasoning_traces[-10:]
+        repository.save_planner_input(planner_input)
+        self._log_scientific_questioning_completed(
+            round_id=planner_input.next_round_id,
+            tree=tree,
+            updates=questioner_output.hypothesis_updates,
+            supplemental_hypothesis=supplemental,
+        )
+        process_state = repository.load_process_state()
+        phase = process_state.phases.get("hypothesis_generation")
+        if phase is not None:
+            step = phase.steps.get("scientific_questioning")
+            if step is None:
+                step = ProcessStep(
+                    name="科学质询",
+                    status="completed",
+                    requires_user_approval=True,
+                )
+                phase.steps["scientific_questioning"] = step
+            step.status = "completed"
+            step.notes = "LLM 完成科学质询，支持度与状态已回写。"
+        process_state.current_stage = "awaiting_uncertainty_identification"
+        process_state.current_step = "step_1"
+        process_state.progress_percentage = 55
+        repository.save_process_state(process_state)
+        return {
+            "planning_status": "scientific_questioning_completed",
+            "status": "awaiting_uncertainty_identification",
+            "message": "科学质询完成，假设树支持度与状态已更新，等待进入不确定性识别。",
+            "hypothesis_updates": [
+                {
+                    "hypothesis_id": update.hypothesis_id,
+                    "impact_direction": update.impact_direction,
+                    "rationale": update.rationale,
+                }
+                for update in questioner_output.hypothesis_updates
+            ],
+        }
+
+    def start_uncertainty_identification(self) -> dict[str, Any]:
+        """Generate uncertainties, candidate experiments and enter approval review."""
+        repository = self.repository
+        process_state = repository.load_process_state()
+        if process_state.current_stage != "awaiting_uncertainty_identification":
+            raise ValueError("当前不在等待不确定性识别状态；请先完成科学质询。")
+        if process_state.current_phase == "next_round":
+            return RoundOrchestrator(self).continue_next_round_planning()
+        return self._continue_first_round_planning_after_questioning()
+
+    def _continue_first_round_planning_after_questioning(self) -> dict[str, Any]:
+        repository = self.repository
+        task = repository.load_task()
+        data_dictionary = repository.load_data_dictionary()
+        planner_input = repository.load_planner_input()
+        uncertainties = repository.load_uncertainties()
+        if self.planner_mode == "llm":
+            planner_input, uncertainties = self._augment_uncertainty_context_with_llm_services(
+                planner_input=planner_input,
+                uncertainties=uncertainties,
+            )
+        else:
+            planner_input, uncertainties = self._mine_programmatic_uncertainties(
+                planner_input=planner_input,
+                uncertainties=uncertainties,
+            )
+        repository.save_uncertainties(uncertainties)
+        repository.save_planner_input(planner_input)
+        candidate_plan = DecisionLayerService(
+            repository,
+            experiment_designer=self.experiment_designer,
+            experiment_writer=self.experiment_writer,
+        ).build_candidate_plan(
+            task=task,
+            data_dictionary=data_dictionary,
+            planner_input=planner_input,
+            target_round=planner_input.next_round_id,
+        )
+        review = self.request_experiment_selection_review()
+        return {
+            "planning_status": "candidate_plan_rebuilt",
+            "status": review["status"],
+            "message": review.get("message", "候选实验已生成，等待人工审批。"),
+            "candidate_plan": candidate_plan,
+            "next_review": review,
+        }
+
+    def rebuild_candidate_plan(
+        self,
+        *,
+        task: ScientificTask,
+        data_dictionary: DataDictionary,
+        planner_input: ReasoningPlannerInput,
+        target_round: int | None,
+    ) -> dict[str, Any]:
+        """Rebuild the candidate plan with the configured LLM designer/writer."""
+        candidate_plan = DecisionLayerService(
+            self.repository,
+            experiment_designer=self.experiment_designer,
+            experiment_writer=self.experiment_writer,
+        ).build_candidate_plan(
+            task=task,
+            data_dictionary=data_dictionary,
+            planner_input=planner_input,
+            target_round=target_round,
+        )
+        review = self.request_experiment_selection_review()
+        return {
+            "planning_status": "candidate_plan_rebuilt",
+            "status": review["status"],
+            "message": review.get("message", "候选实验已重新生成，等待人工审批。"),
+            "candidate_plan": candidate_plan,
+            "next_review": review,
+        }
+
+    def _apply_hypothesis_updates_to_tree(self, *, tree, updates, round_id: int) -> None:
+        from core.scientific_questioner_llm import HypothesisQuestioningUpdate
+
+        updates_by_id: dict[str, HypothesisQuestioningUpdate] = {}
+        for update in updates:
+            if not update.hypothesis_id:
+                continue
+            updates_by_id[update.hypothesis_id] = update
+        node_index = tree.node_index()
+        for node in tree.nodes:
+            update = updates_by_id.get(node.hypothesis_id)
+            if update is None:
+                update = HypothesisQuestioningUpdate(
+                    hypothesis_id=node.hypothesis_id,
+                    impact_direction="clarifies",
+                    impact_strength=0.0,
+                    confidence=0.5,
+                    rationale="科学质询未给出明确方向，本轮仅保留观察记录。",
+                )
+            node.questioning_records = [
+                record
+                for record in node.questioning_records
+                if record.round < round_id
+            ]
+            node.critiques = []
+            parent_support = None
+            if node.parent_id:
+                parent_node = node_index.get(node.parent_id)
+                if parent_node is not None:
+                    parent_support = parent_node.support_score
+            outcome = compute_support_update_from_reasoning(
+                current_support=node.support_score,
+                impact_direction=update.impact_direction,
+                impact_strength=update.impact_strength,
+                confidence=update.confidence,
+                falsification_basis=update.falsification_basis,
+                previous_status=node.status,
+                support_history=node.support_history,
+                current_round=round_id,
+                draft_to_pending=True,
+                parent_support=parent_support,
+                evidence_source="advisory",
+            )
+            node.support_score = outcome.support_after
+            node.status = outcome.status
+            node.updated_at_round = round_id
+            if not any(
+                item.round == round_id and item.event == "scientific_questioning"
+                for item in node.support_history
+            ):
+                node.support_history.append(
+                    SupportHistoryEntry(
+                        round=round_id,
+                        score=outcome.support_after,
+                        event="scientific_questioning",
+                    )
+                )
+            node.questioning_records.append(
+                HypothesisQuestioningRecord(
+                    round=round_id,
+                    impact_direction=update.impact_direction,
+                    impact_strength=update.impact_strength,
+                    confidence=update.confidence,
+                    rationale=(
+                        update.rationale.strip()
+                        if update.rationale and update.rationale.strip()
+                        else "科学质询未给出明确理由。"
+                    ),
+                    support_before=outcome.support_before,
+                    support_after=outcome.support_after,
+                    status=outcome.status,
+                    source_type="advisory",
+                    falsification_basis=(update.falsification_basis or "").strip(),
+                )
+            )
+            if node.status == "pruned":
+                node.pruned_at_round = node.pruned_at_round or round_id
+                node.prune_reason = f"科学质询：{(update.rationale or '证据不足，假设被剪枝。')[:180]}"
+
+    def _propagate_tree_state_for_round(
+        self,
+        *,
+        tree,
+        round_id: int,
+        min_active_hypotheses: int,
+    ) -> None:
+        from core.state_updater import _propagate_tree_state
+
+        _propagate_tree_state(
+            tree=tree,
+            round_id=round_id,
+            min_active_hypotheses=min_active_hypotheses,
+        )
+
+    @staticmethod
+    def _sync_questioning_record_statuses(*, tree, round_id: int) -> None:
+        """让科学质询输出与节点最终状态使用同一个状态字段。"""
+        for node in tree.nodes:
+            for record in node.questioning_records:
+                if record.round == round_id:
+                    record.status = node.status
+
+    def _supplement_active_hypotheses_if_needed(
+        self,
+        *,
+        tree,
+        task,
+        data_dictionary,
+        planner_input,
+        rag_context,
+        min_active_hypotheses: int,
+    ):
+        active_count = len(tree.active_hypotheses)
+        if active_count >= min_active_hypotheses:
+            return None
+        proposal = self.hypothesis_proposer.propose_supplemental(
+            planner_input=planner_input,
+            rag_context=rag_context,
+            tree=tree,
+        )
+        node = self.hypothesis_generator.append_supplemental_node(
+            task=task,
+            data_dictionary=data_dictionary,
+            tree=tree,
+            proposal=proposal,
+            current_round=planner_input.next_round_id,
+            min_active_hypotheses=min_active_hypotheses,
+        )
+        decision_log = self.repository.load_decision_log()
+        decision_log.decisions.append(
+            DecisionEntry(
+                decision_id=self._next_decision_id(decision_log),
+                timestamp=datetime.now(),
+                round_id=planner_input.next_round_id,
+                phase="hypothesis_generation",
+                step="scientific_questioning",
+                decision_type="supplemental_hypothesis_added",
+                made_by="hypothesis_proposer_llm",
+                summary=(
+                    f"科学质询后活跃假设仅 {active_count} 条，低于下限 {min_active_hypotheses} 条，"
+                    f"真实 LLM 补充生成 {node.display_hypothesis_id}。"
+                ),
+                details={
+                    "hypothesis_id": node.hypothesis_id,
+                    "display_hypothesis_id": node.display_hypothesis_id,
+                    "support_score": node.support_score,
+                    "status": node.status,
+                    "source": proposal.get("source"),
+                    "model": proposal.get("model"),
+                    "generated_at": proposal.get("generated_at"),
+                },
+            )
+        )
+        self.repository.save_decision_log(decision_log)
+        note = (
+            f"supplemental_llm_hypothesis:{node.display_hypothesis_id} "
+            f"质询后活跃假设仅 {active_count} 条，低于下限 {min_active_hypotheses} 条，"
+            "已由真实 LLM 补充生成。"
+        )
+        if note not in planner_input.planner_guidance:
+            planner_input.planner_guidance.append(note)
+        return node
+
+    def _log_scientific_questioning_completed(
+        self,
+        *,
+        round_id: int,
+        tree,
+        updates,
+        supplemental_hypothesis=None,
+    ) -> None:
+        decision_log = self.repository.load_decision_log()
+        node_audit = []
+        for node in tree.nodes:
+            for record in node.questioning_records:
+                if record.round != round_id:
+                    continue
+                node_audit.append(
+                    {
+                        "hypothesis_id": node.hypothesis_id,
+                        "display_hypothesis_id": node.display_hypothesis_id,
+                        "impact_direction": record.impact_direction,
+                        "impact_strength": record.impact_strength,
+                        "confidence": record.confidence,
+                        "support_before": record.support_before,
+                        "support_after": record.support_after,
+                        "status": record.status,
+                        "evidence_source": record.source_type,
+                        "falsification_basis": record.falsification_basis or "",
+                    }
+                )
+        decision_log.decisions.append(
+            DecisionEntry(
+                decision_id=self._next_decision_id(decision_log),
+                timestamp=datetime.now(),
+                round_id=round_id,
+                phase="hypothesis_generation",
+                step="scientific_questioning",
+                decision_type="scientific_questioning_completed",
+                made_by="scientific_questioner_llm",
+                summary=(
+                    "LLM 以顾问身份（advisory）完成逐假设科学质询；"
+                    "弱化必须有可证否依据，且不支持越级剪枝或直接收敛。"
+                ),
+                details={
+                    "updated_count": len(updates),
+                    "active_like": sum(1 for node in tree.nodes if node.status in ACTIVE_LIKE),
+                    "node_audit": node_audit,
+                    "supplemental_hypothesis": (
+                        {
+                            "hypothesis_id": supplemental_hypothesis.hypothesis_id,
+                            "display_hypothesis_id": supplemental_hypothesis.display_hypothesis_id,
+                        }
+                        if supplemental_hypothesis is not None
+                        else None
+                    ),
+                },
+            )
+        )
+        self.repository.save_decision_log(decision_log)
+
+    def _coerce_hypothesis_node(self, raw_node: dict[str, Any]):
+        from core.unified_schema import HypothesisNode
+
+        try:
+            return HypothesisNode.model_validate(raw_node)
+        except Exception:
+            return None
 
     def approve_candidate(
         self,
@@ -317,6 +1075,7 @@ class HumanControlService:
         protocol_refinements = self._build_protocol_refinements(
             task=task,
             candidate=candidate,
+            source_round=candidate_set.round,
         )
         protocol = self.mapper.to_protocol(
             task=task,
@@ -332,6 +1091,34 @@ class HumanControlService:
             protocol_refinements=protocol_refinements,
         )
         protocol.notes.append(f"execution_plan_summary:{plan_summary}")
+        tuning_entries = [
+            {
+                "refinement_type": item.refinement_type,
+                "rationale": item.rationale,
+                "model_parameters": item.suggested_model_parameters,
+                "protocol_notes": item.protocol_notes,
+            }
+            for item in (protocol_refinements or [])
+        ]
+        if model_parameters:
+            tuning_entries.append(
+                {
+                    "refinement_type": "human_pi_override",
+                    "rationale": "PI 在审批环节显式覆写模型参数",
+                    "model_parameters": model_parameters,
+                    "protocol_notes": [],
+                }
+            )
+        tuning_narrative = TuningNarrativeService().polish(
+            candidate_id=candidate.experiment_id,
+            scientific_objective=protocol.scientific_objective,
+            tuning_entries=tuning_entries,
+            plan_summary=plan_summary,
+            history_feedback=self._build_history_context(
+                candidate,
+                source_round=candidate_set.round,
+            ),
+        )["narrative"]
         self._save_protocol(protocol)
 
         process_state = self.repository.load_process_state()
@@ -370,9 +1157,14 @@ class HumanControlService:
                 summary=f"已为 {candidate.experiment_id} 生成执行协议",
                 details={
                     "protocol_path": self.repository.relativize(self.protocol_path),
+                    "candidate_id": candidate.experiment_id,
                     "scientific_objective": protocol.scientific_objective,
                     "refinement_types": [item.refinement_type for item in protocol_refinements or []],
                     "plan_summary": plan_summary,
+                    "model_parameters": protocol.model.parameters,
+                    "tuning_entries": tuning_entries,
+                    "tuning_narrative": tuning_narrative,
+                    "protocol_notes": protocol.notes,
                 },
             )
         )
@@ -463,7 +1255,7 @@ class HumanControlService:
 
         task = self.repository.load_task()
         harness = UnifiedExperimentHarness(
-            data_source=self._build_data_source_config(task),
+            data_source=self._build_data_source_config(task, protocol=protocol),
             project_root=self.project_root,
             run_shap=self.run_shap,
         )
@@ -545,15 +1337,28 @@ class HumanControlService:
         )
         self.repository.save_process_state(process_state)
         unresolved = remaining_uncertainties or self._remaining_uncertainties_for_review(protocol)
+        task = self.repository.load_task()
+        main_question = task.payload.research_question.text or (
+            "宇宙线日影南北偏移是否可提前改善太阳风速度预测？"
+        )
+        tree = self.repository.load_hypothesis_tree()
+        prior_supports = {
+            node.hypothesis_id: node.support_score
+            for node in tree.nodes
+            if node.hypothesis_id in protocol.tested_hypotheses
+        }
         evaluation = evaluate_experiment(
             result,
             protocol=protocol,
             remaining_uncertainties=unresolved,
+            main_question=main_question,
+            prior_supports=prior_supports,
         )
-        interpreter_enhancements = self._build_interpreter_enhancements(
+        interpreter_analysis = self._build_interpreter_analysis(
             protocol=protocol,
             evaluation=evaluation,
         )
+        self._apply_interpreter_analysis_to_conclusion(evaluation, interpreter_analysis)
         round_dir = self.project_root / "results" / f"round_{protocol.round_id:02d}"
         evaluation_path = round_dir / "evaluation_unified.json"
         export_evaluation_result(evaluation, evaluation_path)
@@ -563,7 +1368,9 @@ class HumanControlService:
             protocol=protocol,
             result=result,
             evaluation=evaluation,
-            interpretation_enhancements=interpreter_enhancements,
+            interpretation_enhancements=(
+                interpreter_analysis.enhancements if interpreter_analysis is not None else []
+            ),
             protocol_path=self.repository.relativize(self.protocol_path),
             result_path=f"results/round_{protocol.round_id:02d}/result_unified.json",
             evaluation_path=self.repository.relativize(evaluation_path),
@@ -571,7 +1378,9 @@ class HumanControlService:
         self._log_scientific_interpreter_applied(
             round_id=protocol.round_id,
             experiment_id=protocol.experiment_id,
-            interpretation_enhancements=interpreter_enhancements,
+            interpretation_enhancements=(
+                interpreter_analysis.enhancements if interpreter_analysis is not None else []
+            ),
         )
         review_payload = self.request_round_review(
             round_id=protocol.round_id,
@@ -800,13 +1609,40 @@ class HumanControlService:
         }
         if decision != "stop":
             payload.update(
-                self._resume_next_round_planning(
+                RoundOrchestrator(self).bootstrap_round(
                     round_id=round_id,
                     human_feedback=human_feedback if decision == "adjust" else None,
                     data_dictionary=data_dictionary,
+                    stop_at_hypothesis_confirmation=True,
                 )
             )
         return payload
+
+    def _build_next_phase(
+        self,
+        process_state: ProcessState,
+        round_id: int,
+        human_feedback: str | None,
+    ) -> ProcessPhase:
+        return ProcessPhase(
+            status="in_progress",
+            started_at=datetime.now(),
+            notes="planner input prepared for next-round reasoning/planning",
+            steps={
+                "planner_input_prepared": ProcessStep(
+                    name="planner_input_prepared",
+                    status="completed",
+                    requires_user_approval=False,
+                    notes=human_feedback or "reuse current planning policy",
+                ),
+                "candidate_generation": ProcessStep(
+                    name="candidate_generation",
+                    status="in_progress",
+                    requires_user_approval=False,
+                    notes=f"{self.planner_mode} candidate generation is consuming planner_input",
+                ),
+            },
+        )
 
     def _save_protocol(self, protocol: ExperimentProtocol) -> None:
         self.protocol_path.write_text(
@@ -822,25 +1658,30 @@ class HumanControlService:
         protocol: ExperimentProtocol,
         protocol_refinements: list[ProtocolRefinementSuggestion] | None,
     ) -> str:
+        semantic = self._semantic_service()
         refinement_labels = [item.refinement_type for item in protocol_refinements or []]
         control = "、".join(protocol.features.control) or "无"
         treatment = "、".join(protocol.features.treatment) or "无"
         target = protocol.target or task.payload.research_question.target or "目标变量"
+        control_display = semantic.display_text(control)
+        treatment_display = semantic.display_text(treatment)
+        target_display = semantic.to_display(target)
+        objective_display = semantic.display_text(protocol.scientific_objective or candidate.purpose)
         is_baseline_experiment = "experiment_mode:baseline_single_arm" in (protocol.notes or []) or candidate.type == "baseline_benchmark"
         execution_steps = (
-            "数据质量检查→单组基线训练→基线结果评估"
+            "数据质量检查→单组对照组训练→对照组结果评估"
             if is_baseline_experiment
-            else "数据质量检查→基线实验自动执行→区分对照实验执行→结果对比"
+            else "数据质量检查→对照组实验自动执行→实验组对照执行→结果对比"
         )
         return (
-            f"目标：{protocol.scientific_objective or candidate.purpose}；"
-            f"预测目标：{target}；"
-            f"对照组变量：{'不设置对照组' if is_baseline_experiment else control}；"
-            f"实验组变量：{treatment}；"
+            f"目标：{objective_display}；"
+            f"预测目标：{target_display}；"
+            f"对照组变量：{treatment_display if is_baseline_experiment else control_display}；"
+            f"实验组变量：{'不设置实验组' if is_baseline_experiment else treatment_display}；"
             f"执行步骤：{execution_steps}；"
             f"变量输入来源：candidate.design 已完整写入 protocol.features 与 model.parameters.feature_groups(JSON)；"
-            f"关联假设：{ '、'.join(protocol.tested_hypotheses[:3]) or '本轮以不确定性验证为主'}；"
-            f"目标不确定性：{ '、'.join(protocol.target_uncertainties[:3]) or '待从本轮评价中补充'}；"
+            f"关联假设：{semantic.display_text('、'.join(protocol.tested_hypotheses[:3])) or '本轮以不确定性验证为主'}；"
+            f"目标不确定性：{semantic.display_text('、'.join(protocol.target_uncertainties[:3])) or '待从本轮评价中补充'}；"
             f"规划增强：{ '、'.join(refinement_labels) if refinement_labels else '无额外 LLM 协议增强'}。"
         )
 
@@ -884,26 +1725,60 @@ class HumanControlService:
         history.last_updated = entry.updated_at
         self.repository.save_round_history(history)
 
-    def _build_data_source_config(self, task: ScientificTask) -> ElasticNetDataSourceConfig:
+    def _build_data_source_config(
+        self,
+        task: ScientificTask,
+        protocol: ExperimentProtocol | None = None,
+    ) -> ElasticNetDataSourceConfig:
         data_sources = task.payload.data_sources
         omni = data_sources.get("omni")
         lhaaso = data_sources.get("lhaaso")
         if not omni or not lhaaso:
             raise KeyError("task.payload.data_sources 必须同时包含 omni 和 lhaaso 配置")
 
-        data_dictionary = self.repository.load_data_dictionary()
+        data_dictionary = self._load_data_dictionary_or_default()
         time_column = omni.get("time_column") or lhaaso.get("time_column") or "TIME"
         target_column = omni.get("target_column") or task.payload.research_question.target
-        extra_paths = [
-            self._resolve_project_path(details["path"])
-            for source_id, details in data_sources.items()
-            if source_id not in {"omni", "lhaaso"} and details and details.get("path")
-        ]
+        omni_resolved = self._resolve_project_path(omni["path"]).resolve()
+        lhaaso_resolved = self._resolve_project_path(lhaaso["path"]).resolve()
+        extra_sources: dict[str, dict[str, str]] = {}
+        for source_id, details in data_sources.items():
+            if source_id in {"omni", "lhaaso"} or not details or not details.get("path"):
+                continue
+            source_path = self._resolve_project_path(details["path"])
+            if source_path.resolve() in {omni_resolved, lhaaso_resolved}:
+                # 同一物理文件在 task.json 中可能同时存在别名与规范名；
+                # 别名不视为额外稀疏源，避免触发与 PFSS 同级的缺失日剔除。
+                continue
+            extra_sources[source_id] = details
+        extra_paths = [self._resolve_project_path(details["path"]) for details in extra_sources.values()]
         column_aliases = {}
         for field in data_dictionary.fields:
             column_aliases[field.field_name] = field.field_name
             if field.physical_meaning and field.physical_meaning not in {"feature", "target", "time", "弃用字段"}:
                 column_aliases[field.physical_meaning] = field.field_name
+
+        # 只有当前协议真正使用了稀疏源特征时，才对该源启用缺失记录审计。
+        sparse_sources: list[str] = []
+        if protocol is not None:
+            used_features = {
+                str(item).strip()
+                for item in (*protocol.features.control, *protocol.features.treatment)
+                if str(item).strip()
+            }
+            extra_source_stems: dict[str, list[str]] = {}
+            for source_id, details in extra_sources.items():
+                extra_source_stems.setdefault(Path(details["path"]).name, []).append(Path(details["path"]).stem)
+            for field in data_dictionary.fields:
+                if field.field_name not in used_features:
+                    continue
+                for chunk in str(field.user_notes or "").split(";"):
+                    if not chunk.startswith("sources="):
+                        continue
+                    for file_name in chunk.split("=", 1)[1].split(","):
+                        for source_stem in extra_source_stems.get(file_name, []):
+                            if source_stem not in sparse_sources:
+                                sparse_sources.append(source_stem)
         return ElasticNetDataSourceConfig(
             omni_file_path=self._resolve_project_path(omni["path"]),
             lhaaso_file_path=self._resolve_project_path(lhaaso["path"]),
@@ -911,7 +1786,22 @@ class HumanControlService:
             time_column=time_column,
             target_column=target_column,
             column_aliases=column_aliases,
+            sparse_sources=sparse_sources,
         )
+
+    def _load_data_dictionary_or_default(self) -> DataDictionary:
+        try:
+            return self.repository.load_data_dictionary()
+        except FileNotFoundError:
+            return DataDictionary(
+                dictionary_id="auto_resolved",
+                generated_at=datetime.now(),
+                version="1.0",
+                dataset_name="project",
+                total_samples=0,
+                time_column="TIME",
+                time_format="YYYYMMDD",
+            )
 
     def _resolve_project_path(self, path_value: str) -> Path:
         candidate = Path(path_value)
@@ -948,6 +1838,8 @@ class HumanControlService:
             "delta_rmse": metrics.delta.rmse,
             "pg_actual_signed": metrics.pg_actual_signed,
             "pg_actual_clipped": metrics.pg_actual_clipped,
+            "information_gain_kl": metrics.information_gain_kl,
+            "ig_posterior_probs": metrics.ig_posterior_probs,
             "remaining_uncertainties": evaluation.scientific.evidence_summary.remaining_uncertainties,
             "key_findings": [
                 item.claim for item in evaluation.scientific.evidence_summary.new_evidence_for
@@ -1023,31 +1915,18 @@ class HumanControlService:
         process_state.current_step = "planner_input_prepared"
         process_state.current_stage = "planner_input_ready"
         process_state.progress_percentage = 92
-        process_state.phases["next_round"] = ProcessPhase(
-            status="in_progress",
-            started_at=datetime.now(),
-            notes="planner input prepared for next-round reasoning/planning",
-            steps={
-                "planner_input_prepared": ProcessStep(
-                    name="planner_input_prepared",
-                    status="completed",
-                    requires_user_approval=False,
-                    notes=human_feedback or "reuse current planning policy",
-                ),
-                "candidate_generation": ProcessStep(
-                    name="candidate_generation",
-                    status="in_progress",
-                    requires_user_approval=False,
-                    notes=f"{self.planner_mode} candidate generation is consuming planner_input",
-                )
-            },
-        )
+        process_state.phases["next_round"] = self._build_next_phase(process_state, round_id, human_feedback)
         self.repository.save_process_state(process_state)
 
-        plan = DecisionLayerService(self.repository).build_candidate_plan(
+        plan = DecisionLayerService(
+            self.repository,
+            experiment_designer=self.experiment_designer,
+            experiment_writer=self.experiment_writer,
+        ).build_candidate_plan(
             task=task,
             data_dictionary=data_dictionary,
             planner_input=planner_input,
+            target_round=planner_input.next_round_id,
         )
         planner_output = self.planner_output_builder.build(
             planner_input=planner_input,
@@ -1078,14 +1957,31 @@ class HumanControlService:
         }
 
     def _select_candidate(self, candidate_set, candidate_id: str | None) -> CandidateExperiment:
+        process_state = self.repository.load_process_state()
+        if process_state.current_stage == "awaiting_round_decision":
+            raise ValueError(
+                "当前轮次已进入整轮反馈阶段，不能继续审批旧轮候选实验；请先提交轮次决策。"
+            )
+        expected_round = max(process_state.current_round or 0, candidate_set.round or 0, 1)
+
         if candidate_id is None:
             top_candidate = candidate_set.top_candidate()
             if top_candidate is None:
                 raise ValueError("当前没有可审批的候选实验。")
+            if not top_candidate.experiment_id.startswith(f"E_R{expected_round:02d}_"):
+                raise ValueError(
+                    f"候选实验 {top_candidate.experiment_id} 不属于当前规划轮次 E_R{expected_round:02d}_*，"
+                    "请先重新生成当前轮候选实验。"
+                )
             return top_candidate
 
         for candidate in candidate_set.candidates:
             if candidate.experiment_id == candidate_id:
+                if not candidate.experiment_id.startswith(f"E_R{expected_round:02d}_"):
+                    raise ValueError(
+                        f"候选实验 {candidate.experiment_id} 不属于当前规划轮次 E_R{expected_round:02d}_*，"
+                        "禁止审批旧轮候选。"
+                    )
                 return candidate
         raise KeyError(f"找不到候选实验: {candidate_id}")
 
@@ -1095,6 +1991,27 @@ class HumanControlService:
         process_state.current_step = "step_4"
         process_state.current_stage = "awaiting_human_approval"
         process_state.progress_percentage = 45
+        hypothesis_phase = process_state.phases.get(
+            "hypothesis_generation",
+            ProcessPhase(status="completed", completed_at=now),
+        )
+        hypothesis_phase.status = "completed"
+        hypothesis_phase.completed_at = hypothesis_phase.completed_at or now
+        hypothesis_steps = hypothesis_phase.steps or {}
+        review_step = hypothesis_steps.get(
+            "hypothesis_review",
+            ProcessStep(name="假设树确认", status="completed", requires_user_approval=True),
+        )
+        review_step.status = "completed"
+        review_step.notes = "假设树已由人工确认并冻结。"
+        hypothesis_steps["hypothesis_generation"] = ProcessStep(
+            name="假设生成",
+            status="completed",
+            requires_user_approval=False,
+        )
+        hypothesis_steps["hypothesis_review"] = review_step
+        hypothesis_phase.steps = hypothesis_steps
+        process_state.phases["hypothesis_generation"] = hypothesis_phase
         planning = process_state.phases.get(
             "experiment_planning",
             ProcessPhase(status="in_progress", started_at=now),
@@ -1109,6 +2026,34 @@ class HumanControlService:
             "step_5": ProcessStep(name="生成实验协议", status="pending"),
         }
         process_state.phases["experiment_planning"] = planning
+        return process_state
+
+    def _mark_hypothesis_confirmation_waiting(self, process_state: ProcessState) -> ProcessState:
+        now = datetime.now()
+        process_state.current_phase = "hypothesis_generation"
+        process_state.current_step = "hypothesis_review"
+        process_state.current_stage = "awaiting_hypothesis_confirmation"
+        process_state.progress_percentage = 30
+        hypothesis_phase = process_state.phases.get(
+            "hypothesis_generation",
+            ProcessPhase(status="in_progress", started_at=now),
+        )
+        hypothesis_phase.status = "in_progress"
+        hypothesis_phase.started_at = hypothesis_phase.started_at or now
+        hypothesis_phase.steps = {
+            "hypothesis_generation": ProcessStep(
+                name="假设生成",
+                status="completed",
+                requires_user_approval=False,
+            ),
+            "hypothesis_review": ProcessStep(
+                name="假设树确认",
+                status="in_progress",
+                requires_user_approval=True,
+                notes="H/C 生成完成，等待人工确认后进入不确定性识别。",
+            ),
+        }
+        process_state.phases["hypothesis_generation"] = hypothesis_phase
         return process_state
 
     def _mark_reselection_waiting(self, process_state: ProcessState) -> ProcessState:
@@ -1234,20 +2179,33 @@ class HumanControlService:
         )
         self.repository.save_decision_log(decision_log)
 
-    def _build_interpreter_enhancements(
+    def _build_interpreter_analysis(
         self,
         *,
         protocol: ExperimentProtocol,
         evaluation: EvaluationResult,
-    ) -> list:
+    ) -> InterpreterRoundAnalysis | None:
         if self.planner_mode != "llm":
-            return []
+            return None
         planner_input = self._build_interpreter_input(protocol=protocol, evaluation=evaluation)
         candidate_plan = self.repository.load_candidate_experiments()
-        return self.scientific_interpreter.build_interpretations(
+        return self.scientific_interpreter.build_round_analysis(
             planner_input=planner_input,
             candidate_plan=candidate_plan,
         )
+
+    @staticmethod
+    def _apply_interpreter_analysis_to_conclusion(
+        evaluation: EvaluationResult,
+        analysis: InterpreterRoundAnalysis | None,
+    ) -> None:
+        if analysis is None or evaluation.scientific.three_layer_conclusion is None:
+            return
+        conclusion = evaluation.scientific.three_layer_conclusion
+        if analysis.data_layer is not None:
+            conclusion.data_layer = analysis.data_layer
+        if analysis.conclusion_text:
+            conclusion.scientific_layer.answer = analysis.conclusion_text
 
     def _build_interpreter_input(
         self,
@@ -1321,12 +2279,10 @@ class HumanControlService:
             ],
             recent_reasoning_traces=[],
             recent_human_feedback=[],
-            data_dictionary_summary=DataDictionarySummary(
-                dictionary_id="runtime_inferred",
-                dataset_name=task.task_id,
+            data_dictionary_summary=self._runtime_dictionary_summary(
+                task=task,
                 time_column=time_column,
-                target_candidates=[protocol.target],
-                feature_candidates=list(dict.fromkeys(protocol.features.control + protocol.features.treatment)),
+                protocol=protocol,
             ),
             planning_constraints={
                 "no_future_information": task.payload.constraints.no_future_information,
@@ -1367,12 +2323,62 @@ class HumanControlService:
             stable=evaluation.robustness.overall.stable,
         )
 
+    def _runtime_dictionary_summary(
+        self,
+        *,
+        task: ScientificTask,
+        time_column: str,
+        protocol: ExperimentProtocol,
+    ) -> DataDictionarySummary:
+        base_summary = DataDictionarySummary(
+            dictionary_id="runtime_inferred",
+            dataset_name=task.task_id,
+            time_column=time_column,
+            target_candidates=[protocol.target],
+            feature_candidates=list(dict.fromkeys(protocol.features.control + protocol.features.treatment)),
+        )
+        try:
+            data_dictionary = self.repository.load_data_dictionary()
+            if not data_dictionary:
+                return base_summary
+            semantic = VariableSemanticService.from_data_dictionary(data_dictionary)
+            return semantic.build_display_summary(base_summary)
+        except Exception:
+            return base_summary
+
     def _augment_next_round_context_with_llm_services(
         self,
         *,
         planner_input: ReasoningPlannerInput,
         uncertainties,
     ) -> tuple[ReasoningPlannerInput, object]:
+        """Combined phase for legacy callers: H/C proposals plus uncertainty generation."""
+        planner_input = self._augment_hypothesis_context_with_llm_services(
+            planner_input=planner_input,
+            uncertainties=uncertainties,
+        )
+        planner_input, uncertainties = self._augment_uncertainty_context_with_llm_services(
+            planner_input=planner_input,
+            uncertainties=uncertainties,
+        )
+        return planner_input, uncertainties
+
+    def _augment_hypothesis_context_with_llm_services(
+        self,
+        *,
+        planner_input: ReasoningPlannerInput,
+        uncertainties,
+    ) -> ReasoningPlannerInput:
+        """Phase 1 LLM pass: only generate H/C proposals, then stop for human confirmation."""
+        miner = MultiSourceUncertaintyMiner(self.repository)
+        mining_context = miner._build_context(
+            planner_input=planner_input,
+            uncertainties=uncertainties,
+            round_id=planner_input.next_round_id,
+        )
+
+        mining_result = miner.mine(context=mining_context)
+        mined_candidates = [candidate.to_prompt_dict() for candidate in mining_result.candidates]
         rag_context = self.rag_service.build_context_bundle(planner_input)
         planner_input.planner_guidance.extend(
             note for note in rag_context.guidance_notes() if note not in planner_input.planner_guidance
@@ -1381,15 +2387,38 @@ class HumanControlService:
             self._rag_context_to_traces(rag_context, planner_input.source_round_id)
         )
 
-        reasoning_bundle = self.parallel_reasoning_orchestrator.run(
+        proposer_output = self.hypothesis_proposer.propose(
             planner_input=planner_input,
             rag_context=rag_context,
         )
-        proposer_output = reasoning_bundle.proposer
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
+        focus_features_raw = semantic.raw_list(proposer_output.focus_features)
         explicit_focus_notes = [
             f"proposer_focus:{feature}"
-            for feature in proposer_output.focus_features[:6]
+            for feature in focus_features_raw[:6]
             if feature in planner_input.data_dictionary_summary.feature_candidates
+        ]
+        display_proposals: list[dict[str, object]] = []
+        for item in proposer_output.proposed_hypotheses:
+            proposal = item.model_dump(mode="json", exclude_none=True)
+            for field_name in ("statement", "falsification", "expected_effect"):
+                if proposal.get(field_name):
+                    proposal[field_name] = semantic.display_text(str(proposal[field_name]))
+            proposal["source"] = proposer_output.source
+            proposal["model"] = proposer_output.model
+            proposal["generated_at"] = (
+                proposer_output.generated_at.isoformat()
+                if proposer_output.generated_at is not None
+                else None
+            )
+            display_proposals.append(proposal)
+        planner_input.llm_hypothesis_proposals = display_proposals
+        if proposer_output.generated_at is not None:
+            planner_input.generated_at = proposer_output.generated_at
+        proposer_summaries_display = [
+            semantic.display_text(summary_text)
+            for summary_text in proposer_output.proposal_summaries
+            if summary_text
         ]
         planner_input.planner_guidance.extend(
             note
@@ -1398,16 +2427,40 @@ class HumanControlService:
         )
         planner_input.recent_reasoning_traces.extend(
             self._notes_to_traces(
-                notes=proposer_output.proposal_summaries,
+                notes=proposer_summaries_display,
                 round_id=planner_input.source_round_id,
                 stage="hypothesis_proposer",
                 prefix="HP",
             )
         )
+        planner_input.recent_reasoning_traces = planner_input.recent_reasoning_traces[-10:]
+        return planner_input
+
+    def _augment_uncertainty_context_with_llm_services(
+        self,
+        *,
+        planner_input: ReasoningPlannerInput,
+        uncertainties,
+    ) -> tuple[ReasoningPlannerInput, object]:
+        """Phase 2 LLM pass: consume the frozen tree, then generate uncertainties and traces."""
+        miner = MultiSourceUncertaintyMiner(self.repository)
+        mining_context = miner._build_context(
+            planner_input=planner_input,
+            uncertainties=uncertainties,
+            round_id=planner_input.next_round_id,
+        )
+        mining_result = miner.mine(context=mining_context)
+        mined_candidates = [candidate.to_prompt_dict() for candidate in mining_result.candidates]
+        rag_context = self.rag_service.build_context_bundle(planner_input)
+        questioner_output = self.scientific_questioner.question(
+            planner_input=planner_input,
+            rag_context=rag_context,
+            mined_candidates=mined_candidates,
+        )
 
         questioner_output = self._align_questioner_output_to_dictionary(
             planner_input=planner_input,
-            questioner_output=reasoning_bundle.questioner,
+            questioner_output=questioner_output,
         )
         planner_input.planner_guidance.extend(
             note for note in questioner_output.guidance_notes if note not in planner_input.planner_guidance
@@ -1425,8 +2478,27 @@ class HumanControlService:
             planner_input=planner_input,
             proposed=questioner_output.proposed_uncertainties,
         )
+        planner_input.planner_guidance.append(
+            "multi_source_mining:"
+            f"hypothesis_conflict={mining_result.source_detail_counts.get('hypothesis_conflict', 0)},"
+            f"residual_pattern={mining_result.source_detail_counts.get('residual_pattern', 0)},"
+            f"support_shift={mining_result.source_detail_counts.get('support_shift', 0)},"
+            f"failure_attribution={mining_result.source_detail_counts.get('failure_attribution', 0)},"
+            f"missing_evidence={mining_result.source_detail_counts.get('missing_evidence', 0)}"
+        )
         planner_input.recent_reasoning_traces = planner_input.recent_reasoning_traces[-10:]
         return planner_input, uncertainties
+
+    def _mine_programmatic_uncertainties(
+        self,
+        *,
+        planner_input: ReasoningPlannerInput,
+        uncertainties,
+    ) -> tuple[ReasoningPlannerInput, object]:
+        raise RuntimeError(
+            "planner_mode=programmatic 已禁用程序补位：科学不确定性必须由真实 LLM 或人工 PI 生成，"
+            "不允许使用写死的模板记录。请切换为 llm 模式后重试。"
+        )
 
     @staticmethod
     def _align_questioner_output_to_dictionary(
@@ -1434,73 +2506,33 @@ class HumanControlService:
         planner_input: ReasoningPlannerInput,
         questioner_output,
     ):
-        allowed_fields = [
-            *planner_input.data_dictionary_summary.feature_candidates,
-            *planner_input.data_dictionary_summary.target_candidates,
+        """Map LLM uncertainty text to display names without rewriting its wording."""
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
+        aligned_uncertainties = [
+            item.model_copy(
+                update={
+                    "question": semantic.display_text(item.question or "").strip(),
+                    "description": (
+                        semantic.display_text(item.description or "").strip()
+                        or f"仍需验证：{item.question or '当前科学不确定性问题。'}"
+                    ),
+                    "features": semantic.raw_list(item.features),
+                    "related_hypotheses": [
+                        value for value in item.related_hypotheses if str(value or "").strip()
+                    ],
+                }
+            )
+            for item in questioner_output.proposed_uncertainties[:10]
         ]
-        target = planner_input.target
-        fallback_focus = allowed_fields[:8] or [target]
-
-        aligned_challenges: list[str] = []
-        aligned_uncertainties = []
-        for index, item in enumerate(questioner_output.proposed_uncertainties[:8], start=1):
-            focus = fallback_focus[(index - 1) % len(fallback_focus)]
-            aligned_uncertainties.append(
-                item.model_copy(
-                    update={
-                        "question": item.question if item.question else f"{focus} 对 {target} 的作用机制是否稳定？",
-                        "description": (
-                            item.description
-                            if item.description
-                            else f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。"
-                        ),
-                    }
-                )
-            )
-            aligned_challenges.append(
-                f"当前仍需检验 {focus} 对 {target} 的解释是否稳健，并核对其与竞争假设的分歧来源。"
-            )
-
-        for index, snapshot in enumerate(planner_input.active_hypotheses[:8], start=1):
-            focus = fallback_focus[(index - 1) % len(fallback_focus)]
-            aligned_uncertainties.append(
-                ProposedUncertainty(
-                    uncertainty_id=None,
-                    question=f"{snapshot.hypothesis_id} 关于 {focus} 与 {target} 的竞争解释还缺少哪类证据？",
-                    description=f"基于假设 {snapshot.hypothesis_id} 的当前支持度与状态，继续围绕 {focus}、{target} 和竞争分支补充可执行证据缺口。",
-                    priority="high" if index <= 4 else "medium",
-                )
-            )
-
-        for index, update in enumerate(planner_input.recent_disagreement_updates[:6], start=1):
-            focus = fallback_focus[(index - 1) % len(fallback_focus)]
-            aligned_uncertainties.append(
-                ProposedUncertainty(
-                    uncertainty_id=update.uncertainty_id or None,
-                    question=f"{update.uncertainty_id} 的领先解释是否会因 {focus} 的参数敏感性或残差结构而改变？",
-                    description=f"需要围绕 {update.uncertainty_id} 继续做 {focus} 相关的参数敏感性、残差来源与失败归因验证。",
-                    priority="high",
-                )
-            )
-            aligned_challenges.append(f"{update.uncertainty_id} 仍是当前轮必须继续追踪的分歧点。")
-
-        if not aligned_uncertainties:
-            focus = fallback_focus[0]
-            aligned_uncertainties.append(
-                ProposedUncertainty(
-                    uncertainty_id=None,
-                    question=f"{focus} 对 {target} 的作用机制是否稳定？",
-                    description=f"需要继续利用现有字段 {focus} 与 {target} 构建可执行验证，不引入数据表之外的新变量。",
-                    priority="medium",
-                )
-            )
-            aligned_challenges.append(f"当前仍需检验 {focus} 对 {target} 的解释是否稳健。")
-
-        questioner_output.challenge_points = aligned_challenges
+        questioner_output.challenge_points = [
+            semantic.display_text(item or "").strip()
+            for item in questioner_output.challenge_points
+            if str(item or "").strip()
+        ]
         questioner_output.guidance_notes = [
-            *questioner_output.guidance_notes[:4],
-            f"questioner_field_scope:{','.join(fallback_focus[:6])}",
-            f"questioner_hypothesis_span:{','.join(item.hypothesis_id for item in planner_input.active_hypotheses[:8])}",
+            semantic.display_text(item or "").strip()
+            for item in questioner_output.guidance_notes
+            if str(item or "").strip()
         ]
         questioner_output.proposed_uncertainties = aligned_uncertainties
         return questioner_output
@@ -1557,33 +2589,48 @@ class HumanControlService:
             for record in uncertainties.records
         }
         existing_ids = {record.uncertainty_id for record in uncertainties.records}
+        semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
         next_index = len(uncertainties.records) + 1
         for item in proposed:
-            normalized_question = "".join(str(item.question or "").lower().split())
+            display_question = semantic.display_text(item.question or "")
+            display_description = semantic.display_text(item.description or "")
+            normalized_question = "".join(str(display_question).lower().split())
             if not normalized_question or normalized_question in existing_questions:
                 continue
             uncertainty_id = item.uncertainty_id or f"U_LLM_R{planner_input.next_round_id:02d}_{next_index:02d}"
             while uncertainty_id in existing_ids:
                 next_index += 1
                 uncertainty_id = f"U_LLM_R{planner_input.next_round_id:02d}_{next_index:02d}"
-            related_hypotheses = [
-                entry.hypothesis_id
-                for entry in planner_input.active_hypotheses
-                if entry.hypothesis_id and entry.hypothesis_id in f"{item.question} {item.description}"
-            ]
+            related_hypotheses = list(item.related_hypotheses)
             if not related_hypotheses:
-                related_hypotheses = [entry.hypothesis_id for entry in planner_input.active_hypotheses[:4]]
+                related_hypotheses = [
+                    entry.hypothesis_id
+                    for entry in planner_input.active_hypotheses
+                    if entry.hypothesis_id
+                    and (
+                        (entry.statement and f"假设“{entry.statement}”" in f"{item.question} {item.description}")
+                        or (entry.statement and entry.statement in f"{item.question} {item.description}")
+                    )
+                ]
+            # Do not invent an H1 link when the LLM or miner did not associate one;
+            # the UI should show the true hypothesis mapping from the output.
+            notes = ["generated_from_scientific_questioner_llm"]
+            if item.mining_sources:
+                notes.append(f"mining_sources:{','.join(item.mining_sources)}")
+            if item.features:
+                notes.append(f"mining_features:{','.join(item.features)}")
             uncertainties.records.append(
                 UncertaintyRecord(
                     uncertainty_id=uncertainty_id,
-                    question=item.question,
-                    description=item.description,
+                    question=display_question,
+                    description=display_description,
                     related_hypotheses=related_hypotheses,
+                    mining_sources=list(item.mining_sources),
                     status="active",
                     priority=item.priority if item.priority in {"low", "medium", "high"} else "medium",
                     created_at_round=planner_input.next_round_id,
                     created_by="scientific_questioner_llm",
-                    notes="generated_from_scientific_questioner_llm",
+                    notes=";".join(notes),
                 )
             )
             existing_ids.add(uncertainty_id)
@@ -1608,12 +2655,19 @@ class HumanControlService:
                 timestamp=datetime.now(),
                 round_id=round_id,
                 phase="hypothesis_generation",
-                step="programmatic_generation",
+                step="llm_hypothesis_generation",
                 decision_type="hypothesis_generated",
                 made_by="system",
-                summary=f"已为 round {next_round_id} 程序化生成/扩展假设树",
+                summary=f"真实 LLM 已为 round {next_round_id} 生成 H1..H5 竞争假设树",
                 details={
                     "mode": mode,
+                    "source": "real_llm",
+                    "model": generation_result.model,
+                    "generated_at": (
+                        generation_result.tree.generated_at.isoformat()
+                        if generation_result.tree.generated_at is not None
+                        else None
+                    ),
                     "generated_node_ids": generated_node_ids,
                     "generated_hypotheses": [
                         {
@@ -1683,6 +2737,7 @@ class HumanControlService:
         *,
         task: ScientificTask,
         candidate: CandidateExperiment,
+        source_round: int | None = None,
     ) -> list[ProtocolRefinementSuggestion] | None:
         refinements = list(self._relevant_protocol_refinements(candidate.experiment_id) or [])
         if self.planner_mode != "llm":
@@ -1691,9 +2746,54 @@ class HumanControlService:
             task=task,
             candidate=candidate,
             existing_refinements=refinements,
+            semantic_service=self._semantic_service(),
+            history_context=self._build_history_context(candidate, source_round=source_round),
         )
         refinements.append(planner_refinement)
         return refinements
+
+    def _build_history_context(
+        self,
+        candidate: CandidateExperiment,
+        *,
+        source_round: int | None = None,
+    ) -> str | None:
+        try:
+            history = self.repository.load_round_history()
+        except Exception:
+            return None
+        if source_round is None:
+            return None
+        current_round = source_round
+        entries = [entry for entry in history.entries if entry.round_id < current_round]
+        if not entries:
+            return None
+        latest = max(entries, key=lambda entry: entry.round_id)
+        metrics = latest.metrics_snapshot
+        parts = [
+            f"source_round={latest.round_id}",
+            f"experiment={latest.source_experiment_id or latest.approved_candidate_id or '--'}",
+        ]
+        if metrics is not None:
+            parts.extend(
+                [
+                    f"baseline_pearson_r={metrics.baseline_pearson_r}",
+                    f"treatment_pearson_r={metrics.treatment_pearson_r}",
+                    f"delta_pearson_r={(metrics.delta.pearson_r if metrics.delta else None)}",
+                    f"delta_rmse={(metrics.delta.rmse if metrics.delta else None)}",
+                ]
+            )
+        if latest.failure_reason:
+            parts.append(f"failure_reason={latest.failure_reason}")
+        if latest.scientific_findings:
+            parts.append("findings=" + " | ".join(latest.scientific_findings[:4]))
+        return "; ".join(parts)
+
+    def _semantic_service(self) -> VariableSemanticService:
+        try:
+            return VariableSemanticService.from_data_dictionary(self.repository.load_data_dictionary())
+        except Exception:
+            return VariableSemanticService()
 
 
 def _renumber_steps(steps: list[ExperimentStep]) -> list[ExperimentStep]:

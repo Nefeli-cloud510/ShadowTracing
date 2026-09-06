@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   analyzeQuestion,
-  inspectDataFiles,
+  inspectStagedDataFiles,
+  stageDataFiles,
   resetWorkflow,
   startWorkflow,
   submitRoundDecision,
@@ -113,6 +114,17 @@ export function MissionPage() {
       if (storedDataUploads.length > 0) {
         setDataUploads(storedDataUploads)
         setDataFiles(storedDataUploads.map((file) => file.name))
+        try {
+          const stagedInspection = (await inspectStagedDataFiles()) ?? (await stageDataFiles(storedDataUploads))
+          if (stagedInspection && stagedInspection.tables.length > 0) {
+            const nextDraft = mergeDataDictionaryDraft(stagedInspection, readDataDictionaryDraft())
+            setLatestInspection(stagedInspection)
+            setDictionaryDraft(nextDraft)
+            writeDataDictionaryDraft(nextDraft)
+          }
+        } catch {
+          // 后端暂存不可用时保留本地草稿，启动时会再次上报错误。
+        }
       }
 
       setHydrating(false)
@@ -229,11 +241,6 @@ export function MissionPage() {
     processStage === 'awaiting_round_decision'
     || sessionStage === 'round_review_requested'
     || sessionStatus === 'awaiting_round_decision'
-  const roundDecisionBlockedReason = !awaitingRoundDecision
-    ? `当前仍在加载中：${processMonitor?.currentPhase ?? '闭环阶段未同步'} / ${processMonitor?.currentStep ?? '步骤未同步'}。`
-    : !gatingReady
-      ? `当前仍有环节未完成：${closureChecklist.filter((item: any) => !item.completed).map((item: any) => item.label).join('、') || '请先完成本轮闭环'}。`
-      : null
 
   const dialogueFeed = useMemo(() => {
     const feed = [
@@ -299,7 +306,7 @@ export function MissionPage() {
     try {
       setInspectingData(true)
       setBackendError(null)
-      const inspection = await inspectDataFiles(mergedFiles)
+      const inspection = await stageDataFiles(mergedFiles)
       const nextDraft = mergeDataDictionaryDraft(inspection, readDataDictionaryDraft())
       setLatestInspection(inspection)
       setDictionaryDraft(nextDraft)
@@ -328,6 +335,30 @@ export function MissionPage() {
     }
   }
 
+  async function ensureStagedDataFromBrowserUploads() {
+    if (dataUploads.length === 0) {
+      return
+    }
+    try {
+      const stagedInspection = await inspectStagedDataFiles()
+      const stagedNames = new Set(stagedInspection?.tables.map((table) => table.file_name) ?? [])
+      const matchesBrowserUploads =
+        stagedInspection && stagedInspection.tables.length > 0
+        && stagedInspection.tables.length === dataUploads.length
+        && dataUploads.every((file) => stagedNames.has(file.name))
+      if (matchesBrowserUploads) {
+        return
+      }
+    } catch {
+      // 后端暂存不可用时重新上传浏览器中保留的实验文件。
+    }
+    const inspection = await stageDataFiles(dataUploads)
+    const nextDraft = mergeDataDictionaryDraft(inspection, readDataDictionaryDraft())
+    setLatestInspection(inspection)
+    setDictionaryDraft(nextDraft)
+    writeDataDictionaryDraft(nextDraft)
+  }
+
   async function handleStartWorkflow() {
     if (!readyToStart || starting) {
       return
@@ -337,6 +368,7 @@ export function MissionPage() {
       setStarting(true)
       setBackendError(null)
       setSubmitted(true)
+      await ensureStagedDataFromBrowserUploads()
       const dictionaryValidationError = validateDataDictionaryDraft(dictionaryDraft)
       if (dictionaryValidationError) {
         throw new Error(dictionaryValidationError)
@@ -350,7 +382,6 @@ export function MissionPage() {
       const payload = {
         question: question.trim(),
         knowledgeFiles: knowledgeUploads,
-        dataFiles: dataUploads,
         rounds: 2,
         xVariable: resolvedX || analysis?.x_variable,
         yVariable: resolvedY || analysis?.y_variable,
@@ -440,22 +471,19 @@ export function MissionPage() {
               <div>
                 <span className="timeline-header__eyebrow">Central Controller</span>
                   <h1>智能体交互控制台</h1>
-                  <p>以一问一答方式推进真实闭环：解析问题、确认变量、上传数据、启动实验，并在每轮结束后接收人工反馈。</p>
               </div>
 
               <div className="detail-page__meta">
                 <div className="status-chip">
                   <span>目标变量</span>
-                  <strong>{mission?.target ?? '--'}</strong>
+                  <strong>{dictionarySelections.displayY || resolvedY || mission?.target || '--'}</strong>
                 </div>
-                <div className="status-chip">
-                  <span>当前轮次</span>
-                  <strong>{data?.viewModels.currentRoundNumber ?? '--'}</strong>
-                </div>
-                <div className="status-chip">
-                  <span>核心指标</span>
-                  <strong>{mission?.metrics[0] ?? '--'}</strong>
-                </div>
+                {(data?.viewModels.currentRoundNumber ?? 0) > 0 ? (
+                  <div className="status-chip">
+                    <span>当前轮次</span>
+                    <strong>{data?.viewModels.currentRoundNumber}</strong>
+                  </div>
+                ) : null}
               </div>
             </header>
 
@@ -471,7 +499,7 @@ export function MissionPage() {
                     <li>输入科学问题</li>
                     <li>上传知识材料</li>
                     <li>上传实验数据</li>
-                    <li>配置数据字典</li>
+                    <li>配置数据变量库</li>
                     <li>解析变量结构</li>
                     <li>启动真实闭环</li>
                     <li>记录整轮反馈</li>
@@ -562,11 +590,11 @@ export function MissionPage() {
                     </div>
 
                     <article className="dialogue-summary__card">
-                      <strong>数据字典配置</strong>
+                      <strong>数据变量库</strong>
                       <p>
                         {dictionaryDraft
-                          ? `已识别 ${dictionaryDraft.fields.length} 个表头字段，请补充物理量释义并划分变量类别。`
-                          : '请先上传实验数据，系统会自动解析表头并生成待配置的数据字典。'}
+                          ? `已识别 ${dictionaryDraft.fields.length} 个表头字段，请补充物理量名称并划分变量类别。`
+                          : '请先上传实验数据，系统会自动解析表头并生成待配置的数据变量库。'}
                       </p>
                       <div className="controller-input__actions">
                         <button
@@ -575,7 +603,7 @@ export function MissionPage() {
                           onClick={() => navigate('/data-dictionary')}
                           disabled={!dictionaryDraft}
                         >
-                          数据字典配置
+                          变量配置
                         </button>
                       </div>
                     </article>
@@ -600,7 +628,7 @@ export function MissionPage() {
                         />
                       </article>
                       <article className="dialogue-summary__card">
-                        <strong>候选中介因素</strong>
+                        <strong>候选特征</strong>
                         <input
                           className="controller-inline-input"
                           value={confirmedM}
@@ -611,7 +639,14 @@ export function MissionPage() {
                     </div>
 
                     <article className="dialogue-summary__card">
-                      <strong>真实解析反馈</strong>
+                      <strong>问题解析反馈</strong>
+                      {questionAnalysis || dictionaryDraft?.confirmedAt ? (
+                        <p className="dialogue-summary__hint">
+                          {dictionaryDraft?.confirmedAt
+                            ? '变量配置完毕，可以启动实验'
+                            : '科学问题解析完毕，请上传知识材料与实验数据。'}
+                        </p>
+                      ) : null}
                       <p>{questionAnalysis?.rationale ?? '尚未触发问题解析。'}</p>
                       <p>
                         当前识别结果：{resolvedX || '--'} / {resolvedY || '--'} /{' '}
@@ -619,8 +654,9 @@ export function MissionPage() {
                       </p>
                       {dictionaryDraft ? (
                         <p>
-                          当前数据字典：核心解释变量 {dictionarySelections.xVariable || '--'}，目标变量{' '}
-                          {dictionarySelections.yVariable || '--'}，候选中介因素 {dictionarySelections.mCandidates.join('，') || '--'}
+                          当前数据变量库：核心解释变量 {dictionarySelections.displayX || '--'}，目标变量{' '}
+                          {dictionarySelections.displayY || '--'}，候选特征{' '}
+                          {dictionarySelections.displayMCandidates.join('，') || '--'}
                         </p>
                       ) : null}
                     </article>
@@ -633,7 +669,7 @@ export function MissionPage() {
                         className="detail-link detail-link--button"
                         onClick={() => void handleResetSession()}
                       >
-                        {resetting ? '正在清空…' : '清零记忆'}
+                        {resetting ? '正在清零…' : '实验清零'}
                       </button>
                       <button
                         type="button"
@@ -641,7 +677,7 @@ export function MissionPage() {
                         onClick={() => setConfirmStartOpen(true)}
                         disabled={!readyToStart || starting}
                       >
-                        {starting ? '真实链路启动中…' : '启动真实实验'}
+                        {starting ? '真实链路启动中…' : '启动实验'}
                       </button>
                     </div>
 
@@ -657,14 +693,12 @@ export function MissionPage() {
                         <button
                           type="button"
                           className="detail-link detail-link--button"
-                          onClick={() => navigate('/report')}
-                          disabled={submittingFeedback}
+                          onClick={() => setConfirmRoundDecisionOpen(true)}
+                          disabled={submittingFeedback || !awaitingRoundDecision}
                         >
-                          前往轮次报告页
+                          提交反馈
                         </button>
                       </div>
-                      <p>新一轮迭代入口已迁移到轮次报告页；建议在报告页统一查看剩余不确定性并开启新一轮。</p>
-                      {roundDecisionBlockedReason ? <p>{roundDecisionBlockedReason}</p> : null}
                       {!gatingReady && closureChecklist.length > 0 ? (
                         <ul className="detail-list">
                           {closureChecklist
@@ -701,11 +735,11 @@ export function MissionPage() {
                     </p>
                   </article>
                   <article className="dialogue-summary__card">
-                    <strong>数据字典状态</strong>
+                    <strong>数据变量库状态</strong>
                     <p>
                       {dictionaryDraft
                         ? `表头 ${dictionaryDraft.fields.length} 项，核心解释变量 ${dictionarySelections.xVariable || '--'}，目标变量 ${dictionarySelections.yVariable || '--'}`
-                        : '尚未生成数据字典配置。'}
+                        : '尚未生成数据变量库配置。'}
                     </p>
                     <p>{latestInspection ? `已解析 ${latestInspection.tables.length} 份数据表。` : '上传实验数据后自动生成。'}</p>
                   </article>

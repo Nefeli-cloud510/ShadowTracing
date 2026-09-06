@@ -4,6 +4,10 @@ from core.central_controller_llm import CentralControllerLLM
 from core.control_unified import HumanControlService
 from core.planner_unified import PlannerOutputBuilder
 from core.scientific_interpreter_llm import ScientificInterpreterLLM
+from tests.test_decision_layer import (
+    StubCandidateExperimentDesigner,
+    StubCandidateExperimentWriter,
+)
 from tests.test_llm_planner_integration import (
     StubExperimentPlanner,
     StubHypothesisProposer,
@@ -31,6 +35,8 @@ class FullLLMClosedLoopTest(SystemAuditClosureTest):
             hypothesis_proposer=StubHypothesisProposer(),
             scientific_questioner=StubScientificQuestioner(),
             experiment_planner=StubExperimentPlanner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
         )
 
     def _run_two_rounds(self) -> dict[str, object]:
@@ -103,7 +109,9 @@ class FullLLMClosedLoopTest(SystemAuditClosureTest):
         )
 
         uncertainties = self.repository.load_uncertainties()
-        self.assertTrue(any("Np 条件下成立" in record.question for record in uncertainties.records))
+        self.assertTrue(
+            any("Solar wind density 条件下成立" in record.question for record in uncertainties.records)
+        )
 
         decision_log = self.repository.load_decision_log()
         decision_types = [entry.decision_type for entry in decision_log.decisions]

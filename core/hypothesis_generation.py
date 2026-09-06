@@ -1,22 +1,59 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from datetime import datetime
+from typing import Any
 
 from core.unified_schema import (
     DataDictionary,
+    EvidenceItem,
+    EvidenceType,
     HypothesisGenerationRationale,
     HypothesisNode,
-    HypothesisSourceSignal,
     HypothesisTreeState,
     LatestTreeUpdate,
     PredictionRecord,
     ReasoningPlannerInput,
     ScientificTask,
+    SupportHistoryEntry,
     TreeSummary,
     UncertaintyRecord,
     UncertaintyState,
 )
+from core.variable_semantic_service import VariableSemanticService
+
+
+CANONICAL_ID_BY_DISPLAY = {
+    "H1": "H_shadow_incremental_gain",
+    "H2": "H_by_mediated_path",
+    "H3": "H_by_beyond_effect",
+    "H4": "H_lead_time_window",
+    "H5": "H_window_stability",
+}
+DISPLAY_BY_CANONICAL = {value: key for key, value in CANONICAL_ID_BY_DISPLAY.items()}
+PROGRAMMATIC_BASE_SUPPORT = {
+    "H1": 0.50,
+    "H2": 0.45,
+    "H3": 0.42,
+    "H4": 0.40,
+    "H5": 0.38,
+}
+EVIDENCE_ADJUSTMENTS = {
+    "literature": 0.25,
+    "observational_data": 0.20,
+    "physical_law": 0.15,
+    "physical_prior": 0.15,
+    "physical_reasoning": 0.10,
+    "expert_judgment": 0.00,
+    "evidence_gap": -0.10,
+}
+DEFAULT_TWO_LAYER_PARENT = {
+    "H1": None,
+    "H2": None,
+    "H3": CANONICAL_ID_BY_DISPLAY["H1"],
+    "H4": CANONICAL_ID_BY_DISPLAY["H1"],
+    "H5": CANONICAL_ID_BY_DISPLAY["H1"],
+}
 
 
 @dataclass(frozen=True)
@@ -25,10 +62,146 @@ class HypothesisGenerationResult:
     generated_node_ids: tuple[str, ...]
     updated_uncertainties: tuple[UncertaintyRecord, ...]
     mode: str
+    model: str | None = None
+    source: str = "real_llm"
+
+
+def refresh_tree_metadata(tree: HypothesisTreeState) -> None:
+    """Recompute tree-level active/pruned/pending lists and summary from node statuses."""
+    tree.active_hypotheses = [
+        node.hypothesis_id
+        for node in tree.nodes
+        if node.status in {"active", "converged"}
+    ]
+    tree.pruned_hypotheses = [
+        node.hypothesis_id for node in tree.nodes if node.status == "pruned"
+    ]
+    tree.pending_hypotheses = [
+        node.hypothesis_id
+        for node in tree.nodes
+        if node.status in {"draft", "pending"}
+    ]
+    tree.tree_summary = TreeSummary(
+        total_nodes=len(tree.nodes),
+        active_count=len(tree.active_hypotheses),
+        pruned_count=len(tree.pruned_hypotheses),
+        pending_count=len(tree.pending_hypotheses),
+    )
 
 
 class HypothesisGenerationService:
-    """Programmatically derive initial or incremental hypothesis trees from task/state context."""
+    """Build and rebuild hypothesis trees exclusively from real LLM proposals."""
+
+    def append_supplemental_node(
+        self,
+        *,
+        task: ScientificTask,
+        data_dictionary: DataDictionary,
+        tree: HypothesisTreeState,
+        proposal: dict[str, Any],
+        current_round: int,
+        min_active_hypotheses: int,
+    ) -> HypothesisNode:
+        """Append one real-LLM supplemental hypothesis and refresh tree metadata."""
+        display_id = str(proposal.get("display_hypothesis_id") or "").strip()
+        if not display_id:
+            raise ValueError("真实 LLM 补充假设缺少 display_hypothesis_id。")
+        if any(node.display_hypothesis_id == display_id for node in tree.nodes):
+            raise ValueError(f"补充假设编号 {display_id} 与现有节点重复。")
+        canonical_id = f"H_supplemental_{display_id}"
+        if any(node.hypothesis_id == canonical_id for node in tree.nodes):
+            raise ValueError(f"补充假设 canonical id {canonical_id} 重复。")
+
+        semantic = VariableSemanticService.from_data_dictionary(data_dictionary)
+        statement = semantic.display_text(str(proposal.get("statement") or "").strip())
+        if not statement:
+            raise ValueError("真实 LLM 补充假设缺少 statement。")
+        generated_at = _extract_generated_at([proposal])
+        node = HypothesisNode(
+            hypothesis_id=canonical_id,
+            display_hypothesis_id=display_id,
+            statement=statement,
+            level=max(1, int(proposal.get("level") or 1)),
+            parent_id=None,
+            children_ids=[],
+            status="active",
+            support_score=0.40,
+            support_history=[
+                SupportHistoryEntry(
+                    round=current_round,
+                    score=0.40,
+                    event="llm_supplemental_generated",
+                )
+            ],
+            activation_condition=(
+                str(proposal.get("activation_condition") or "").strip()
+                or f"始终激活：科学质询后补充的竞争根假设 {display_id}。"
+            ),
+            activated_at_round=current_round,
+            evidence_items=_coerce_evidence_items(
+                proposal=proposal,
+                canonical_id=canonical_id,
+                current_round=current_round,
+                semantic=semantic,
+            ),
+            predictions=_coerce_predictions(
+                proposal=proposal,
+                canonical_id=canonical_id,
+            ),
+            falsification_conditions=_coerce_falsifications(proposal, semantic),
+            alternative_explanations=[
+                semantic.display_text(str(item))
+                for item in (proposal.get("alternative_explanations") or [])
+                if str(item).strip()
+            ],
+            created_at_round=current_round,
+            updated_at_round=current_round,
+            generation_rationale=_build_llm_rationale(
+                display_id=display_id,
+                canonical_id=canonical_id,
+                initial_support=0.40,
+                model=str(proposal.get("model") or ""),
+                source=str(proposal.get("source") or "real_llm"),
+                generated_at=generated_at,
+            ),
+        )
+        _apply_display_names([node], data_dictionary)
+        tree.nodes.append(node)
+        _wire_children(tree.nodes)
+        if generated_at is not None:
+            tree.generated_at = generated_at
+        refresh_tree_metadata(tree)
+        tree.latest_update = LatestTreeUpdate(
+            round=current_round,
+            event="supplemental_hypothesis_added",
+            description=(
+                f"科学质询后活跃假设不足 {min_active_hypotheses} 条，"
+                f"已由真实 LLM 补充生成 {display_id}。"
+            ),
+        )
+        return node
+
+    def rebuild_tree(
+        self,
+        *,
+        task: ScientificTask,
+        nodes: list[HypothesisNode],
+        current_round: int,
+        event: str = "hypothesis_tree_confirmed",
+        description: str = "hypothesis tree frozen by human_pi after H/C review",
+        data_dictionary: DataDictionary | None = None,
+    ) -> HypothesisTreeState:
+        """Rebuild a validated tree after human-pi confirmation edits."""
+        tree = _build_tree_state(
+            task=task,
+            nodes=nodes,
+            current_round=current_round,
+            event=event,
+            description=description,
+        )
+        if data_dictionary is not None:
+            _apply_display_names(tree.nodes, data_dictionary)
+        return tree
 
     def build_tree(
         self,
@@ -40,400 +213,67 @@ class HypothesisGenerationService:
         existing_tree: HypothesisTreeState | None = None,
         current_round: int | None = None,
     ) -> HypothesisGenerationResult:
+        """Build the current-round tree from real LLM proposals.
+
+        Round 1 starts from LLM drafts: H1/H2 are active and H3/H4/H5 are gray
+        draft nodes at 0.4. From round 2 onward, the tree inherits the previous
+        round-end support scores, statuses, and support history while the LLM
+        rewrites the scientific text on top of that inherited tree.
+        """
         current_round = (
             current_round
             if current_round is not None
             else (planner_input.next_round_id if planner_input else (existing_tree.current_round if existing_tree else 0))
         )
+        inheriting = current_round > 1 and existing_tree is not None and bool(existing_tree.nodes)
         uncertainty_records = _normalize_uncertainties(uncertainties)
-        if existing_tree is None or not existing_tree.nodes:
-            nodes = self._generate_initial_nodes(
-                task=task,
-                data_dictionary=data_dictionary,
-                uncertainties=uncertainty_records,
-                planner_input=planner_input,
-                current_round=current_round,
+        proposals = list(planner_input.llm_hypothesis_proposals) if planner_input else []
+        if not proposals:
+            raise ValueError(
+                "本轮没有真实 LLM 假设提案，已禁止程序化/本地兜底生成；"
+                "请等待 LLM 完成 H1..H5 假设生成后重试。"
             )
-            updated_uncertainties = tuple(self._sync_uncertainty_links(nodes, uncertainty_records))
-            tree = _build_tree_state(
-                task=task,
-                nodes=nodes,
-                current_round=current_round,
-                event="hypothesis_generated",
-                description="programmatic initial hypothesis tree generated from task/data/uncertainty context",
-            )
-            return HypothesisGenerationResult(
-                tree=tree,
-                generated_node_ids=tuple(node.hypothesis_id for node in nodes),
-                updated_uncertainties=updated_uncertainties,
-                mode="initial",
-            )
-
-        nodes = [node.model_copy(deep=True) for node in existing_tree.nodes]
-        generated = self._generate_incremental_nodes(
+        nodes, generated_node_ids, generated_at = _nodes_from_llm_proposals(
             task=task,
             data_dictionary=data_dictionary,
-            uncertainties=uncertainty_records,
-            planner_input=planner_input,
+            proposals=proposals,
+            current_round=current_round,
+            existing_tree=existing_tree,
+        )
+        tree = _build_tree_state(
+            task=task,
             nodes=nodes,
             current_round=current_round,
+            event="llm_hypothesis_generated",
+            description=(
+                (
+                    f"真实 LLM 于 {generated_at.isoformat() if generated_at else '未知时间'} 生成 5 条假设，"
+                    "在上一轮轮末树上继承支持度、状态与支持度历史后生成当前轮假设树。"
+                )
+                if inheriting
+                else (
+                    "真实 LLM 于 "
+                    f"{generated_at.isoformat() if generated_at else '未知时间'} 生成 5 条假设，"
+                    "并重建当前轮假设树。"
+                )
+            ),
+            generated_at=generated_at,
         )
-        if generated:
-            updated_uncertainties = tuple(self._sync_uncertainty_links(nodes, uncertainty_records))
-            _ensure_min_active_hypotheses(
-                nodes,
-                min_required=task.payload.constraints.min_active_hypotheses or 3,
-                current_round=current_round,
-            )
-            tree = _build_tree_state(
-                task=task,
-                nodes=nodes,
-                current_round=max(existing_tree.current_round, current_round),
-                event="hypothesis_generated",
-                description=f"programmatic hypothesis generation added {len(generated)} nodes for next-round reasoning",
-            )
-            return HypothesisGenerationResult(
-                tree=tree,
-                generated_node_ids=tuple(node.hypothesis_id for node in generated),
-                updated_uncertainties=updated_uncertainties,
-                mode="incremental",
-            )
-
+        _apply_display_names(tree.nodes, data_dictionary)
+        updated_uncertainties = tuple(self._sync_uncertainty_links(tree.nodes, uncertainty_records))
+        mode = "llm_initial" if current_round <= 1 else "llm_next_round"
+        model = next(
+            (str(item.get("model") or "").strip() for item in proposals if item.get("model")),
+            None,
+        )
         return HypothesisGenerationResult(
-            tree=existing_tree.model_copy(deep=True),
-            generated_node_ids=(),
-            updated_uncertainties=tuple(self._sync_uncertainty_links(nodes, uncertainty_records)),
-            mode="incremental",
+            tree=tree,
+            generated_node_ids=generated_node_ids,
+            updated_uncertainties=updated_uncertainties,
+            mode=mode,
+            model=model,
+            source="real_llm",
         )
-
-    def _generate_initial_nodes(
-        self,
-        *,
-        task: ScientificTask,
-        data_dictionary: DataDictionary,
-        uncertainties: list[UncertaintyRecord],
-        planner_input: ReasoningPlannerInput | None,
-        current_round: int,
-    ) -> list[HypothesisNode]:
-        primary_x, target, mediators, feature_pool = _task_feature_context(task, data_dictionary)
-        planner_features = _feedback_features(planner_input, data_dictionary, primary_x, target)
-        nodes: list[HypothesisNode] = []
-        existing_ids: set[str] = set()
-
-        gain_node = HypothesisNode(
-            hypothesis_id=_unique_hypothesis_id(f"{primary_x}_independent_gain", existing_ids),
-            statement=f"{primary_x} 对 {target} 提供可检验的独立增量信息。",
-            level=1,
-            status="active",
-            support_score=0.58 if primary_x in data_dictionary.feature_candidates else 0.5,
-            activation_condition="derived from scientific task and current variable binding",
-            created_at_round=current_round,
-            updated_at_round=current_round,
-            predictions=[
-                PredictionRecord(
-                    experiment_id="task_bootstrap",
-                    metric="Pearson_r",
-                    expected_direction="positive",
-                )
-            ],
-            falsification_conditions=[f"新增 {primary_x} 后性能没有稳定改善"],
-            generation_rationale=_build_generation_rationale(
-                trigger="task_bootstrap",
-                summary=f"根据 scientific task 中的主变量绑定，先生成 {primary_x} 对 {target} 的独立增量假设。",
-                linked_uncertainties=_linked_uncertainty_ids(uncertainties, keywords=[primary_x, "独立", "independent", target]),
-                derived_features=[primary_x, target],
-                source_signals=_task_bootstrap_signals(task, data_dictionary, uncertainties, primary_x, target),
-                confidence=0.72,
-            ),
-        )
-        nodes.append(gain_node)
-        existing_ids.add(gain_node.hypothesis_id)
-
-        competition_feature = mediators[0] if mediators else (feature_pool[0] if feature_pool else target)
-        null_node = HypothesisNode(
-            hypothesis_id=_unique_hypothesis_id(f"{primary_x}_null_competition", existing_ids),
-            statement=f"{primary_x} 对 {target} 的观测增益主要来自与 {competition_feature} 的伴随相关，而非独立信息。",
-            level=1,
-            status="active",
-            support_score=0.42,
-            activation_condition="kept active as a competing explanation",
-            created_at_round=current_round,
-            updated_at_round=current_round,
-            alternative_explanations=[f"{competition_feature} may explain most observed variation in {target}"],
-            generation_rationale=_build_generation_rationale(
-                trigger="competition_bootstrap",
-                summary=f"为避免只保留单一路径，生成与 {competition_feature} 相关的竞争解释假设。",
-                linked_uncertainties=_linked_uncertainty_ids(
-                    uncertainties,
-                    keywords=[competition_feature, "独立", "中介", "伴随", target],
-                ),
-                derived_features=[primary_x, competition_feature, target],
-                source_signals=_competition_signals(task, uncertainties, competition_feature, target),
-                confidence=0.6,
-            ),
-        )
-        nodes.append(null_node)
-        existing_ids.add(null_node.hypothesis_id)
-
-        root_branch_budget = max(task.payload.constraints.max_hypotheses_per_level or min(max(len(feature_pool) + len(mediators), 5), 8), 3)
-        root_branch_features = [
-            feature
-            for feature in _unique_preserve_order([*planner_features, *mediators, *feature_pool])
-            if feature not in {competition_feature, primary_x, target}
-        ]
-        for branch_index, feature in enumerate(_unique_preserve_order(root_branch_features)[:root_branch_budget], start=1):
-            is_mediator = feature in mediators
-            support_score = max(0.24, (0.4 if is_mediator else 0.35) - 0.02 * (branch_index - 1))
-            branch_node = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_branch_{feature}", existing_ids),
-                statement=(
-                    f"{primary_x} 对 {target} 的作用可能主要通过 {feature} 路径放大或传递。"
-                    if is_mediator
-                    else f"{primary_x} 对 {target} 的作用可能依赖于 {feature} 所界定的边界条件。"
-                ),
-                level=1,
-                status="active",
-                support_score=round(support_score, 3),
-                activation_condition="kept active as an alternative first-order explanation",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                alternative_explanations=[
-                    f"{feature} may capture a distinct first-order mechanism for {target}",
-                ],
-                generation_rationale=_build_generation_rationale(
-                    trigger="branch_bootstrap",
-                    summary=(
-                        f"将 {feature} 提升为一级主干，避免初始假设树只剩两个主干路径。"
-                    ),
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=[feature, primary_x, target, "路径", "条件", "边界"],
-                    ),
-                    derived_features=[primary_x, feature, target],
-                    source_signals=(
-                        _mediator_signals(task, uncertainties, feature)
-                        if is_mediator
-                        else _task_bootstrap_signals(task, data_dictionary, uncertainties, primary_x, target)
-                    ),
-                    confidence=0.59 if is_mediator else 0.55,
-                ),
-            )
-            nodes.append(branch_node)
-            existing_ids.add(branch_node.hypothesis_id)
-
-        prioritized_mediators = _unique_preserve_order([*planner_features, *mediators])
-        for mediator in [item for item in prioritized_mediators if item in mediators][: max(task.payload.constraints.max_hypotheses_per_level or 4, 2)]:
-            child = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_via_{mediator}", existing_ids),
-                statement=f"{primary_x} 对 {target} 的作用可能通过 {mediator} 中介路径体现。",
-                level=2,
-                parent_id=gain_node.hypothesis_id,
-                status="pending",
-                support_score=0.36,
-                activation_condition=f"当 {gain_node.hypothesis_id} 支持度>=0.40 时激活",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                alternative_explanations=[f"{mediator} may act as mediator or confounder"],
-                generation_rationale=_build_generation_rationale(
-                    trigger="mediator_bootstrap",
-                    summary=f"根据 research question 中的候选中介变量 {mediator}，生成中介路径假设。",
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=[mediator, "中介", "mediator", primary_x, target],
-                    ),
-                    derived_features=[primary_x, mediator, target],
-                    source_signals=_mediator_signals(task, uncertainties, mediator),
-                    confidence=0.64,
-                ),
-            )
-            gain_node.children_ids.append(child.hypothesis_id)
-            nodes.append(child)
-            existing_ids.add(child.hypothesis_id)
-
-        branch_budget = max((task.payload.constraints.max_hypotheses_per_level or 6) - len(mediators), 0)
-        branch_features = [
-            feature
-            for feature in _unique_preserve_order([*planner_features, *feature_pool])
-            if feature not in {competition_feature, primary_x, target} and feature not in mediators
-        ][:branch_budget]
-        for feature in branch_features:
-            child = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_conditioned_by_{feature}", existing_ids),
-                statement=f"{primary_x} 对 {target} 的作用可能受 {feature} 条件约束，并在不同情境下呈现差异。",
-                level=2,
-                parent_id=gain_node.hypothesis_id,
-                status="pending",
-                support_score=0.35,
-                activation_condition=f"当 {feature} 被识别为重要边界条件时激活",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                alternative_explanations=[f"{feature} may act as moderator or contextual boundary of {primary_x}"],
-                generation_rationale=_build_generation_rationale(
-                    trigger="feature_branch_bootstrap",
-                    summary=f"根据数据字典中的候选特征 {feature}，补充条件/调节路径分支。",
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=[feature, primary_x, target, "条件", "边界"],
-                    ),
-                    derived_features=[primary_x, feature, target],
-                    source_signals=_task_bootstrap_signals(task, data_dictionary, uncertainties, primary_x, target),
-                    confidence=0.61,
-                ),
-            )
-            gain_node.children_ids.append(child.hypothesis_id)
-            nodes.append(child)
-            existing_ids.add(child.hypothesis_id)
-
-        if _needs_stability_hypothesis(task, uncertainties):
-            stability = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_temporal_stability", existing_ids),
-                statement=f"{primary_x} 对 {target} 的增量在不同时间片和滞后设定下保持稳定。",
-                level=2,
-                parent_id=gain_node.hypothesis_id,
-                status="pending",
-                support_score=0.4,
-                activation_condition="当系统识别出跨时间或稳健性不确定性时激活",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                falsification_conditions=["time-slice or lag-sensitivity checks show unstable gain"],
-                generation_rationale=_build_generation_rationale(
-                    trigger="stability_bootstrap",
-                    summary=f"根据任务/不确定性中的时间稳定性信号，生成 {primary_x} 的稳健性假设。",
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=["稳定", "stability", "滞后", "time", primary_x],
-                    ),
-                    derived_features=[primary_x, target],
-                    source_signals=_stability_signals(task, uncertainties),
-                    confidence=0.68,
-                ),
-            )
-            gain_node.children_ids.append(stability.hypothesis_id)
-            nodes.append(stability)
-            existing_ids.add(stability.hypothesis_id)
-
-        _ensure_min_active_hypotheses(
-            nodes,
-            min_required=task.payload.constraints.min_active_hypotheses or 3,
-            current_round=current_round,
-        )
-        return nodes
-
-    def _generate_incremental_nodes(
-        self,
-        *,
-        task: ScientificTask,
-        data_dictionary: DataDictionary,
-        uncertainties: list[UncertaintyRecord],
-        planner_input: ReasoningPlannerInput | None,
-        nodes: list[HypothesisNode],
-        current_round: int,
-    ) -> list[HypothesisNode]:
-        primary_x, target, mediators, feature_pool = _task_feature_context(task, data_dictionary)
-        node_index = {node.hypothesis_id: node for node in nodes}
-        existing_ids = set(node_index)
-        generated: list[HypothesisNode] = []
-        parent = _select_primary_parent(nodes, primary_x)
-        mentioned_statements = " ".join(node.statement.lower() for node in nodes)
-
-        feedback_features = _feedback_features(planner_input, data_dictionary, primary_x, target)
-        for feature in feedback_features:
-            if any(
-                node.generation_rationale
-                and node.generation_rationale.trigger == "planner_feature_focus"
-                and feature.lower() in node.statement.lower()
-                for node in nodes
-            ):
-                continue
-            node = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_conditioned_on_{feature}", existing_ids),
-                statement=f"{primary_x} 对 {target} 的作用可能依赖 {feature} 条件路径。",
-                level=2 if parent else 1,
-                parent_id=parent.hypothesis_id if parent else None,
-                status="pending",
-                support_score=0.38,
-                activation_condition=f"当 planner context 或 human feedback 明确关注 {feature} 时激活",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                alternative_explanations=[f"{feature} may define the boundary condition of {primary_x}'s effect"],
-                generation_rationale=_build_generation_rationale(
-                    trigger="planner_feature_focus",
-                    summary=f"由于 planner context 明确关注 {feature}，生成条件路径假设。",
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=[feature, primary_x, "条件", "依赖"],
-                    ),
-                    derived_features=[primary_x, feature, target],
-                    source_signals=_planner_feature_signals(planner_input, feature),
-                    confidence=0.7,
-                ),
-            )
-            if parent:
-                parent.children_ids.append(node.hypothesis_id)
-            nodes.append(node)
-            generated.append(node)
-            existing_ids.add(node.hypothesis_id)
-            mentioned_statements = f"{mentioned_statements} {node.statement.lower()}"
-
-        if _needs_stability_hypothesis(task, uncertainties) and "稳定" not in mentioned_statements and "stability" not in mentioned_statements:
-            node = HypothesisNode(
-                hypothesis_id=_unique_hypothesis_id(f"{primary_x}_stability_refinement", existing_ids),
-                statement=f"{primary_x} 对 {target} 的增量可能只在部分时间窗口稳定，需要额外稳健性验证。",
-                level=2 if parent else 1,
-                parent_id=parent.hypothesis_id if parent else None,
-                status="pending",
-                support_score=0.34,
-                activation_condition="当上一轮结果提示稳健性不足或时间片分歧时激活",
-                created_at_round=current_round,
-                updated_at_round=current_round,
-                generation_rationale=_build_generation_rationale(
-                    trigger="stability_refinement",
-                    summary="上一轮上下文继续提示稳健性/时间片分歧，因此扩展稳定性细化假设。",
-                    linked_uncertainties=_linked_uncertainty_ids(
-                        uncertainties,
-                        keywords=["稳定", "stability", "滞后", "time", primary_x],
-                    ),
-                    derived_features=[primary_x, target],
-                    source_signals=_stability_refinement_signals(planner_input, uncertainties),
-                    confidence=0.62,
-                ),
-            )
-            if parent:
-                parent.children_ids.append(node.hypothesis_id)
-            nodes.append(node)
-            generated.append(node)
-            existing_ids.add(node.hypothesis_id)
-
-        if planner_input and planner_input.recent_hypothesis_assessments:
-            weakened = [item for item in planner_input.recent_hypothesis_assessments if item.status in {"weakened"}]
-            if weakened and not any("伴随相关" in node.statement or "替代解释" in " ".join(node.alternative_explanations) for node in nodes):
-                alternative_feature = feedback_features[0] if feedback_features else (mediators[0] if mediators else (feature_pool[0] if feature_pool else target))
-                node = HypothesisNode(
-                    hypothesis_id=_unique_hypothesis_id(f"{primary_x}_alternative_explanation", existing_ids),
-                    statement=f"{target} 的变化主要可由 {alternative_feature} 解释，{primary_x} 更可能是伴随信号而非独立驱动。",
-                    level=1,
-                    status="active",
-                    support_score=0.41,
-                    activation_condition="当上一轮正式评价削弱主假设时保持为竞争假设",
-                    created_at_round=current_round,
-                    updated_at_round=current_round,
-                    generation_rationale=_build_generation_rationale(
-                        trigger="weakened_assessment",
-                        summary="由于正式评价削弱主假设，补充新的竞争解释节点。",
-                        linked_uncertainties=_linked_uncertainty_ids(
-                            uncertainties,
-                            keywords=[alternative_feature, "解释", "伴随", target],
-                        ),
-                        derived_features=[primary_x, alternative_feature, target],
-                        source_signals=_weakened_assessment_signals(planner_input, alternative_feature),
-                        confidence=0.66,
-                    ),
-                )
-                nodes.append(node)
-                generated.append(node)
-                existing_ids.add(node.hypothesis_id)
-
-        return generated
 
     def _sync_uncertainty_links(
         self,
@@ -451,10 +291,398 @@ class HypothesisGenerationService:
                 if rationale and record.uncertainty_id in rationale.linked_uncertainties:
                     linked.append(node.hypothesis_id)
                     continue
-                if any(feature.lower() in text for feature in _node_keywords(node)):
+                node_text = (node.display_statement or node.statement or "").lower()
+                if node_text and node_text.rstrip("？?。") in text:
                     linked.append(node.hypothesis_id)
             record.related_hypotheses = _unique_preserve_order(linked)
         return updated
+
+
+def _find_inherited_node(
+    existing_tree: HypothesisTreeState | None,
+    *,
+    display_id: str,
+    canonical_id: str,
+) -> HypothesisNode | None:
+    """Locate the previous round-end node by display or canonical id."""
+    if existing_tree is None or not existing_tree.nodes:
+        return None
+    for node in existing_tree.nodes:
+        if node.display_hypothesis_id == display_id or node.hypothesis_id == canonical_id:
+            return node
+    return None
+
+
+def _merge_evidence_items(
+    *,
+    existing: list[EvidenceItem],
+    new: list[EvidenceItem],
+) -> list[EvidenceItem]:
+    """Keep accumulated evidence and append only non-duplicate LLM evidence."""
+    merged = [item.model_copy(deep=True) for item in existing]
+    seen = {item.id for item in merged}
+    for item in new:
+        if item.id in seen:
+            continue
+        merged.append(item)
+        seen.add(item.id)
+    return merged
+
+
+def _merge_texts(existing: list[str], new: list[str]) -> list[str]:
+    """Merge text lists while preserving order and dropping exact duplicates."""
+    merged = list(existing)
+    for text in new:
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _nodes_from_llm_proposals(
+    *,
+    task: ScientificTask,
+    data_dictionary: DataDictionary,
+    proposals: list[dict],
+    current_round: int,
+    existing_tree: HypothesisTreeState | None = None,
+) -> tuple[list[HypothesisNode], tuple[str, ...], datetime | None]:
+    """Map the five LLM H1..H5 proposals into the current-round tree."""
+    if len(proposals) != 5:
+        raise ValueError(
+            f"真实 LLM 返回 {len(proposals)} 条假设，必须恰好 5 条（H1..H5）。"
+        )
+    semantic = VariableSemanticService.from_data_dictionary(data_dictionary)
+    generated_at = _extract_generated_at(proposals)
+    inherit_existing = existing_tree is not None and current_round > 1 and bool(existing_tree.nodes)
+    nodes: list[HypothesisNode] = []
+    node_by_proposal = {str(item.get("display_hypothesis_id") or "").strip(): item for item in proposals}
+    for display_id in ("H1", "H2", "H3", "H4", "H5"):
+        proposal = node_by_proposal.get(display_id)
+        if proposal is None:
+            raise ValueError(f"真实 LLM 假设提案缺少 {display_id}。")
+        canonical_id = CANONICAL_ID_BY_DISPLAY[display_id]
+        statement = semantic.display_text(str(proposal.get("statement") or "").strip())
+        if not statement:
+            raise ValueError(f"真实 LLM 假设提案 {display_id} 缺少 statement。")
+        inherited_node = (
+            _find_inherited_node(
+                existing_tree,
+                display_id=display_id,
+                canonical_id=canonical_id,
+            )
+            if inherit_existing
+            else None
+        )
+        new_evidence_items = _coerce_evidence_items(
+            proposal=proposal,
+            canonical_id=canonical_id,
+            current_round=current_round,
+            semantic=semantic,
+        )
+        new_alternative_explanations = [
+            semantic.display_text(str(item))
+            for item in (proposal.get("alternative_explanations") or [])
+            if str(item).strip()
+        ]
+        if inherited_node is not None:
+            # 第二轮起继承上一轮轮末的支持度、状态与支持度历史；上一轮科学质询输出
+            # 不继承，由新一轮质询基于继承树重新生成。
+            initial_support = round(inherited_node.support_score, 3)
+            status = str(inherited_node.status)
+            support_history = [
+                entry.model_copy(deep=True) for entry in inherited_node.support_history
+            ]
+            support_history.append(
+                SupportHistoryEntry(
+                    round=current_round,
+                    score=initial_support,
+                    event="round_continuation",
+                )
+            )
+            questioning_records = []
+            evidence_items = _merge_evidence_items(
+                existing=inherited_node.evidence_items,
+                new=new_evidence_items,
+            )
+            evidence_against = [
+                item.model_copy(deep=True) for item in inherited_node.evidence_against
+            ]
+            critiques = []
+            alternative_explanations = _merge_texts(
+                inherited_node.alternative_explanations,
+                new_alternative_explanations,
+            )
+            created_at_round = inherited_node.created_at_round
+            activated_at_round = inherited_node.activated_at_round
+            pruned_at_round = inherited_node.pruned_at_round
+            prune_reason = inherited_node.prune_reason
+        else:
+            # 生成阶段：一级父假设直接进入活跃池参与竞争；子女假设先以草稿身份展示，
+            # 支持度统一记为 0.4，待科学质询完成后再由状态机转出活跃/待定/观察等状态。
+            initial_support = (
+                _programmatic_initial_support(display_id=display_id, proposal=proposal)
+                if display_id in {"H1", "H2"}
+                else 0.4
+            )
+            status = "active" if display_id in {"H1", "H2"} else "draft"
+            support_history = [
+                SupportHistoryEntry(
+                    round=current_round,
+                    score=round(initial_support, 3),
+                    event="llm_hypothesis_generated",
+                )
+            ]
+            questioning_records = []
+            evidence_items = new_evidence_items
+            evidence_against = []
+            critiques = []
+            alternative_explanations = new_alternative_explanations
+            created_at_round = current_round
+            activated_at_round = current_round if status == "active" else None
+            pruned_at_round = None
+            prune_reason = None
+        activation_condition = _coerce_activation_condition(proposal, display_id)
+        if inherited_node is not None and not str(proposal.get("activation_condition") or "").strip():
+            activation_condition = inherited_node.activation_condition
+        node = HypothesisNode(
+            hypothesis_id=canonical_id,
+            display_hypothesis_id=display_id,
+            statement=statement,
+            level=2 if display_id in {"H3", "H4", "H5"} else 1,
+            parent_id=DEFAULT_TWO_LAYER_PARENT[display_id],
+            children_ids=[],
+            status=status,
+            support_score=round(initial_support, 3),
+            support_history=support_history,
+            activation_condition=activation_condition,
+            activated_at_round=activated_at_round,
+            evidence_items=evidence_items,
+            evidence_against=evidence_against,
+            critiques=critiques,
+            questioning_records=questioning_records,
+            predictions=_coerce_predictions(
+                proposal=proposal,
+                canonical_id=canonical_id,
+            ),
+            falsification_conditions=_coerce_falsifications(proposal, semantic),
+            alternative_explanations=alternative_explanations,
+            created_at_round=created_at_round,
+            updated_at_round=current_round,
+            pruned_at_round=pruned_at_round,
+            prune_reason=prune_reason,
+            generation_rationale=_build_llm_rationale(
+                display_id=display_id,
+                canonical_id=canonical_id,
+                initial_support=initial_support,
+                model=str(proposal.get("model") or ""),
+                source=str(proposal.get("source") or "real_llm"),
+                generated_at=generated_at,
+                inherited=inherited_node is not None,
+            ),
+        )
+        nodes.append(node)
+    _wire_children(nodes)
+    return nodes, tuple(node.hypothesis_id for node in nodes), generated_at
+
+
+def _wire_children(nodes: list[HypothesisNode]) -> None:
+    parent_index: dict[str | None, list[HypothesisNode]] = {}
+    for node in nodes:
+        parent_index.setdefault(node.parent_id, []).append(node)
+    for node in nodes:
+        node.children_ids = [child.hypothesis_id for child in parent_index.get(node.hypothesis_id, [])]
+
+
+def _extract_generated_at(proposals: list[dict]) -> datetime | None:
+    for proposal in proposals:
+        raw = proposal.get("generated_at")
+        if isinstance(raw, datetime):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+    return datetime.now()
+
+
+def _programmatic_initial_support(display_id: str, proposal: dict) -> float:
+    """Compute initial support from evidence type weights; LLM numbers are ignored."""
+    score = PROGRAMMATIC_BASE_SUPPORT.get(display_id, 0.40)
+    for raw in proposal.get("evidence_items") or []:
+        if not isinstance(raw, dict):
+            continue
+        evidence_type = str(raw.get("evidence_type") or "physical_reasoning").strip().lower()
+        evidence_type = evidence_type.replace(" ", "_")
+        score += EVIDENCE_ADJUSTMENTS.get(evidence_type, 0.00)
+    return max(0.05, min(0.95, round(score, 3)))
+
+
+def _coerce_activation_condition(proposal: dict, display_id: str) -> str:
+    raw = str(proposal.get("activation_condition") or "").strip()
+    if raw:
+        return raw
+    if display_id in {"H1", "H2"}:
+        return "始终激活：当前轮竞争性根假设。"
+    return "当父假设获得初步支持（支持度>=0.40）后由系统激活。"
+
+
+def _coerce_evidence_items(
+    *,
+    proposal: dict,
+    canonical_id: str,
+    current_round: int,
+    semantic: VariableSemanticService,
+) -> list[EvidenceItem]:
+    items = proposal.get("evidence_items") or []
+    result: list[EvidenceItem] = []
+    for index, raw in enumerate(items, start=1):
+        if not isinstance(raw, dict):
+            continue
+        description = semantic.display_text(str(raw.get("description") or "").strip())
+        if not description:
+            continue
+        result.append(
+            EvidenceItem(
+                id=f"{canonical_id}_ev{index}",
+                type=_coerce_evidence_type(str(raw.get("evidence_type") or "physical_reasoning")),
+                description=description,
+                source=str(raw.get("source") or "LLM提案"),
+                added_at_round=current_round,
+                support_weight=_evidence_weight(str(raw.get("evidence_type") or "physical_reasoning")),
+            )
+        )
+    return result
+
+
+def _coerce_evidence_type(value: str) -> EvidenceType:
+    normalized = value.strip().replace(" ", "_").lower()
+    mapping = {
+        "literature": "literature",
+        "observational_data": "observational_data",
+        "experimental_result": "experimental_result",
+        "physical_law": "physical_prior",
+        "physical_reasoning": "physical_prior",
+        "physical_prior": "physical_prior",
+        "expert_judgment": "expert_judgment",
+        "evidence_gap": "expert_judgment",
+    }
+    return mapping.get(normalized, "physical_prior")
+
+
+def _evidence_weight(value: str) -> float:
+    normalized = value.strip().replace(" ", "_").lower()
+    weights = {
+        "literature": 0.8,
+        "observational_data": 0.7,
+        "experimental_result": 0.7,
+        "physical_law": 0.9,
+        "physical_reasoning": 0.5,
+        "physical_prior": 0.5,
+        "expert_judgment": 0.5,
+    }
+    return weights.get(normalized, 0.5)
+
+
+def _coerce_predictions(
+    *,
+    proposal: dict,
+    canonical_id: str,
+) -> list[PredictionRecord]:
+    items = proposal.get("predictions") or []
+    result: list[PredictionRecord] = []
+    for index, raw in enumerate(items, start=1):
+        if not isinstance(raw, dict):
+            continue
+        expected_range = raw.get("expected_range")
+        if isinstance(expected_range, list) and len(expected_range) == 2:
+            try:
+                expected_range = [float(expected_range[0]), float(expected_range[1])]
+            except (TypeError, ValueError):
+                expected_range = None
+        else:
+            expected_range = None
+        result.append(
+            PredictionRecord(
+                experiment_id=f"{canonical_id}_llm_pred{index}",
+                metric=_coerce_metric(str(raw.get("expected_observable") or "")),
+                expected_direction=_coerce_direction(str(raw.get("expected_direction") or "positive")),
+                expected_range=expected_range,
+            )
+        )
+    return result
+
+
+def _coerce_metric(raw: str) -> str:
+    lowered = raw.lower()
+    if "pearson" in lowered or "correlation" in lowered:
+        return "Pearson_r"
+    if "skill" in lowered:
+        return "Skill"
+    if "rmse" in lowered:
+        return "RMSE"
+    if "mae" in lowered:
+        return "MAE"
+    if "r2" in lowered or "r²" in lowered or "r^2" in lowered:
+        return "R2"
+    return "Pearson_r"
+
+
+def _coerce_direction(raw: str) -> str:
+    normalized = raw.strip().lower()
+    if normalized in {"positiva", "positive", "正", "正向"}:
+        return "positive"
+    if normalized in {"negative", "负", "负向"}:
+        return "negative"
+    if normalized in {"near_zero", "zero", "接近零", "near zero"}:
+        return "near_zero"
+    if normalized in {"nonlinear", "非线性"}:
+        return "nonlinear"
+    return "unknown"
+
+
+def _coerce_falsifications(
+    proposal: dict,
+    semantic: VariableSemanticService,
+) -> list[str]:
+    conditions = [
+        semantic.display_text(str(item).strip())
+        for item in (proposal.get("falsification_conditions") or [])
+        if str(item).strip()
+    ]
+    single = str(proposal.get("falsification") or "").strip()
+    if single and semantic.display_text(single) not in conditions:
+        conditions.append(semantic.display_text(single))
+    return conditions
+
+
+def _build_llm_rationale(
+    *,
+    display_id: str,
+    canonical_id: str,
+    initial_support: float,
+    model: str,
+    source: str,
+    generated_at: datetime | None,
+    inherited: bool = False,
+) -> HypothesisGenerationRationale:
+    timestamp = generated_at.isoformat() if generated_at else "未知时间"
+    return HypothesisGenerationRationale(
+        trigger=f"llm_hypothesis_{display_id}",
+        summary=(
+            f"假设 {display_id} 继承上一轮轮末状态，当前支持度 {initial_support}，"
+            "本轮科学质询后按证据调整。"
+            if inherited
+            else (
+                f"假设 {display_id} 为 LLM 起草，当前支持度 {initial_support}，"
+                "待科学质询后按证据调整。"
+            )
+        ),
+        linked_uncertainties=[],
+        derived_features=[],
+        source_signals=[],
+        confidence=round(initial_support, 3),
+    )
 
 
 def _normalize_uncertainties(
@@ -467,60 +695,29 @@ def _normalize_uncertainties(
     return [item.model_copy(deep=True) for item in uncertainties]
 
 
-def _task_feature_context(
-    task: ScientificTask,
-    data_dictionary: DataDictionary,
-) -> tuple[str, str, list[str], list[str]]:
-    variables = task.payload.research_question.variables
-    primary_x = variables.x if variables else (data_dictionary.feature_candidates[0] if data_dictionary.feature_candidates else task.payload.research_question.target)
-    target = task.payload.research_question.target
-    mediators = [item for item in (variables.m_candidates if variables else []) if item in data_dictionary.feature_candidates]
-    feature_pool = [item for item in data_dictionary.feature_candidates if item not in {primary_x, target}]
-    return primary_x, target, mediators, feature_pool
-
-
-def _feedback_features(
-    planner_input: ReasoningPlannerInput | None,
-    data_dictionary: DataDictionary,
-    primary_x: str,
-    target: str,
-) -> list[str]:
-    if planner_input is None:
-        return []
-    corpus: list[str] = []
-    if planner_input.human_feedback:
-        corpus.append(planner_input.human_feedback.lower())
-    corpus.extend(item.content.lower() for item in planner_input.recent_human_feedback)
-    corpus.extend(item.summary.lower() for item in planner_input.recent_reasoning_traces)
-    corpus.extend(item.lower() for item in planner_input.planner_guidance)
-    merged = " ".join(corpus)
-    return [
-        feature
-        for feature in data_dictionary.feature_candidates
-        if feature not in {primary_x, target} and feature.lower() in merged
-    ]
-
-
-def _needs_stability_hypothesis(
-    task: ScientificTask,
-    uncertainties: Iterable[UncertaintyRecord],
-) -> bool:
-    text = " ".join(
-        [task.payload.research_question.text.lower()]
-        + [f"{item.question} {item.description}".lower() for item in uncertainties]
-    )
-    return any(token in text for token in ("稳定", "stability", "lag", "滞后", "time", "跨时间"))
-
-
-def _select_primary_parent(nodes: list[HypothesisNode], primary_x: str) -> HypothesisNode | None:
-    root_candidates = [
-        node
-        for node in nodes
-        if node.parent_id is None and primary_x.lower() in node.statement.lower() and node.status in {"active", "observing", "converged"}
-    ]
-    if not root_candidates:
-        return None
-    return max(root_candidates, key=lambda item: item.support_score)
+def _apply_display_names(nodes: list[HypothesisNode], data_dictionary: DataDictionary) -> None:
+    """Convert user-facing hypothesis text to display names while keeping raw feature links."""
+    semantic = VariableSemanticService.from_data_dictionary(data_dictionary)
+    for node in nodes:
+        node.display_statement = semantic.display_text(node.statement)
+        node.statement = node.display_statement
+        node.display_hypothesis_id = (
+            f"H{node.level}"
+            if not node.display_hypothesis_id
+            else node.display_hypothesis_id
+        )
+        node.falsification_conditions = [
+            semantic.display_text(text)
+            for text in node.falsification_conditions
+        ]
+        node.alternative_explanations = [
+            semantic.display_text(text)
+            for text in node.alternative_explanations
+        ]
+        if node.generation_rationale is not None:
+            node.generation_rationale.summary = semantic.display_text(
+                node.generation_rationale.summary
+            )
 
 
 def _ensure_min_active_hypotheses(
@@ -533,13 +730,22 @@ def _ensure_min_active_hypotheses(
     if active_count >= min_required:
         return
     candidates = sorted(
-        [node for node in nodes if node.status in {"draft", "pending", "observing"}],
+        [node for node in nodes if node.status in {"pending", "observing"}],
         key=lambda item: item.support_score,
         reverse=True,
     )
     for node in candidates:
         node.status = "active"
-        node.activated_at_round = current_round
+        node.activated_at_round = node.activated_at_round or current_round
+        node.updated_at_round = current_round
+        if not any(item.round == current_round and item.event == "min_active_fallback" for item in node.support_history):
+            node.support_history.append(
+                SupportHistoryEntry(
+                    round=current_round,
+                    score=node.support_score,
+                    event="min_active_fallback",
+                )
+            )
         active_count += 1
         if active_count >= min_required:
             break
@@ -552,16 +758,28 @@ def _build_tree_state(
     current_round: int,
     event: str,
     description: str,
+    generated_at: datetime | None = None,
 ) -> HypothesisTreeState:
     return HypothesisTreeState(
         tree_id=f"{task.task_id}_tree",
         task_id=task.task_id,
         current_round=current_round,
         root_question=task.payload.research_question.text,
+        generated_at=generated_at,
         nodes=nodes,
-        active_hypotheses=[node.hypothesis_id for node in nodes if node.status in {"active", "converged"}],
-        pruned_hypotheses=[node.hypothesis_id for node in nodes if node.status == "pruned"],
-        pending_hypotheses=[node.hypothesis_id for node in nodes if node.status in {"draft", "pending"}],
+        active_hypotheses=[
+            node.hypothesis_id
+            for node in nodes
+            if node.status in {"active", "converged"}
+        ],
+        pruned_hypotheses=[
+            node.hypothesis_id for node in nodes if node.status == "pruned"
+        ],
+        pending_hypotheses=[
+            node.hypothesis_id
+            for node in nodes
+            if node.status in {"draft", "pending"}
+        ],
         latest_update=LatestTreeUpdate(
             round=current_round,
             event=event,
@@ -569,293 +787,15 @@ def _build_tree_state(
         ),
         tree_summary=TreeSummary(
             total_nodes=len(nodes),
-            active_count=sum(1 for node in nodes if node.status in {"active", "converged"}),
+            active_count=sum(
+                1 for node in nodes if node.status in {"active", "converged"}
+            ),
             pruned_count=sum(1 for node in nodes if node.status == "pruned"),
-            pending_count=sum(1 for node in nodes if node.status in {"draft", "pending"}),
+            pending_count=sum(
+                1 for node in nodes if node.status in {"draft", "pending"}
+            ),
         ),
     )
-
-
-def _unique_hypothesis_id(base: str, existing_ids: set[str]) -> str:
-    normalized = _slug(base)
-    candidate = f"H_{normalized}"
-    index = 2
-    while candidate in existing_ids:
-        candidate = f"H_{normalized}_{index}"
-        index += 1
-    return candidate
-
-
-def _slug(text: str) -> str:
-    cleaned = "".join(char.lower() if char.isalnum() else "_" for char in text)
-    while "__" in cleaned:
-        cleaned = cleaned.replace("__", "_")
-    return cleaned.strip("_") or "hypothesis"
-
-
-def _build_generation_rationale(
-    *,
-    trigger: str,
-    summary: str,
-    linked_uncertainties: list[str],
-    derived_features: list[str],
-    source_signals: list[HypothesisSourceSignal],
-    confidence: float,
-) -> HypothesisGenerationRationale:
-    return HypothesisGenerationRationale(
-        trigger=trigger,
-        summary=summary,
-        linked_uncertainties=_unique_preserve_order(linked_uncertainties),
-        derived_features=_unique_preserve_order(derived_features),
-        source_signals=source_signals,
-        confidence=confidence,
-    )
-
-
-def _linked_uncertainty_ids(
-    uncertainties: list[UncertaintyRecord],
-    *,
-    keywords: list[str],
-) -> list[str]:
-    ids: list[str] = []
-    lowered_keywords = [item.lower() for item in keywords if item]
-    for record in uncertainties:
-        text = f"{record.question} {record.description}".lower()
-        if any(keyword in text for keyword in lowered_keywords):
-            ids.append(record.uncertainty_id)
-    if not ids and uncertainties:
-        ids.append(uncertainties[0].uncertainty_id)
-    return ids
-
-
-def _task_bootstrap_signals(
-    task: ScientificTask,
-    data_dictionary: DataDictionary,
-    uncertainties: list[UncertaintyRecord],
-    primary_x: str,
-    target: str,
-) -> list[HypothesisSourceSignal]:
-    signals = [
-        HypothesisSourceSignal(
-            signal_type="scientific_task",
-            source_id=task.task_id,
-            source_round=0,
-            excerpt=task.payload.research_question.text,
-            weight=0.95,
-        ),
-        HypothesisSourceSignal(
-            signal_type="data_dictionary",
-            source_id=data_dictionary.dictionary_id,
-            source_round=0,
-            excerpt=f"variables available: {primary_x} -> {target}",
-            weight=0.8,
-        ),
-    ]
-    signals.extend(_uncertainty_signals(uncertainties, keywords=[primary_x, target, "独立", "independent"], weight=0.72))
-    return signals
-
-
-def _competition_signals(
-    task: ScientificTask,
-    uncertainties: list[UncertaintyRecord],
-    competition_feature: str,
-    target: str,
-) -> list[HypothesisSourceSignal]:
-    signals = [
-        HypothesisSourceSignal(
-            signal_type="scientific_task",
-            source_id=task.task_id,
-            source_round=0,
-            excerpt=f"需要保留 {competition_feature} 对 {target} 的竞争解释",
-            weight=0.7,
-        )
-    ]
-    signals.extend(_uncertainty_signals(uncertainties, keywords=[competition_feature, "伴随", "解释", "中介"], weight=0.68))
-    return signals
-
-
-def _mediator_signals(
-    task: ScientificTask,
-    uncertainties: list[UncertaintyRecord],
-    mediator: str,
-) -> list[HypothesisSourceSignal]:
-    signals = [
-        HypothesisSourceSignal(
-            signal_type="scientific_task",
-            source_id=task.task_id,
-            source_round=0,
-            excerpt=f"research question 提供 mediator candidate: {mediator}",
-            weight=0.82,
-        )
-    ]
-    signals.extend(_uncertainty_signals(uncertainties, keywords=[mediator, "中介", "mediator"], weight=0.75))
-    return signals
-
-
-def _stability_signals(
-    task: ScientificTask,
-    uncertainties: list[UncertaintyRecord],
-) -> list[HypothesisSourceSignal]:
-    signals = [
-        HypothesisSourceSignal(
-            signal_type="scientific_task",
-            source_id=task.task_id,
-            source_round=0,
-            excerpt=f"question context: {task.payload.research_question.text}",
-            weight=0.62,
-        )
-    ]
-    signals.extend(_uncertainty_signals(uncertainties, keywords=["稳定", "stability", "滞后", "time", "跨时间"], weight=0.86))
-    return signals
-
-
-def _planner_feature_signals(
-    planner_input: ReasoningPlannerInput | None,
-    feature: str,
-) -> list[HypothesisSourceSignal]:
-    if planner_input is None:
-        return []
-    signals: list[HypothesisSourceSignal] = []
-    if planner_input.human_feedback and feature.lower() in planner_input.human_feedback.lower():
-        signals.append(
-            HypothesisSourceSignal(
-                signal_type="human_feedback",
-                source_round=planner_input.source_round_id,
-                excerpt=planner_input.human_feedback,
-                weight=0.9,
-            )
-        )
-    for item in planner_input.recent_human_feedback:
-        if feature.lower() in item.content.lower():
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="human_feedback_entry",
-                    source_id=item.feedback_id,
-                    source_round=planner_input.source_round_id,
-                    excerpt=item.content,
-                    weight=0.88,
-                )
-            )
-    for trace in planner_input.recent_reasoning_traces:
-        if feature.lower() in trace.summary.lower():
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="reasoning_trace",
-                    source_id=trace.trace_id,
-                    source_round=planner_input.source_round_id,
-                    excerpt=trace.summary,
-                    weight=0.76,
-                )
-            )
-    for note in planner_input.planner_guidance:
-        if feature.lower() in note.lower():
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="planner_guidance",
-                    source_round=planner_input.source_round_id,
-                    excerpt=note,
-                    weight=0.7,
-                )
-            )
-    return signals or [
-        HypothesisSourceSignal(
-            signal_type="planner_input",
-            source_round=planner_input.source_round_id,
-            excerpt=f"planner requested focus on {feature}",
-            weight=0.6,
-        )
-    ]
-
-
-def _stability_refinement_signals(
-    planner_input: ReasoningPlannerInput | None,
-    uncertainties: list[UncertaintyRecord],
-) -> list[HypothesisSourceSignal]:
-    signals = _uncertainty_signals(uncertainties, keywords=["稳定", "stability", "滞后", "time", "跨时间"], weight=0.84)
-    if planner_input:
-        if planner_input.evaluation_summary.stable is False:
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="evaluation_summary",
-                    source_id=planner_input.source_experiment_id,
-                    source_round=planner_input.source_round_id,
-                    excerpt="evaluation summary reports unstable result",
-                    weight=0.9,
-                )
-            )
-        for trace in planner_input.recent_reasoning_traces:
-            if any(token in trace.summary.lower() for token in ("稳定", "stability", "时间", "time")):
-                signals.append(
-                    HypothesisSourceSignal(
-                        signal_type="reasoning_trace",
-                        source_id=trace.trace_id,
-                        source_round=planner_input.source_round_id,
-                        excerpt=trace.summary,
-                        weight=0.75,
-                    )
-                )
-    return signals
-
-
-def _weakened_assessment_signals(
-    planner_input: ReasoningPlannerInput | None,
-    alternative_feature: str,
-) -> list[HypothesisSourceSignal]:
-    signals: list[HypothesisSourceSignal] = []
-    if planner_input:
-        for assessment in planner_input.recent_hypothesis_assessments:
-            if assessment.status == "weakened":
-                signals.append(
-                    HypothesisSourceSignal(
-                        signal_type="evaluation_assessment",
-                        source_id=assessment.hypothesis_id,
-                        source_round=planner_input.source_round_id,
-                        excerpt=assessment.reason,
-                        weight=0.87,
-                    )
-                )
-        if planner_input.human_feedback and alternative_feature.lower() in planner_input.human_feedback.lower():
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="human_feedback",
-                    source_round=planner_input.source_round_id,
-                    excerpt=planner_input.human_feedback,
-                    weight=0.72,
-                )
-            )
-    return signals
-
-
-def _uncertainty_signals(
-    uncertainties: list[UncertaintyRecord],
-    *,
-    keywords: list[str],
-    weight: float,
-) -> list[HypothesisSourceSignal]:
-    signals: list[HypothesisSourceSignal] = []
-    lowered_keywords = [item.lower() for item in keywords if item]
-    for record in uncertainties:
-        text = f"{record.question} {record.description}".lower()
-        if any(keyword in text for keyword in lowered_keywords):
-            signals.append(
-                HypothesisSourceSignal(
-                    signal_type="uncertainty_record",
-                    source_id=record.uncertainty_id,
-                    source_round=record.created_at_round,
-                    excerpt=record.question,
-                    weight=weight,
-                )
-            )
-    return signals
-
-
-def _node_keywords(node: HypothesisNode) -> list[str]:
-    rationale = node.generation_rationale
-    keywords: list[str] = []
-    if rationale:
-        keywords.extend(rationale.derived_features)
-    keywords.extend(node.statement.replace("，", " ").replace("。", " ").split())
-    return [item for item in keywords if item]
 
 
 def _unique_preserve_order(items: list[str]) -> list[str]:

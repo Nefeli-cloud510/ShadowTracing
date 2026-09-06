@@ -1,8 +1,33 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { submitRoundDecision } from '../api/liveWorkflow'
+import { DataCoverageAudit } from '../components/DataCoverageAudit'
+import { ModelTuningCard } from '../components/ModelTuningCard'
 import { PageTabs } from '../components/PageTabs'
+import { ThreeLayerConclusionView } from '../components/ThreeLayerConclusionView'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
+import { normalizeArmTerms } from '../utils/armTerminology'
+
+const HYPOTHESIS_STATUS_LABELS: Record<string, string> = {
+  converged: '可验证',
+  active: '活跃',
+  observing: '待观察',
+  pending: '待定',
+  draft: '草稿',
+  pruned: '剪枝',
+  newly_split: '本轮新增',
+  weakened: '已削弱',
+}
+
+function hypothesisStatusClass(status?: string): string {
+  const normalized = String(status ?? '').toLowerCase()
+  return HYPOTHESIS_STATUS_LABELS[normalized] ? normalized : 'pending'
+}
+
+function hypothesisStatusLabel(status?: string): string {
+  const normalized = String(status ?? '').toLowerCase()
+  return HYPOTHESIS_STATUS_LABELS[normalized] ?? '待定'
+}
 
 export function RoundReportPage() {
   const navigate = useNavigate()
@@ -36,7 +61,7 @@ export function RoundReportPage() {
     }
     const hints: string[] = []
     if (/目标列|字段|column|KeyError/i.test(message)) {
-      hints.push('失败更像是字段映射或数据字典配置问题，请优先检查目标变量、解释变量和表头白名单是否一致。')
+      hints.push('失败更像是字段映射或数据变量库配置问题，请优先检查目标变量、解释变量和表头白名单是否一致。')
     }
     if (/protocol|协议|feature/i.test(message)) {
       hints.push('失败可能发生在实验协议生成或特征组装阶段，请检查候选实验是否引用了已弃用字段。')
@@ -127,33 +152,155 @@ export function RoundReportPage() {
                 </div>
               </header>
 
-              <section className="detail-card detail-card--wide">
-                <span className="detail-card__eyebrow">Performance Summary</span>
-                <h2>性能摘要卡片</h2>
-                <div className="metrics-grid metrics-grid--two">
-                  <div className="metric-box">
-                    <span className="metric-box__label">Baseline r</span>
-                    <span className="metric-box__value">{(report.summary.baselinePearsonR ?? 0).toFixed(4)}</span>
+              <div className="report-stack">
+                <section className="detail-card detail-card--wide">
+                  <span className="detail-card__eyebrow">Performance Summary</span>
+                  <h2>性能摘要卡片</h2>
+                  {report.sourceExperimentId ? (
+                    <p className="detail-card__meta">
+                      数据来源：实验 {report.sourceExperimentId}（Round {report.roundNumber}）
+                      {report.sourceUpdatedAt
+                        ? ` · 状态文件更新时间 ${report.sourceUpdatedAt.slice(0, 16).replace('T', ' ')}`
+                        : ''}
+                    </p>
+                  ) : null}
+                  <div className="metrics-grid metrics-grid--two">
+                    <div className="metric-box">
+                      <span className="metric-box__label">对照组 r</span>
+                      <span className="metric-box__value">{(report.summary.baselinePearsonR ?? 0).toFixed(4)}</span>
+                    </div>
+                    <div className="metric-box">
+                      <span className="metric-box__label">实验组 r</span>
+                      <span className="metric-box__value">{(report.summary.treatmentPearsonR ?? 0).toFixed(4)}</span>
+                    </div>
+                    <div className="metric-box metric-box--highlight">
+                      <span className="metric-box__label">Delta r</span>
+                      <span className="metric-box__value">{(report.summary.deltaPearsonR ?? 0).toFixed(4)}</span>
+                    </div>
+                    <div className="metric-box">
+                      <span className="metric-box__label">Delta RMSE</span>
+                      <span className="metric-box__value">{(report.summary.deltaRmse ?? 0).toFixed(3)}</span>
+                    </div>
                   </div>
-                  <div className="metric-box">
-                    <span className="metric-box__label">Treatment r</span>
-                    <span className="metric-box__value">{(report.summary.treatmentPearsonR ?? 0).toFixed(4)}</span>
-                  </div>
-                  <div className="metric-box metric-box--highlight">
-                    <span className="metric-box__label">Delta r</span>
-                    <span className="metric-box__value">{(report.summary.deltaPearsonR ?? 0).toFixed(4)}</span>
-                  </div>
-                  <div className="metric-box">
-                    <span className="metric-box__label">Delta RMSE</span>
-                    <span className="metric-box__value">{(report.summary.deltaRmse ?? 0).toFixed(3)}</span>
-                  </div>
-                </div>
-              </section>
+                </section>
+
+                <DataCoverageAudit items={report.dataCoverage} />
+
+                <ModelTuningCard
+                  modelParameters={report.modelParameters}
+                  tuningEntries={report.tuningEntries}
+                  tuningNarrative={report.tuningNarrative}
+                />
+
+                {report.threeLayerConclusion ? (
+                  <ThreeLayerConclusionView conclusion={report.threeLayerConclusion} />
+                ) : null}
+
+              {report.iterationEvidence ? (
+                <section className="detail-card detail-card--wide">
+                  <span className="detail-card__eyebrow">Iteration Evidence</span>
+                  <h2>上一轮反馈如何驱动下一轮</h2>
+                  <p className="detail-card__meta">
+                    数据链：Round {report.iterationEvidence.sourceRound} 实验反馈
+                    {report.iterationEvidence.previousExperimentId
+                      ? `（${report.iterationEvidence.previousExperimentId}）`
+                      : ''}
+                    {' → '}
+                    Round {report.roundNumber + 1} 候选实验
+                    {report.iterationEvidence.nextExperimentId
+                      ? `（${report.iterationEvidence.nextExperimentId}）`
+                      : ''}
+                  </p>
+
+                  {report.candidateEvolution ? (
+                    <div className="evaluation-summary-card">
+                      <p>{report.candidateEvolution.summary}</p>
+                    </div>
+                  ) : null}
+
+                  {report.iterationEvidence.previousFocus || report.iterationEvidence.nextFocus ? (
+                    <div className="collection-grid">
+                      {report.iterationEvidence.previousFocus ? (
+                        <article className="collection-card">
+                          <strong>上一轮实验焦点</strong>
+                          <p>{report.iterationEvidence.previousFocus}</p>
+                          <div className="collection-card__meta">
+                            <span>{report.iterationEvidence.previousExperimentId ?? '--'}</span>
+                            <span>Round {report.iterationEvidence.sourceRound}</span>
+                          </div>
+                        </article>
+                      ) : null}
+                      {report.iterationEvidence.nextFocus ? (
+                        <article className="collection-card">
+                          <strong>本轮候选焦点</strong>
+                          <p>{report.iterationEvidence.nextFocus}</p>
+                          <div className="collection-card__meta">
+                            <span>{report.iterationEvidence.nextExperimentId ?? '--'}</span>
+                            <span>Round {report.roundNumber + 1}</span>
+                          </div>
+                        </article>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {report.iterationEvidence.validations.length > 0 ? (
+                    <>
+                      <h3>迭代生效校验</h3>
+                      <div className="decision-option-row decision-option-row--wrap">
+                        {report.iterationEvidence.validations.map((item) => (
+                          <div key={item.itemId} className="status-chip">
+                            <span>{item.label}</span>
+                            <strong>{item.passed ? '已通过' : '未通过'}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+
+                  {report.iterationEvidence.inputSources.length > 0 ? (
+                    <>
+                      <h3>本轮输入来源</h3>
+                      <p className="detail-card__meta">
+                        来源文件：round_history.json · 字段 iteration_input_sources
+                      </p>
+                      <ul className="detail-list">
+                        {report.iterationEvidence.inputSources.slice(0, 8).map((source) => {
+                          const [type, ...rest] = source.split(':')
+                          const label =
+                            { round_archive: '轮次归档', tested_hypothesis: '已检验假设', target_uncertainty: '目标不确定性', scientific_finding: '科学发现', metric_delta: '指标变化', reasoning_trace: '推理轨迹' }[type] ?? type
+                          return (
+                            <li key={source}>
+                              <strong>{label}</strong>
+                              {rest.length > 0 ? `：${normalizeArmTerms(rest.join(':'))}` : ''}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                      {report.iterationEvidence.inputSources.length > 8
+                        ? (
+                            <p className="detail-card__meta">
+                              另有 {report.iterationEvidence.inputSources.length - 8} 条来源记录，可在状态文件中查看完整列表。
+                            </p>
+                          )
+                        : null}
+                    </>
+                  ) : null}
+                </section>
+              ) : null}
+              </div>
 
               <div className="workspace-page__grid">
                 <section className="detail-card">
                   <span className="detail-card__eyebrow">Scientific Conclusions</span>
                   <h2>科学结论</h2>
+                  {report.sourceExperimentId ? (
+                    <p className="detail-card__meta">
+                      数据来源：实验 {report.sourceExperimentId}（Round {report.roundNumber}）
+                      {report.sourceUpdatedAt
+                        ? ` · 状态文件更新时间 ${report.sourceUpdatedAt.slice(0, 16).replace('T', ' ')}`
+                        : ''}
+                    </p>
+                  ) : null}
                   <ul className="detail-list">
                     {report.scientificConclusions.map((item) => (
                       <li key={item}>{item}</li>
@@ -165,13 +312,18 @@ export function RoundReportPage() {
                   <span className="detail-card__eyebrow">Hypothesis State</span>
                   <h2>假设树状态</h2>
                   <div className="collection-grid">
-                    {report.highlightedHypotheses.map((item) => (
-                      <article key={item.id} className="collection-card">
-                        <strong>{item.id}</strong>
+                    {report.highlightedHypotheses.map((item, index) => (
+                      <article
+                        key={item.id}
+                        className={`collection-card hypothesis-state-card hypothesis-state-card--${hypothesisStatusClass(item.status)}`}
+                      >
+                        <strong>{item.displayLabel ?? `假设 ${index + 1}`}</strong>
                         <p>{item.label}</p>
                         <div className="collection-card__meta">
-                          <span>{item.status}</span>
-                          <span>{item.supportScore.toFixed(3)}</span>
+                          <span className={`hypothesis-status-badge hypothesis-status-badge--${hypothesisStatusClass(item.status)}`}>
+                            {hypothesisStatusLabel(item.status)}
+                          </span>
+                          <span>支持度 {item.supportScore.toFixed(3)}</span>
                         </div>
                       </article>
                     ))}

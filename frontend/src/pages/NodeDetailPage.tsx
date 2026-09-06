@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { submitApprovalAction } from '../api/liveWorkflow'
 import { ApprovalOverlay } from '../components/ApprovalOverlay'
+import { CandidateExperimentTable } from '../components/CandidateExperimentTable'
 import { PageTabs } from '../components/PageTabs'
+import { UncertaintyQueueList } from '../components/UncertaintyQueueList'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
 import { filterSelectableCandidateExperiments } from '../utils/experimentValidation'
 import { useTabs } from '../contexts/TabContext'
@@ -14,19 +16,73 @@ function formatCodeLabel(value?: string, fallback = '待更新') {
 
   const labels: Record<string, string> = {
     active: '活跃',
-    observing: '持续观察',
+    observing: '待观察',
+    converged: '可验证',
+    draft: '草稿',
+    pruned: '剪枝',
+    supported: '支持',
+    partially_supported: '部分支持',
     weakened: '已削弱',
     resolved: '已解决',
     tracking: '持续跟踪',
     pending: '待执行',
     completed: '已完成',
     awaiting_human_approval: '等待 PI 审批',
+    awaiting_hypothesis_confirmation: '等待假设树确认',
+    hypothesis_tree_confirmed: '假设树已确认',
     experiment_selection_requested: '提交实验审批',
     experiment_approved: '实验已批准',
     round_review_requested: '轮次复盘申请',
   }
 
   return labels[value] ?? value.replace(/_/g, ' ')
+}
+
+function hypothesisNodeStatusLabel(status?: string, fallback = '待更新') {
+  const labels: Record<string, string> = {
+    active: '活跃',
+    observing: '待观察',
+    converged: '可验证',
+    draft: '草稿',
+    pending: '待定',
+    pruned: '剪枝',
+  }
+  return labels[status ?? ''] ?? formatCodeLabel(status, fallback)
+}
+
+function buildDisplayMapper(rawPlannerInput?: any) {
+  const rawMap = rawPlannerInput?.data_dictionary_summary?.raw_display_map ?? {}
+  const names = Object.keys(rawMap).filter((key) => rawMap[key] && rawMap[key] !== key)
+  return (text?: string) => {
+    if (!text) {
+      return text ?? ''
+    }
+    return [...names].sort((a, b) => b.length - a.length).reduce((result, raw) => result.split(raw).join(rawMap[raw] ?? raw), String(text))
+  }
+}
+
+function statementLabel(tree?: any, ids: string[] = [], displayText?: (text?: string) => string): string {
+  const nodeById = new Map<string, string>()
+  for (const node of tree?.nodes ?? []) {
+    if (node.hypothesis_id && node.statement) {
+      nodeById.set(node.hypothesis_id, node.statement)
+    }
+  }
+  const labels = ids.slice(0, 2).map((id) => {
+    const statement = nodeById.get(id)
+    return displayText?.(statement ?? id) || statement || id
+  })
+  return labels.join('；') || '本轮以不确定性验证为主'
+}
+
+function uncertaintyLabel(
+  uncertainties?: any,
+  id?: string,
+  displayText?: (text?: string) => string,
+): string {
+  const record = (uncertainties?.records ?? []).find((item: any) => item.uncertainty_id === id)
+  const question = record?.question ?? record?.description
+  return displayText?.(question) || question || id || '未命名不确定性'
 }
 
 function summarizeArtifact(path?: string) {
@@ -36,7 +92,7 @@ function summarizeArtifact(path?: string) {
   return path.replace(/\\/g, '/').split('/').pop() ?? path
 }
 
-function QuestionDetail({ rawTask }: { rawTask: any }) {
+function QuestionDetail({ rawTask, displayText }: { rawTask: any; displayText: (text?: string) => string }) {
   if (!rawTask || !rawTask.payload?.research_question) return <p>暂无科学问题数据。</p>
   const q = rawTask.payload.research_question
   return (
@@ -48,9 +104,9 @@ function QuestionDetail({ rawTask }: { rawTask: any }) {
       <div className="detail-panel__section">
         <h3>变量配置</h3>
         <ul>
-          <li><strong>研究目标：</strong> {q.target || q.variables?.y || '待识别'}</li>
-          <li><strong>主要解释信号：</strong> {q.variables?.x || '待识别'}</li>
-          <li><strong>候选中介因素：</strong> {q.variables?.m_candidates?.join(', ') || '暂无'}</li>
+          <li><strong>研究目标：</strong> {displayText(q.target || q.variables?.y) || '待识别'}</li>
+          <li><strong>主要解释信号：</strong> {displayText(q.variables?.x) || '待识别'}</li>
+          <li><strong>候选特征：</strong> {(q.variables?.m_candidates ?? []).map(displayText).join(', ') || '暂无'}</li>
         </ul>
       </div>
       {rawTask.payload.constraints && (
@@ -66,7 +122,7 @@ function QuestionDetail({ rawTask }: { rawTask: any }) {
   )
 }
 
-function KnowledgeDetail({ rawPlannerInput }: { rawPlannerInput: any }) {
+function KnowledgeDetail({ rawPlannerInput, displayText }: { rawPlannerInput: any; displayText: (text?: string) => string }) {
   if (!rawPlannerInput) return <p>暂无知识注入数据。</p>
   const guidance =
     rawPlannerInput.planner_guidance?.filter(
@@ -85,11 +141,11 @@ function KnowledgeDetail({ rawPlannerInput }: { rawPlannerInput: any }) {
       </div>
       {rawPlannerInput.data_dictionary_summary ? (
         <div className="detail-panel__section">
-          <h3>数据字典摘要</h3>
+          <h3>数据变量库摘要</h3>
           <ul>
             <li><strong>数据集：</strong> {rawPlannerInput.data_dictionary_summary.dataset_name}</li>
-            <li><strong>时间对齐字段：</strong> {rawPlannerInput.data_dictionary_summary.time_column}</li>
-            <li><strong>候选特征：</strong> {(rawPlannerInput.data_dictionary_summary.feature_candidates ?? []).join(', ')}</li>
+            <li><strong>时间对齐字段：</strong> {displayText(rawPlannerInput.data_dictionary_summary.display_time_column ?? rawPlannerInput.data_dictionary_summary.time_column)}</li>
+            <li><strong>候选特征：</strong> {(rawPlannerInput.data_dictionary_summary.display_feature_candidates ?? rawPlannerInput.data_dictionary_summary.feature_candidates ?? []).map(displayText).join(', ')}</li>
           </ul>
         </div>
       ) : null}
@@ -97,7 +153,7 @@ function KnowledgeDetail({ rawPlannerInput }: { rawPlannerInput: any }) {
   )
 }
 
-function ScientificQuestioningDetail({ rawPlannerInput }: { rawPlannerInput: any }) {
+function ScientificQuestioningDetail({ rawPlannerInput, displayText }: { rawPlannerInput: any; displayText: (text?: string) => string }) {
   if (!rawPlannerInput || !rawPlannerInput.recent_reasoning_traces) return <p>暂无科学质询记录。</p>
   const traces = rawPlannerInput.recent_reasoning_traces.filter((t: any) => t.stage === 'scientific_questioner')
   
@@ -110,29 +166,31 @@ function ScientificQuestioningDetail({ rawPlannerInput }: { rawPlannerInput: any
           <div className="trace-card__header">
             <strong>质询记录 {idx + 1}</strong>
           </div>
-          <p className="trace-card__summary">{t.summary}</p>
+          <p className="trace-card__summary">{displayText(t.summary)}</p>
         </div>
       ))}
     </div>
   )
 }
 
-function HypothesisTreeDetail({ rawTree }: { rawTree: any }) {
+function HypothesisTreeDetail({ rawTree, displayText }: { rawTree: any; displayText: (text?: string) => string }) {
   if (!rawTree || !rawTree.nodes) return <p>暂无假设树数据。</p>
   return (
     <div className="tree-container">
-      {(Array.isArray(rawTree.nodes) ? rawTree.nodes : Object.values(rawTree.nodes)).map((n: any) => {
+      {(Array.isArray(rawTree.nodes) ? rawTree.nodes : Object.values(rawTree.nodes)).map((n: any, nodeIndex: number) => {
         const nodeId = n.hypothesis_id ?? n.id ?? 'H_unknown'
-        const nodeLabel = n.statement ?? n.label ?? '未命名假设'
-        const depth = Math.max(0, (nodeId.match(/_/g)?.length || 0) - 1)
+        const rawStatement = n.statement ?? n.label ?? ''
+        const nodeLabel = displayText(rawStatement) || `假设 ${nodeIndex + 1}`
+        const depth = Math.max(0, Number(n.level ?? 1) - 1)
         const indent = Math.max(0, depth * 40);
         return (
           <div key={nodeId} className="tree-node" style={{ marginLeft: `${indent}px` }}>
             <div className={`tree-node__card tree-node__card--${n.status}`}>
-              <strong>{nodeId}</strong>: {nodeLabel}
+              <strong>{nodeIndex === 0 ? '主假设' : `假设 ${nodeIndex + 1}`}</strong>
+              <span className="tree-node__statement">{nodeLabel}</span>
               <div className="tree-node__meta">
                 <span>支持度: {Number(n.support_score || 0).toFixed(2)}</span>
-                <span>状态: {formatCodeLabel(n.status ?? 'observing')}</span>
+                <span>状态: {hypothesisNodeStatusLabel(n.status, '状态待更新')}</span>
               </div>
             </div>
           </div>
@@ -142,46 +200,30 @@ function HypothesisTreeDetail({ rawTree }: { rawTree: any }) {
   )
 }
 
-function CandidateExperimentDetail({ rawExperiments }: { rawExperiments: any }) {
+function CandidateExperimentDetail({
+  rawExperiments,
+  rawTree,
+  rawUncertainties,
+  displayText,
+}: {
+  rawExperiments: any
+  rawTree: any
+  rawUncertainties: any
+  displayText: (text?: string) => string
+}) {
   const candidates = filterSelectableCandidateExperiments(rawExperiments?.candidates ?? [])
   if (candidates.length === 0) return <p>暂无可审批的区分性候选实验数据。</p>
   return (
-    <div className="matrix-container">
-      {candidates.map((e: any, index: number) => (
-        <div
-          key={e.experiment_id ?? `candidate-${index}`}
-          className={`matrix-card ${index === 0 ? 'matrix-card--recommended' : ''}`}
-        >
-          <div className="matrix-card__header">
-            <strong>{e.experiment_id ?? `候选实验 ${index + 1}`}</strong>
-            {index === 0 ? <span className="badge">推荐</span> : null}
-          </div>
-          <p>{e.scientific_question ?? e.purpose ?? '暂无实验说明'}</p>
-          <div className="matrix-card__metrics">
-            <span>IG: {Number(e.estimated_information_gain?.value ?? 0).toFixed(2)}</span>
-            <span>PG: {Number(e.estimated_performance_gain?.value ?? 0).toFixed(2)}</span>
-            <span>成本: {Number(e.estimated_cost?.value ?? 0).toFixed(2)}</span>
-            <span>U(E): {Number(e.utility_score ?? 0).toFixed(2)}</span>
-          </div>
-          <div className="matrix-card__footnote">
-            模式：{e.type === 'baseline_benchmark' ? '基线实验（单组）' : '区分性对照实验'}
-          </div>
-          <div className="matrix-card__footnote">
-            对照组：{e.type === 'baseline_benchmark' ? '不设置对照组' : Array.isArray(e.design?.control) && e.design.control.length > 0 ? e.design.control.join(', ') : '未配置'}
-          </div>
-          <div className="matrix-card__footnote">
-            实验组：{Array.isArray(e.design?.treatment) && e.design.treatment.length > 0 ? e.design.treatment.join(', ') : '未配置'}
-          </div>
-          {e.tested_hypotheses?.length ? (
-            <div className="matrix-card__footnote">关联假设：{e.tested_hypotheses.slice(0, 3).join(', ')}</div>
-          ) : null}
-        </div>
-      ))}
-    </div>
+    <CandidateExperimentTable
+      candidates={candidates}
+      treeNodes={rawTree?.nodes ?? []}
+      uncertaintyRecords={rawUncertainties?.records ?? []}
+      displayText={displayText}
+    />
   )
 }
 
-function ApprovalDetail({ rawLog }: { rawLog: any }) {
+function ApprovalDetail({ rawLog, rawTree, displayText }: { rawLog: any; rawTree: any; displayText: (text?: string) => string }) {
   if (!rawLog || !rawLog.decisions) return <p>暂无审批记录。</p>
   const requestByRound = new Map<number, any>()
   const approvalByRound = new Map<number, any>()
@@ -238,14 +280,14 @@ function ApprovalDetail({ rawLog }: { rawLog: any }) {
           {request.details?.evaluation_summary ? (
             <div className="approval-compare-mini">
               <div className="approval-compare-mini__metrics">
-                <span>基线相关性 {Number(request.details.evaluation_summary.baseline_pearson_r ?? 0).toFixed(4)}</span>
-                <span>实验后相关性 {Number(request.details.evaluation_summary.treatment_pearson_r ?? 0).toFixed(4)}</span>
+                <span>对照组相关性 {Number(request.details.evaluation_summary.baseline_pearson_r ?? 0).toFixed(4)}</span>
+                <span>实验组相关性 {Number(request.details.evaluation_summary.treatment_pearson_r ?? 0).toFixed(4)}</span>
                 <span>改善幅度 {Number(request.details.evaluation_summary.delta_pearson_r ?? 0).toFixed(4)}</span>
               </div>
               <ul className="detail-list">
                 {(request.details.hypothesis_assessments ?? []).slice(0, 4).map((item: any) => (
                   <li key={item.hypothesis_id}>
-                    {item.hypothesis_id}：支持度从 {Number(item.support_before ?? 0).toFixed(3)} 调整到 {Number(item.support_after ?? 0).toFixed(3)}
+                    {statementLabel(rawTree, [item.hypothesis_id], displayText)}：支持度从 {Number(item.support_before ?? 0).toFixed(3)} 调整到 {Number(item.support_after ?? 0).toFixed(3)}
                   </li>
                 ))}
               </ul>
@@ -274,26 +316,32 @@ function ApprovalDetail({ rawLog }: { rawLog: any }) {
   )
 }
 
-function UncertaintyDetail({ rawUncertainties }: { rawUncertainties: any }) {
+function UncertaintyDetail({
+  rawUncertainties,
+  rawTree,
+  displayText,
+}: {
+  rawUncertainties: any
+  rawTree: any
+  displayText: (text?: string) => string
+}) {
   if (!rawUncertainties || !rawUncertainties.records) return <p>暂无不确定性数据。</p>
   const activeRecords = rawUncertainties.records.filter((r: any) => r.status === 'active')
-  
+  const nodeById = new Map<string, any>()
+  for (const node of rawTree?.nodes ?? []) {
+    if (node.hypothesis_id) {
+      nodeById.set(node.hypothesis_id, node)
+    }
+  }
+  const hypothesisLabel = (id?: string) => {
+    if (!id) {
+      return '--'
+    }
+    const node = nodeById.get(id)
+    return node?.display_hypothesis_id || (node?.level ? `H${node.level}` : id)
+  }
   return (
-    <div className="uncertainty-container">
-      {activeRecords.map((u: any) => (
-        <div key={u.uncertainty_id} className="uncertainty-card">
-          <div className="uncertainty-card__header">
-            <strong>{u.uncertainty_id}</strong>
-            <span className={`badge badge--${u.priority}`}>{u.priority}</span>
-          </div>
-          <p className="uncertainty-card__question">{u.question}</p>
-          <div className="uncertainty-card__meta">
-            <span>状态: {formatCodeLabel(u.resolution_status)}</span>
-            {u.resolving_experiment && <span>目标实验: {u.resolving_experiment}</span>}
-          </div>
-        </div>
-      ))}
-    </div>
+    <UncertaintyQueueList records={activeRecords} displayText={displayText} hypothesisLabel={hypothesisLabel} />
   )
 }
 
@@ -307,11 +355,11 @@ function EvaluationDetail({ rawPlannerInput }: { rawPlannerInput: any }) {
         <h3>实验指标对比</h3>
         <div className="metrics-grid">
           <div className="metric-box">
-            <span className="metric-box__label">基线相关性</span>
+            <span className="metric-box__label">对照组相关性</span>
             <span className="metric-box__value">{Number(summary.baseline_pearson_r || 0).toFixed(4)}</span>
           </div>
           <div className="metric-box">
-            <span className="metric-box__label">实验后相关性</span>
+            <span className="metric-box__label">实验组相关性</span>
             <span className="metric-box__value">{Number(summary.treatment_pearson_r || 0).toFixed(4)}</span>
           </div>
           <div className="metric-box metric-box--highlight">
@@ -374,7 +422,19 @@ function ExperimentExecutionDetail({ rawExperimentMemory }: { rawExperimentMemor
   )
 }
 
-function WritebackDetail({ rawPlannerInput, rawProcess }: { rawPlannerInput: any; rawProcess: any }) {
+function WritebackDetail({
+  rawPlannerInput,
+  rawProcess,
+  rawTree,
+  rawUncertainties,
+  displayText,
+}: {
+  rawPlannerInput: any
+  rawProcess: any
+  rawTree: any
+  rawUncertainties: any
+  displayText: (text?: string) => string
+}) {
   if (!rawPlannerInput) return <p>暂无状态回写记录。</p>
   
   return (
@@ -393,7 +453,7 @@ function WritebackDetail({ rawPlannerInput, rawProcess }: { rawPlannerInput: any
           <ul className="rag-list">
             {rawPlannerInput.recent_hypothesis_assessments.map((h: any, idx: number) => (
               <li key={idx} className="rag-list__item">
-                <strong>{h.hypothesis_id}：</strong> 支持度从 {h.support_before.toFixed(2)} 调整到 {h.support_after.toFixed(2)}，当前状态为 {formatCodeLabel(h.status)}
+                <strong>{statementLabel(rawTree, [h.hypothesis_id], displayText)}：</strong> 支持度从 {h.support_before.toFixed(2)} 调整到 {h.support_after.toFixed(2)}，当前状态为 {formatCodeLabel(h.status)}
               </li>
             ))}
           </ul>
@@ -406,7 +466,7 @@ function WritebackDetail({ rawPlannerInput, rawProcess }: { rawPlannerInput: any
           <ul className="rag-list">
             {rawPlannerInput.recent_disagreement_updates.map((u: any, idx: number) => (
               <li key={idx} className="rag-list__item">
-                <strong>{u.uncertainty_id}：</strong> 分歧跨度从 {u.support_span_before.toFixed(3)} 调整到 {u.support_span_after.toFixed(3)}，当前状态为 {formatCodeLabel(u.resolution_status)}
+                <strong>{uncertaintyLabel(rawUncertainties, u.uncertainty_id, displayText)}：</strong> 分歧跨度从 {u.support_span_before.toFixed(3)} 调整到 {u.support_span_after.toFixed(3)}，当前状态为 {formatCodeLabel(u.resolution_status)}
               </li>
             ))}
           </ul>
@@ -439,6 +499,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
 
   const node = round?.nodes.find((item) => item.id === nodeId) ?? round?.nodes[0] ?? null
   const snapshot = data?.snapshot
+  const displayText = useMemo(() => buildDisplayMapper(snapshot?.plannerInput), [snapshot?.plannerInput])
 
   function goToRelatedPage() {
     if (node?.relatedPage) {
@@ -488,7 +549,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Task Definition</span>
                     <h2>科学问题与任务约束</h2>
-                    <QuestionDetail rawTask={snapshot?.task} />
+                    <QuestionDetail rawTask={snapshot?.task} displayText={displayText} />
                   </section>
                 )}
 
@@ -496,7 +557,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Knowledge Injection</span>
                     <h2>RAG 知识库检索</h2>
-                    <KnowledgeDetail rawPlannerInput={snapshot?.plannerInput} />
+                    <KnowledgeDetail rawPlannerInput={snapshot?.plannerInput} displayText={displayText} />
                   </section>
                 )}
 
@@ -504,7 +565,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Scientific Questioning</span>
                     <h2>科学质询与分歧识别</h2>
-                    <ScientificQuestioningDetail rawPlannerInput={snapshot?.plannerInput} />
+                    <ScientificQuestioningDetail rawPlannerInput={snapshot?.plannerInput} displayText={displayText} />
                   </section>
                 )}
 
@@ -512,7 +573,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Hypothesis Tree</span>
                     <h2>科学假设树</h2>
-                    <HypothesisTreeDetail rawTree={snapshot?.hypothesisTree} />
+                    <HypothesisTreeDetail rawTree={snapshot?.hypothesisTree} displayText={displayText} />
                   </section>
                 )}
 
@@ -520,7 +581,11 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Uncertainties</span>
                     <h2>不确定性队列</h2>
-                    <UncertaintyDetail rawUncertainties={snapshot?.uncertainties} />
+                    <UncertaintyDetail
+                      rawUncertainties={snapshot?.uncertainties}
+                      rawTree={snapshot?.hypothesisTree}
+                      displayText={displayText}
+                    />
                   </section>
                 )}
                 
@@ -528,7 +593,12 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">Candidate Matrix</span>
                     <h2>候选实验矩阵</h2>
-                    <CandidateExperimentDetail rawExperiments={snapshot?.candidateExperiments} />
+                    <CandidateExperimentDetail
+                      rawExperiments={snapshot?.candidateExperiments}
+                      rawTree={snapshot?.hypothesisTree}
+                      rawUncertainties={snapshot?.uncertainties}
+                      displayText={displayText}
+                    />
                   </section>
                 )}
 
@@ -536,7 +606,7 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                   <section className="detail-card detail-card--wide">
                     <span className="detail-card__eyebrow">PI 审批</span>
                     <h2>人工审批记录</h2>
-                    <ApprovalDetail rawLog={snapshot?.decisionLog} />
+                    <ApprovalDetail rawLog={snapshot?.decisionLog} rawTree={snapshot?.hypothesisTree} displayText={displayText} />
                   </section>
                 )}
 
@@ -550,8 +620,8 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
 
                 {node.id === 'A' && (
                   <section className="detail-card detail-card--wide">
-                    <span className="detail-card__eyebrow">分析评价</span>
-                    <h2>实验分析评价</h2>
+                    <span className="detail-card__eyebrow">实验指标与对照解释</span>
+                    <h2>对照组/实验组指标与推理对照</h2>
                     <EvaluationDetail rawPlannerInput={snapshot?.plannerInput} />
                   </section>
                 )}
@@ -563,6 +633,9 @@ export function NodeDetailPage({ roundId, nodeId }: { roundId: string, nodeId: s
                     <WritebackDetail
                       rawPlannerInput={snapshot?.plannerInput}
                       rawProcess={snapshot?.process}
+                      rawTree={snapshot?.hypothesisTree}
+                      rawUncertainties={snapshot?.uncertainties}
+                      displayText={displayText}
                     />
                   </section>
                 )}

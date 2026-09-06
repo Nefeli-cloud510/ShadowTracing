@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -11,11 +12,13 @@ from core.unified_schema import (
     CandidateExperiment,
     CandidateExperimentSet,
     DataDictionary,
+    DecisionLog,
     EstimatedValue,
     ExperimentDesign,
     ExperimentMemoryState,
     HypothesisPrediction,
     HypothesisTreeState,
+    MAX_ACTIVE_UNCERTAINTIES,
     PrioritizedUncertainty,
     PriorityFactors,
     RejectedCandidate,
@@ -26,8 +29,66 @@ from core.unified_schema import (
     UncertaintyRecord,
     UncertaintyState,
 )
+from core.hypothesis_generation import HypothesisGenerationService
+from core.experiment_planner_llm import CandidateExperimentDesignerLLM, CandidateExperimentWriterLLM
+from core.runtime_config import (
+    get_bailian_model_prices,
+    get_llm_model_for_role,
+    get_runtime_setting,
+)
+from core.variable_semantic_service import VariableSemanticService
 
 EPSILON = 1e-8
+
+
+DEFAULT_LLM_INPUT_PRICE = 0.80
+DEFAULT_LLM_OUTPUT_PRICE = 2.70
+
+
+WINDOW_PRESETS: tuple[dict[str, int], ...] = (
+    {"forecast_horizon_days": 3, "past_lag_days": 3, "window_size": 14},
+    {"forecast_horizon_days": 3, "past_lag_days": 10, "window_size": 10},
+    {"forecast_horizon_days": 5, "past_lag_days": 7, "window_size": 21},
+    {"forecast_horizon_days": 7, "past_lag_days": 5, "window_size": 28},
+)
+
+IG_METRIC_PRIORITY: tuple[str, ...] = ("Skill", "Pearson_r", "RMSE", "MAE", "R2")
+
+FROZEN_TREE_EVENTS = frozenset(
+    {
+        "hypothesis_tree_confirmed",
+        "scientific_questioning_completed",
+    }
+)
+
+
+def _tree_is_frozen_for(
+    tree: HypothesisTreeState,
+    target_round: int | None,
+    decision_log: DecisionLog | None = None,
+) -> bool:
+    """A human-confirmed tree is authoritative and must not be regenerated.
+
+    The in-tree confirmation event is the primary signal; the persisted decision
+    log is a durable fallback so post-processing (state-machine reconciliation,
+    metadata refresh, etc.) can never silently un-freeze the tree.
+    """
+    latest = tree.latest_update
+    expected_round = max(int(target_round if target_round is not None else tree.current_round or 0), 0)
+    if (
+        latest is not None
+        and latest.event in FROZEN_TREE_EVENTS
+        and latest.round >= expected_round
+    ):
+        return True
+    if decision_log is not None:
+        confirmed_rounds = [
+            int(entry.round_id or 0)
+            for entry in decision_log.decisions
+            if entry.decision_type == "hypothesis_tree_confirmed"
+        ]
+        return bool(confirmed_rounds) and max(confirmed_rounds) >= expected_round
+    return False
 
 
 @dataclass(frozen=True)
@@ -49,19 +110,33 @@ def _normalize_design_features(features: list[str]) -> list[str]:
     return _unique_preserve_order([item.strip() for item in features if item and item.strip()])
 
 
+def _design_arm_time_differs(design: ExperimentDesign) -> bool:
+    """True when the two arms differ by time window even if raw features match."""
+    return (
+        (design.control_lag_days is not None or design.treatment_lag_days is not None)
+        and design.control_lag_days != design.treatment_lag_days
+    ) or (
+        (design.control_forecast_horizon_days is not None or design.treatment_forecast_horizon_days is not None)
+        and design.control_forecast_horizon_days != design.treatment_forecast_horizon_days
+    )
+
+
 def _validate_candidate_design(candidate: CandidateExperiment) -> None:
     candidate.design.control = _normalize_design_features(candidate.design.control)
     candidate.design.treatment = _normalize_design_features(candidate.design.treatment)
     if _is_baseline_candidate(candidate):
         if not candidate.design.treatment:
-            raise ValueError("基线实验至少需要保留一组基线变量。")
+            raise ValueError("对照组实验至少需要保留一组对照组变量。")
         candidate.design.control = []
         if "experiment_mode:baseline_single_arm" not in candidate.design.notes:
             candidate.design.notes.append("experiment_mode:baseline_single_arm")
         return
     if not candidate.design.control or not candidate.design.treatment:
         raise ValueError("区分性实验必须同时提供对照组与实验组变量。")
-    if set(candidate.design.control) == set(candidate.design.treatment):
+    if (
+        set(candidate.design.control) == set(candidate.design.treatment)
+        and not _design_arm_time_differs(candidate.design)
+    ):
         raise ValueError(DIFFERENTIATING_EXPERIMENT_ERROR)
 
 
@@ -72,6 +147,7 @@ class UncertaintyPrioritizer:
         self,
         uncertainty_state: UncertaintyState,
         hypothesis_tree: HypothesisTreeState,
+        target_round: int | None = None,
     ) -> UncertaintyPriorityQueue:
         _refresh_uncertainty_disagreement(uncertainty_state, hypothesis_tree)
         node_index = hypothesis_tree.node_index()
@@ -111,11 +187,25 @@ class UncertaintyPrioritizer:
                     question=record.question,
                     priority_score=priority_score,
                     status=record.status,
-                    estimated_resolution_round=uncertainty_state.current_round + 1,
+                    estimated_resolution_round=(
+                        target_round
+                        if target_round is not None
+                        else uncertainty_state.current_round + 1
+                    ),
                 )
             )
 
         queue = sorted(queue, key=lambda item: item.priority_score, reverse=True)
+        seen_ids: set[str] = set()
+        bounded_queue: list[PrioritizedUncertainty] = []
+        for item in queue:
+            if item.uncertainty_id in seen_ids:
+                continue
+            seen_ids.add(item.uncertainty_id)
+            bounded_queue.append(item)
+            if len(bounded_queue) >= MAX_ACTIVE_UNCERTAINTIES:
+                break
+        queue = bounded_queue
         uncertainty_state.priority_queue = UncertaintyPriorityQueue(
             last_updated=datetime.now(),
             current_round=uncertainty_state.current_round,
@@ -138,129 +228,75 @@ class CandidateExperimentGenerator:
         uncertainty_state: UncertaintyState,
         experiment_memory: ExperimentMemoryState | None = None,
         planning_context: PlanningContext | None = None,
-        limit: int = 3,
+        limit: int | None = None,
+        target_round: int | None = None,
     ) -> CandidateExperimentSet:
+        if limit is None:
+            budget = task.payload.constraints.resource_budget
+            candidate_budget = (
+                budget.max_candidates
+                if budget and budget.max_candidates
+                else task.payload.constraints.max_experiments_per_round or 6
+            )
+            limit = max(min(candidate_budget, 8), 3)
         planning_context = planning_context or PlanningContext()
+        next_round = (
+            target_round
+            if target_round is not None
+            else uncertainty_state.current_round + 1
+        )
+        semantic = VariableSemanticService.from_data_dictionary(data_dictionary)
         _refresh_uncertainty_disagreement(uncertainty_state, hypothesis_tree)
         variables = task.payload.research_question.variables
         target = task.payload.research_question.target
         primary_x = variables.x if variables else (data_dictionary.feature_candidates[0] if data_dictionary.feature_candidates else target)
         mediator_candidates = variables.m_candidates if variables else []
         feature_pool = [item for item in data_dictionary.feature_candidates if item != primary_x]
-        control_base = _unique_preserve_order(mediator_candidates + feature_pool[:2])
+        control_base = _unique_preserve_order(mediator_candidates or feature_pool[:3])
         queue = uncertainty_state.priority_queue or UncertaintyPriorityQueue(
             last_updated=datetime.now(),
             current_round=uncertainty_state.current_round,
             queue=[],
         )
-        top_uncertainties = queue.top_uncertainties(limit=limit)
         node_index = hypothesis_tree.node_index()
+        simple_focus_override = bool(
+            planning_context.prefer_simple_design and planning_context.preferred_features
+        )
         candidates: list[CandidateExperiment] = []
+        uncertainty_limit = max(limit, 1)
+        if simple_focus_override:
+            uncertainty_limit = max(uncertainty_limit, 1)
+        uncertainty_candidates = self._build_uncertainty_candidates(
+            uncertainty_state=uncertainty_state,
+            uncertainty_queue=queue,
+            hypothesis_tree=hypothesis_tree,
+            node_index=node_index,
+            task=task,
+            data_dictionary=data_dictionary,
+            planning_context=planning_context,
+            primary_x=primary_x,
+            target=target,
+            mediator_candidates=mediator_candidates,
+            feature_pool=feature_pool,
+            semantic=semantic,
+            limit=uncertainty_limit,
+            experiment_memory=experiment_memory,
+            next_round=next_round,
+        )
+        candidates.extend(uncertainty_candidates)
         rejected_candidates: list[RejectedCandidate] = []
-        top_uncertainties = _rank_uncertainties_with_feedback(top_uncertainties, uncertainty_state, planning_context)
-
-        for offset, item in enumerate(top_uncertainties, start=1):
-            record = uncertainty_state.record_index().get(item.uncertainty_id)
-            if record is None:
-                continue
-
-            design = _design_from_uncertainty(record, target, primary_x, control_base, planning_context, node_index)
-            rationale_context = _candidate_rationale_context(record, node_index)
-            candidate = CandidateExperiment(
-                experiment_id=f"E_R{uncertainty_state.current_round + 1:02d}_{offset:02d}",
-                type=_candidate_type(record),
-                purpose=_candidate_purpose(record, rationale_context),
-                scientific_question=record.question,
-                tested_hypotheses=record.related_hypotheses,
-                related_uncertainties=[record.uncertainty_id],
-                disagreement_context={
-                    record.uncertainty_id: {
-                        hypothesis_id: disagreement.model_copy(deep=True)
-                        if hasattr(disagreement, "model_copy")
-                        else disagreement
-                        for hypothesis_id, disagreement in record.disagreement.items()
-                    }
-                },
-                hypothesis_source_context=_candidate_source_context(record, node_index),
-                design=design,
-                hypothesis_predictions=_build_hypothesis_predictions(record, node_index),
-                distinguishing_insight=_distinguishing_insight(record, rationale_context, primary_x),
-                estimated_information_gain=EstimatedValue(
-                    value=min(1.0, item.priority_score),
-                    rationale=_information_gain_rationale(record, rationale_context),
-                ),
-                estimated_performance_gain=EstimatedValue(
-                    value=_estimate_performance_gain(record, primary_x, experiment_memory),
-                    rationale=_performance_gain_rationale(record, primary_x, experiment_memory),
-                ),
-                estimated_risk=EstimatedValue(
-                    value=_estimate_candidate_risk(record),
-                    rationale="复杂滞后或中介检验通常风险更高。",
-                ),
-                estimated_cost=EstimatedValue(
-                    value=_estimate_candidate_cost(record),
-                    rationale="更多变量和滞后窗口通常带来更高执行成本。",
-                ),
-                requires_human_review=True,
-                novelty=_build_candidate_novelty(planning_context),
-            )
-            candidate.design.notes.extend(_planning_notes(planning_context))
-            candidate.design.notes.extend(_rationale_design_notes(record, rationale_context))
-            try:
-                _validate_candidate_design(candidate)
-            except ValueError as exc:
-                rejected_candidates.append(
-                    RejectedCandidate(
-                        experiment_id=candidate.experiment_id,
-                        reason=str(exc),
-                    )
-                )
-                continue
+        for candidate in candidates:
             _annotate_candidate_estimates(
                 candidate=candidate,
                 task=task,
                 data_dictionary=data_dictionary,
                 hypothesis_tree=hypothesis_tree,
                 experiment_memory=experiment_memory,
-                current_round=uncertainty_state.current_round + 1,
+                current_round=next_round,
             )
-            candidates.append(candidate)
-
-        if len(candidates) < 3:
-            fallback_candidate = CandidateExperiment(
-                experiment_id=f"E_R{uncertainty_state.current_round + 1:02d}_S1",
-                type="sensitivity_probe",
-                purpose=f"test lag sensitivity of {primary_x}",
-                scientific_question=f"{primary_x} 的时间滞后设定是否影响实验结论稳定性？",
-                tested_hypotheses=_collect_hypothesis_ids(top_uncertainties, uncertainty_state),
-                related_uncertainties=[item.uncertainty_id for item in top_uncertainties[:2]],
-                design=ExperimentDesign(
-                    target=target,
-                    control=control_base,
-                    treatment=_unique_preserve_order(control_base + [primary_x]),
-                    lags={primary_x: [1, 2, 3]},
-                    notes=["fallback sensitivity probe to ensure candidate diversity"],
-                ),
-                requires_human_review=True,
-                distinguishing_insight=(
-                    f"通过时滞敏感性实验，区分这些假设来源是否只是时间设定差异造成，"
-                    f"并继续检验 {primary_x} 的稳健性。"
-                ),
-                novelty="fallback candidate to satisfy minimum diversity",
-            )
-            fallback_candidate.design.notes.append("hypothesis_triggers:fallback_sensitivity_probe")
-            _validate_candidate_design(fallback_candidate)
-            _annotate_candidate_estimates(
-                candidate=fallback_candidate,
-                task=task,
-                data_dictionary=data_dictionary,
-                hypothesis_tree=hypothesis_tree,
-                experiment_memory=experiment_memory,
-                current_round=uncertainty_state.current_round + 1,
-            )
-            candidates.append(fallback_candidate)
 
         for candidate in candidates:
+            _apply_semantic_to_candidate_display(candidate, semantic, node_index)
             _validate_candidate_design(candidate)
             if candidate.estimated_information_gain is None:
                 _annotate_candidate_estimates(
@@ -269,7 +305,7 @@ class CandidateExperimentGenerator:
                     data_dictionary=data_dictionary,
                     hypothesis_tree=hypothesis_tree,
                     experiment_memory=experiment_memory,
-                    current_round=uncertainty_state.current_round + 1,
+                    current_round=next_round,
                 )
 
         if experiment_memory:
@@ -286,13 +322,170 @@ class CandidateExperimentGenerator:
                     )
 
         return CandidateExperimentSet(
-            round=uncertainty_state.current_round + 1,
+            round=next_round,
             generated_at=datetime.now(),
             candidates=candidates,
             rejected_candidates=rejected_candidates,
             minimum_required=3,
             note=_candidate_set_note(len(candidates), planning_context),
         )
+
+    def _build_uncertainty_candidates(
+        self,
+        *,
+        uncertainty_state: UncertaintyState,
+        uncertainty_queue: UncertaintyPriorityQueue,
+        hypothesis_tree: HypothesisTreeState,
+        node_index: dict[str, object],
+        task: ScientificTask,
+        data_dictionary: DataDictionary,
+        planning_context: PlanningContext,
+        primary_x: str,
+        target: str,
+        mediator_candidates: list[str],
+        feature_pool: list[str],
+        semantic: VariableSemanticService,
+        experiment_memory: ExperimentMemoryState | None = None,
+        limit: int,
+        next_round: int,
+    ) -> list[CandidateExperiment]:
+        """Generate one candidate per uncertainty so every open scientific
+        question independently drives an experiment."""
+        if limit <= 0:
+            return []
+
+        control_base = _unique_preserve_order(mediator_candidates or feature_pool[:3])
+        record_index = uncertainty_state.record_index()
+        ranked_items = _rank_uncertainties_with_feedback(
+            uncertainty_queue.top_uncertainties(limit=max(limit * 4, 12)),
+            uncertainty_state,
+            planning_context,
+        )
+        candidates: list[CandidateExperiment] = []
+        used_signatures = set()
+
+        for item in ranked_items:
+            if len(candidates) >= limit:
+                break
+            record = record_index.get(item.uncertainty_id)
+            if record is None or not record.question:
+                continue
+
+            design = _design_from_uncertainty(
+                record=record,
+                target=target,
+                primary_x=primary_x,
+                control_base=control_base,
+                planning_context=planning_context,
+                node_index=node_index,
+                semantic=semantic,
+                feature_pool=feature_pool,
+                used_signatures=used_signatures,
+            )
+            signature = _design_signature(design)
+            if signature in used_signatures:
+                continue
+            used_signatures.add(signature)
+
+            rationale_context = _candidate_rationale_context(record, node_index)
+            tested_hypotheses = _focus_hypothesis_ids(
+                record=record,
+                focus=design.design_focus,
+                node_index=node_index,
+                semantic=semantic,
+            )
+            if not tested_hypotheses:
+                tested_hypotheses = [
+                    hypothesis_id
+                    for hypothesis_id in record.related_hypotheses
+                    if hypothesis_id in node_index
+                ]
+            candidate = CandidateExperiment(
+                experiment_id=f"E_R{next_round:02d}_{len(candidates) + 1:02d}",
+                type=_candidate_type(record),
+                purpose=_candidate_purpose(record, rationale_context),
+                scientific_question=record.question,
+                tested_hypotheses=tested_hypotheses,
+                related_uncertainties=[record.uncertainty_id],
+                disagreement_context={
+                    uncertainty_id: {
+                        hypothesis_id: (
+                            disagreement.model_copy(deep=True)
+                            if hasattr(disagreement, "model_copy")
+                            else disagreement
+                        )
+                        for hypothesis_id, disagreement in record.disagreement.items()
+                    }
+                    for uncertainty_id, item in [(record.uncertainty_id, record)]
+                    if item.disagreement
+                },
+                hypothesis_source_context=_candidate_source_context(record, node_index),
+                design=design,
+                hypothesis_predictions=_build_hypothesis_predictions(
+                    record=record,
+                    node_index=node_index,
+                    design_focus=design.design_focus,
+                    semantic=semantic,
+                ),
+                distinguishing_insight=_distinguishing_insight(
+                    record=record,
+                    rationale_context=rationale_context,
+                    primary_x=primary_x,
+                    focus_feature=design.design_focus,
+                ),
+                estimated_information_gain=EstimatedValue(
+                    value=0.5,
+                    rationale="候选实验基于单条科学不确定性生成，正式估值在评分前统一重算。",
+                ),
+                estimated_performance_gain=EstimatedValue(
+                    value=0.0,
+                    rationale="正式 PG 估值在评分前统一重算。",
+                ),
+                estimated_risk=EstimatedValue(
+                    value=0.4,
+                    rationale="正式风险估值在评分前统一重算。",
+                ),
+                estimated_cost=EstimatedValue(
+                    value=0.35,
+                    rationale="正式成本估值在评分前统一重算。",
+                ),
+                requires_human_review=True,
+                novelty=_build_candidate_novelty(planning_context),
+            )
+            candidate.design.notes.extend(_planning_notes(planning_context))
+            candidate.design.notes.extend(_rationale_design_notes(record, rationale_context))
+            if experiment_memory and len(experiment_memory.entries):
+                preset = WINDOW_PRESETS[(len(experiment_memory.entries) + 1) % len(WINDOW_PRESETS)]
+                window_note = (
+                    "history_evolved_window_preset:axis=uncertainty,"
+                    f"forecast_horizon={preset['forecast_horizon_days']},"
+                    f"past_lag={preset['past_lag_days']},window={preset['window_size']}"
+                )
+            else:
+                preset = WINDOW_PRESETS[0]
+                window_note = (
+                    "initial_window_preset:axis=uncertainty,"
+                    f"forecast_horizon={preset['forecast_horizon_days']},"
+                    f"past_lag={preset['past_lag_days']},window={preset['window_size']}"
+                )
+            candidate.design.window_size = preset["window_size"]
+            candidate.design.past_lag_days = preset["past_lag_days"]
+            candidate.design.forecast_horizon_days = preset["forecast_horizon_days"]
+            candidate.design.control_lag_days = candidate.design.control_lag_days or preset["past_lag_days"]
+            candidate.design.treatment_lag_days = candidate.design.treatment_lag_days or preset["past_lag_days"]
+            candidate.design.control_forecast_horizon_days = (
+                candidate.design.control_forecast_horizon_days or preset["forecast_horizon_days"]
+            )
+            candidate.design.treatment_forecast_horizon_days = (
+                candidate.design.treatment_forecast_horizon_days or preset["forecast_horizon_days"]
+            )
+            candidate.design.notes.append(window_note)
+            try:
+                _validate_candidate_design(candidate)
+            except ValueError as exc:
+                raise ValueError(f"{candidate.experiment_id} 设计无效: {exc}") from exc
+            candidates.append(candidate)
+        return candidates
 
 
 class UtilityScorer:
@@ -306,8 +499,18 @@ class UtilityScorer:
             "delta": 0.10,
         }
 
-    def score(self, candidate_set: CandidateExperimentSet) -> CandidateExperimentSet:
+    def score(
+        self,
+        candidate_set: CandidateExperimentSet,
+        *,
+        experiment_memory: ExperimentMemoryState | None = None,
+    ) -> CandidateExperimentSet:
         beta = 0.0 if candidate_set.round <= 1 else self.weights["beta"]
+        completed_entries = (
+            [entry for entry in experiment_memory.entries if entry.status == "completed"]
+            if experiment_memory
+            else []
+        )
         for candidate in candidate_set.candidates:
             ig = candidate.estimated_information_gain.value if candidate.estimated_information_gain else 0.0
             pg = candidate.estimated_performance_gain.value if candidate.estimated_performance_gain else 0.0
@@ -319,12 +522,47 @@ class UtilityScorer:
                 - self.weights["gamma"] * risk
                 - self.weights["delta"] * cost
             )
+            if candidate.type == "validation_followup":
+                utility += 0.08
+            if any(
+                str(note).startswith("human_feedback_focus_single_feature:")
+                for note in candidate.design.notes
+            ):
+                utility += 0.15
             same_design = candidate.design.control == candidate.design.treatment
             if same_design and not _is_baseline_candidate(candidate):
                 utility = min(utility, 0.12)
                 candidate.design.notes.append("selection_penalty:control_equals_treatment")
+            if completed_entries:
+                best_similarity = 0.0
+                best_entry_id = None
+                for entry in completed_entries:
+                    similarity = _historical_similarity(candidate, entry)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_entry_id = entry.experiment_id
+                if best_similarity >= 0.6 and best_entry_id:
+                    penalty = 0.04 + 0.05 * min((best_similarity - 0.6) / 0.4, 1.0)
+                    utility -= penalty
+                    note = (
+                        f"selection_penalty:executed_history_similarity:{best_similarity:.4f}:"
+                        f"similar_to:{best_entry_id}"
+                    )
+                    if note not in candidate.design.notes:
+                        candidate.design.notes.append(note)
             candidate.utility_score = round(min(max(utility, 0.0), 1.0), 4)
-        candidate_set.candidates.sort(key=lambda item: item.utility_score or 0.0, reverse=True)
+        # Human-mandated single-feature candidates stay above equal-utility alternatives.
+        candidate_set.candidates.sort(
+            key=lambda item: (
+                0
+                if any(
+                    str(note).startswith("human_feedback_focus_single_feature:")
+                    for note in item.design.notes
+                )
+                else 1,
+                -(item.utility_score or 0.0),
+            ),
+        )
         return candidate_set
 
 
@@ -337,11 +575,15 @@ class DecisionLayerService:
         prioritizer: UncertaintyPrioritizer | None = None,
         generator: CandidateExperimentGenerator | None = None,
         scorer: UtilityScorer | None = None,
+        experiment_designer: CandidateExperimentDesignerLLM | None = None,
+        experiment_writer: CandidateExperimentWriterLLM | None = None,
     ) -> None:
         self.repository = repository
         self.prioritizer = prioritizer or UncertaintyPrioritizer()
         self.generator = generator or CandidateExperimentGenerator()
         self.scorer = scorer or UtilityScorer()
+        self.experiment_designer = experiment_designer or CandidateExperimentDesignerLLM()
+        self.experiment_writer = experiment_writer or CandidateExperimentWriterLLM()
 
     def build_candidate_plan(
         self,
@@ -350,13 +592,36 @@ class DecisionLayerService:
         data_dictionary: DataDictionary,
         planning_feedback: str | None = None,
         planner_input: ReasoningPlannerInput | None = None,
+        target_round: int | None = None,
     ) -> CandidateExperimentSet:
         tree = self.repository.load_hypothesis_tree()
         uncertainties = self.repository.load_uncertainties()
         experiment_memory = self.repository.load_experiment_memory()
+        resolved_round = target_round or (planner_input.next_round_id if planner_input else None)
+        decision_log = self.repository.load_decision_log()
+        if not _tree_is_frozen_for(tree, resolved_round, decision_log):
+            proposals = list(planner_input.llm_hypothesis_proposals) if planner_input else []
+            if not tree.nodes and proposals:
+                generation = HypothesisGenerationService().build_tree(
+                    task=task,
+                    data_dictionary=data_dictionary,
+                    uncertainties=uncertainties,
+                    planner_input=planner_input,
+                    existing_tree=tree,
+                    current_round=tree.current_round,
+                )
+                tree = generation.tree
+                uncertainties = uncertainties.model_copy(
+                    update={"records": list(generation.updated_uncertainties)}
+                )
+                self.repository.save_hypothesis_tree(tree)
         merged_feedback = planning_feedback or (planner_input.merged_guidance_text() if planner_input else None)
         planning_context = _build_planning_context(merged_feedback, data_dictionary)
-        prioritized = self.prioritizer.prioritize(uncertainties, tree)
+        prioritized = self.prioritizer.prioritize(
+            uncertainties,
+            tree,
+            target_round=resolved_round,
+        )
         candidates = self.generator.generate(
             task=task,
             data_dictionary=data_dictionary,
@@ -364,8 +629,49 @@ class DecisionLayerService:
             uncertainty_state=uncertainties,
             experiment_memory=experiment_memory,
             planning_context=planning_context,
+            target_round=resolved_round,
         )
-        scored = self.scorer.score(candidates)
+        semantic_service = VariableSemanticService.from_data_dictionary(data_dictionary)
+        node_index = tree.node_index()
+        uncertainty_index = uncertainties.record_index()
+        variables = task.payload.research_question.variables
+        primary_x = variables.x if variables else (
+            data_dictionary.feature_candidates[0]
+            if data_dictionary.feature_candidates
+            else task.payload.research_question.target
+        )
+        for candidate in candidates.candidates:
+            record = (
+                uncertainty_index.get(candidate.related_uncertainties[0])
+                if candidate.related_uncertainties
+                else None
+            )
+            self.experiment_designer.design(
+                candidate=candidate,
+                task=task,
+                uncertainty_question=(
+                    record.question if record is not None else candidate.scientific_question
+                ),
+                uncertainty_description=record.description if record is not None else None,
+                semantic_service=semantic_service,
+                node_index=node_index,
+                primary_x=primary_x,
+                round_id=resolved_round or candidates.round,
+            )
+        self.experiment_writer.write_all(
+            candidates=candidates.candidates,
+            task=task,
+            semantic_service=semantic_service,
+            node_index=node_index,
+            round_id=resolved_round or candidates.round,
+        )
+        scored = self.scorer.score(candidates, experiment_memory=experiment_memory)
+        uncertainty_index = uncertainties.record_index()
+        for candidate in scored.candidates:
+            for uncertainty_id in candidate.related_uncertainties:
+                record = uncertainty_index.get(uncertainty_id)
+                if record is not None and not record.resolving_experiment:
+                    record.resolving_experiment = candidate.experiment_id
         uncertainties.priority_queue = prioritized
         self.repository.save_uncertainties(uncertainties)
         self.repository.save_candidate_experiments(scored)
@@ -440,6 +746,131 @@ def _candidate_type(record: UncertaintyRecord) -> str:
     return "distinguishing"
 
 
+def _notes_mining_features(record: UncertaintyRecord) -> list[str]:
+    """Extract explicit feature hints written by uncertainty miners."""
+    if not record.notes or "mining_features:" not in record.notes:
+        return []
+    segment = record.notes.split("mining_features:", 1)[1].split(";", 1)[0]
+    return [item.strip() for item in segment.split(",") if item.strip()]
+
+
+def _uncertainty_design_strategy(
+    record: UncertaintyRecord,
+    text: str,
+    has_non_primary_focus: bool,
+) -> str:
+    """Pick an experiment structure from the uncertainty's scientific signal."""
+    has_lag = any(token in text for token in ("lag", "滞后", "时滞", "跨时间", "stability", "稳定", "窗口"))
+    has_mediator = any(token in text for token in ("mediat", "中介", "through", "via", "路径"))
+    has_independent = any(token in text for token in ("independent", "独立增量", "独立预测"))
+    has_condition = any(
+        token in text
+        for token in (
+            "condition",
+            "conditioned",
+            "branch",
+            "未建模",
+            "约束",
+            "交互",
+            "interaction",
+            "条件路径",
+            "条件分支",
+            "阶段变化",
+        )
+    )
+    has_residual = any(token in text for token in ("residual", "残差", "失败", "failure", "异常", "归因"))
+    is_partial = record.resolution_status == "partially_resolved"
+
+    if is_partial:
+        return "validation_followup"
+    if has_lag:
+        return "lag_stability"
+    if has_residual:
+        return "residual_probe"
+
+    mining_focus_present = bool(_notes_mining_features(record))
+    global_independent = (
+        has_independent
+        and not mining_focus_present
+        and not has_condition
+        and not any(token in text for token in ("分歧", "独立于", "_via_", "hypothesisconflict"))
+    )
+    if global_independent:
+        return "global_incremental"
+    if has_condition:
+        return "conditional_path"
+    if has_independent or has_mediator:
+        return "incremental_beyond_focus"
+    if "null_competition" in text or "competition" in text or "competitive" in text:
+        return "competition_probe"
+    if not has_non_primary_focus:
+        return "global_incremental"
+    return "incremental_beyond_focus"
+
+
+def _build_design_for_strategy(
+    *,
+    strategy: str,
+    focus: str,
+    primary_x: str,
+    target: str,
+    feature_pool: list[str],
+    uncertainty_base_features: list[str] | None = None,
+) -> tuple[ExperimentDesign, str]:
+    """Build a 对照组/实验组 design that isolates ``primary_x``.
+
+    对照组 always exclude the variable under test (``primary_x``);
+    实验组 always add it. ``focus`` only participates in selecting
+    which other features constrain the 对照组, never as the tested variable.
+    """
+    control: list[str]
+    treatment: list[str]
+    lags: dict[str, list[int]] = {}
+
+    by_feature = _resolve_by_feature(feature_pool)
+    baseline_features = list(uncertainty_base_features or [])
+    if not baseline_features:
+        baseline_features = [
+            feature for feature in [by_feature, *feature_pool[:2]]
+            if feature not in {primary_x, target}
+        ]
+    else:
+        baseline_features = [
+            feature for feature in baseline_features
+            if feature not in {primary_x, target}
+        ]
+    control = baseline_features
+    treatment = _unique_preserve_order([*baseline_features, primary_x])
+    lags = {primary_x: [1, 2, 3]} if strategy == "lag_stability" else {}
+
+    return ExperimentDesign(
+        target=target,
+        control=_normalize_design_features(control),
+        treatment=_normalize_design_features(treatment),
+        lags=lags,
+        design_focus=primary_x,
+    ), primary_x
+
+
+def _resolve_by_feature(
+    feature_pool: list[str],
+    mediator_candidates: list[str] | None = None,
+) -> str | None:
+    """Return the raw feature that represents the IMF By path variable."""
+    pool = _unique_preserve_order([*(mediator_candidates or []), *feature_pool])
+    return next(
+        (
+            feature
+            for feature in pool
+            if "by" in _slug(feature)
+            or "行星际磁场" in feature
+            or "BY" in feature
+            or "By" in feature
+        ),
+        None,
+    )
+
+
 def _design_from_uncertainty(
     record: UncertaintyRecord,
     target: str,
@@ -447,70 +878,395 @@ def _design_from_uncertainty(
     control_base: list[str],
     planning_context: PlanningContext,
     node_index: dict[str, object],
+    semantic: VariableSemanticService | None = None,
+    feature_pool: list[str] | None = None,
+    used_signatures: set[
+        tuple[
+            tuple[str, ...],
+            tuple[str, ...],
+            tuple[tuple[str, tuple[int, ...]], ...],
+            tuple[int | None, int | None, int | None, int | None, int | None, int | None, int | None],
+        ]
+    ]
+    | None = None,
 ) -> ExperimentDesign:
-    text = f"{record.question} {record.description}".lower()
-    control = _unique_preserve_order(control_base)
-    treatment = _unique_preserve_order(control + [primary_x])
-    lags: dict[str, list[int]] = {}
-    notes = [f"generated_from:{record.uncertainty_id}"]
+    semantic = semantic or VariableSemanticService()
+    feature_pool = _unique_preserve_order(feature_pool or [primary_x])
+    used_signatures = used_signatures or set()
 
-    if planning_context.preferred_features:
-        focus_feature = planning_context.preferred_features[0]
-        if planning_context.prefer_simple_design:
-            treatment = [focus_feature]
-            notes.append(f"human_feedback_focus_single_feature:{focus_feature}")
-        elif focus_feature not in treatment:
-            treatment = _unique_preserve_order(treatment + [focus_feature])
-            notes.append(f"human_feedback_focus_feature:{focus_feature}")
+    is_partial = record.resolution_status == "partially_resolved"
 
-    if any(token in text for token in ("lag", "滞后", "跨时间", "stability", "稳定")):
-        lags[primary_x] = [1, 2, 3]
-        notes.append("test temporal stability with lag variants")
-    elif any(token in text for token in ("mediat", "中介", "through")):
-        notes.append("compare mediator-enriched baseline vs primary variable treatment")
-    elif any(token in text for token in ("independent", "独立")):
-        notes.append("test whether primary variable adds independent predictive value")
-    else:
-        notes.append("generic distinguishing experiment")
-
-    if record.resolution_status == "partially_resolved":
-        notes.append("validation_followup_for_partially_resolved_disagreement")
-        lags = {}
-        if primary_x not in treatment:
-            treatment = _unique_preserve_order(treatment + [primary_x])
-        notes.append("prefer validation-oriented simpler rerun to confirm leading hypothesis")
-
-    rationale_context = _candidate_rationale_context(record, node_index)
-    if rationale_context["focus_features"]:
-        notes.append(f"rationale_focus_features:{','.join(rationale_context['focus_features'])}")
-    if rationale_context["source_types"]:
-        notes.append(f"rationale_source_types:{','.join(rationale_context['source_types'])}")
-
-    return ExperimentDesign(
+    focus_candidates = _candidate_focus_features(
+        record=record,
+        node_index=node_index,
+        primary_x=primary_x,
         target=target,
-        control=control,
-        treatment=treatment,
-        lags=lags,
-        notes=notes,
+        semantic=semantic,
+        feature_pool=feature_pool,
+    )
+    preferred = _preferred_planning_features(planning_context, semantic, feature_pool)
+    if preferred:
+        focus_candidates = _unique_preserve_order([*preferred, *focus_candidates])
+    focus_order = _unique_preserve_order([*focus_candidates, primary_x, *feature_pool])
+
+    if planning_context.prefer_simple_design and preferred:
+        focus = primary_x
+        design = ExperimentDesign(
+            target=target,
+            control=_normalize_design_features(
+                [item for item in control_base if item != focus]
+            ),
+            treatment=_unique_preserve_order([*control_base, primary_x]),
+            notes=[
+                f"generated_from:{record.uncertainty_id}",
+                f"design_focus:{focus}",
+                "probe_single_feature_path",
+                f"human_feedback_focus_single_feature:{preferred[0]}",
+            ],
+            design_focus=focus,
+        )
+        if is_partial:
+            design.notes.append("validation_followup_for_partially_resolved_disagreement")
+        return design
+
+    text = f"{record.notes or ''} {record.question} {record.description}".lower()
+    has_non_primary_focus = any(feature != primary_x for feature in focus_candidates)
+    strategy = _uncertainty_design_strategy(record, text, has_non_primary_focus)
+    fallback_design: ExperimentDesign | None = None
+    uncertainty_base_feature = next(
+        (feature for feature in focus_candidates if feature != primary_x),
+        None,
+    )
+
+    for focus in focus_order:
+        design, effective_focus = _build_design_for_strategy(
+            strategy=strategy,
+            focus=focus,
+            primary_x=primary_x,
+            target=target,
+            feature_pool=feature_pool,
+            uncertainty_base_features=(
+                [uncertainty_base_feature] if uncertainty_base_feature else []
+            ),
+        )
+        strategy_notes = {
+            "global_incremental": "probe_global_incremental_gain:primary variable added to compact baseline",
+            "incremental_beyond_focus": f"probe_incremental_gain_beyond_focus:{effective_focus}",
+            "competition_probe": f"probe_primary_gain_over_competitor:{effective_focus}",
+            "conditional_path": f"probe_conditioned_contribution_with_focus:{effective_focus}",
+            "lag_stability": f"probe_lagged_stability_across_windows:{effective_focus}",
+            "residual_probe": f"probe_residual_source_with_focus:{effective_focus}",
+            "validation_followup": f"validation_followup_rerun_focus:{effective_focus}",
+        }
+        notes = [
+            f"generated_from:{record.uncertainty_id}",
+            f"design_focus:{effective_focus}",
+            strategy_notes[strategy],
+        ]
+        if planning_context.preferred_features and preferred:
+            notes.append(f"human_feedback_focus_feature:{preferred[0]}")
+        notes.append(
+            "compare constrained baseline vs baseline+primary treatment"
+        )
+        if uncertainty_base_feature:
+            notes.append(
+                f"uncertainty_baseline_feature:{uncertainty_base_feature}"
+            )
+
+        if is_partial:
+            notes.append("validation_followup_for_partially_resolved_disagreement")
+
+        rationale_context = _candidate_rationale_context(record, node_index)
+        if rationale_context["focus_features"]:
+            notes.append(f"rationale_focus_features:{','.join(rationale_context['focus_features'])}")
+        if rationale_context["source_types"]:
+            notes.append(f"rationale_source_types:{','.join(rationale_context['source_types'])}")
+
+        design.notes = notes
+        if fallback_design is None:
+            fallback_design = design
+        if _design_signature(design) not in used_signatures:
+            return design
+
+    if fallback_design is not None:
+        fallback_design.notes.append("design_focus_fallback_duplicate_safeguard")
+    return fallback_design or ExperimentDesign(
+        target=target,
+        control=[feature_pool[0]] if feature_pool else [],
+        treatment=_unique_preserve_order(
+            [feature_pool[0], primary_x] if feature_pool else [primary_x]
+        ),
+        notes=[
+            f"generated_from:{record.uncertainty_id}",
+            "design_focus:primary_x",
+            "design_focus_fallback_duplicate_safeguard",
+        ],
+        design_focus=primary_x,
     )
 
 
-def _build_hypothesis_predictions(record: UncertaintyRecord, node_index: dict[str, object]) -> dict[str, HypothesisPrediction]:
-    predictions: dict[str, HypothesisPrediction] = {}
+def _design_signature(
+    design: ExperimentDesign,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[tuple[str, tuple[int, ...]], ...],
+    tuple[int | None, int | None, int | None, int | None, int | None, int | None, int | None],
+]:
+    return (
+        tuple(design.control),
+        tuple(design.treatment),
+        tuple(sorted((name, tuple(values)) for name, values in design.lags.items())),
+        (
+            design.forecast_horizon_days,
+            design.past_lag_days,
+            design.window_size,
+            design.control_lag_days,
+            design.treatment_lag_days,
+            design.control_forecast_horizon_days,
+            design.treatment_forecast_horizon_days,
+        ),
+    )
+
+
+def _preferred_planning_features(
+    planning_context: PlanningContext,
+    semantic: VariableSemanticService,
+    feature_pool: list[str],
+) -> list[str]:
+    resolved: list[str] = []
+    for name in planning_context.preferred_features:
+        raw = semantic.to_raw(name)
+        if raw in feature_pool:
+            resolved.append(raw)
+    return _unique_preserve_order(resolved)
+
+
+def _candidate_focus_features(
+    *,
+    record: UncertaintyRecord,
+    node_index: dict[str, object],
+    primary_x: str,
+    target: str,
+    semantic: VariableSemanticService,
+    feature_pool: list[str],
+) -> list[str]:
+    """Rank raw features this uncertainty should isolate, leading hypothesis first."""
+    excluded = {target}
+    available = [feature for feature in feature_pool if feature not in excluded]
+    weighted: list[tuple[int, str]] = []
+
+    # Uncertainty miners often tag explicit features; those are the strongest signal.
+    for feature in _notes_mining_features(record):
+        raw = semantic.to_raw(feature)
+        if raw and raw in available:
+            weighted.append((0, raw))
+
+    text = f"{record.question} {record.description}"
+    for feature in available:
+        if semantic.matches_text(feature, text):
+            weighted.append((1, feature))
+
+    for rank, group in enumerate(
+        (record.related_hypotheses[:1], record.related_hypotheses[1:]), start=2
+    ):
+        for hypothesis_id in group:
+            node = node_index.get(hypothesis_id)
+            if node is None or node.generation_rationale is None:
+                continue
+            for feature in node.generation_rationale.derived_features:
+                raw = semantic.to_raw(feature)
+                if raw and raw in available:
+                    weighted.append((rank, raw))
+
+    ordered = _unique_preserve_order(
+        raw for _, raw in sorted(weighted, key=lambda item: (item[0], item[1]))
+    )
+    return _unique_preserve_order([primary_x, *ordered]) if primary_x in available else _unique_preserve_order(ordered)
+
+
+def _hypothesis_relates_to_focus(
+    node: object,
+    focus: str | None,
+    semantic: VariableSemanticService,
+) -> bool:
+    """True when this hypothesis is a primary target for the design focus."""
+    if not focus:
+        return True
+    statement = getattr(node, "statement", "") or ""
+    rationale = getattr(node, "generation_rationale", None)
+    if rationale is not None:
+        for feature in rationale.derived_features:
+            if semantic.to_raw(feature) == focus:
+                return True
+        trigger = rationale.trigger or ""
+        if trigger in {"task_bootstrap", "competition_bootstrap"}:
+            return True
+        corpus = f"{statement} {rationale.summary or ''}"
+        if semantic.matches_text(focus, corpus):
+            return True
+    return semantic.matches_text(focus, statement)
+
+
+def _focus_hypothesis_ids(
+    *,
+    record: UncertaintyRecord,
+    focus: str | None,
+    node_index: dict[str, object],
+    semantic: VariableSemanticService,
+) -> list[str]:
+    """Select the competing hypotheses this candidate should actually resolve."""
+    selected: list[str] = []
     for hypothesis_id in record.related_hypotheses:
         node = node_index.get(hypothesis_id)
         if node is None:
             continue
-        disagreement = record.disagreement.get(hypothesis_id) if record.disagreement else None
-        expected_effect = disagreement.expected if disagreement is not None else _expected_from_node(node)
-        predictions[hypothesis_id] = HypothesisPrediction(
-            expected_effect=expected_effect,
-            expected_range=_expected_range_from_effect(
+        if _hypothesis_relates_to_focus(node, focus, semantic):
+            selected.append(hypothesis_id)
+    return _unique_preserve_order(selected) or [
+        hypothesis_id
+        for hypothesis_id in record.related_hypotheses
+        if hypothesis_id in node_index
+    ]
+
+
+def _build_hypothesis_predictions(
+    record: UncertaintyRecord,
+    node_index: dict[str, object],
+    design_focus: str | None = None,
+    semantic: VariableSemanticService | None = None,
+) -> dict[str, HypothesisPrediction]:
+    semantic = semantic or VariableSemanticService()
+    predictions: dict[str, HypothesisPrediction] = {}
+    selected_ids = _focus_hypothesis_ids(
+        record=record,
+        focus=design_focus,
+        node_index=node_index,
+        semantic=semantic,
+    )
+    nodes = [node_index.get(hypothesis_id) for hypothesis_id in selected_ids]
+    nodes = [node for node in nodes if node is not None]
+    llm_lookup = _select_llm_predictions(nodes)
+    for node in nodes:
+        disagreement = (
+            record.disagreement.get(node.hypothesis_id)
+            if record.disagreement is not None
+            else None
+        )
+        llm_prediction = llm_lookup.get(node.hypothesis_id)
+        expected_range = (
+            list(llm_prediction.expected_range)
+            if llm_prediction is not None and llm_prediction.expected_range
+            else None
+        )
+        expected_effect = _expected_effect_for_candidate(
+            disagreement_effect=getattr(disagreement, "expected", None),
+            node=node,
+            llm_prediction=llm_prediction,
+            expected_range=expected_range,
+        )
+        if expected_range is None:
+            expected_range = _expected_range_from_effect(
                 expected_effect=expected_effect,
                 support_score=getattr(node, "support_score", 0.5),
-            ),
+            )
+        metric = (
+            getattr(llm_prediction, "metric", None)
+            if llm_prediction is not None and expected_range is not None
+            else None
+        )
+        predictions[node.hypothesis_id] = HypothesisPrediction(
+            expected_effect=expected_effect,
+            expected_range=expected_range,
+            metric=metric,
         )
     return predictions
+
+
+def _select_llm_predictions(nodes: list[object]) -> dict[str, object]:
+    """Choose one LLM prediction per node, preferring a shared metric.
+
+    The overlap estimate is only meaningful when the hypothesis distributions
+    are measured on the same metric, so we first pick the most frequent LLM
+    metric with a real expected_range and then re-select that metric when the
+    node provides it.
+    """
+    first_pass: dict[str, object] = {}
+    for node in nodes:
+        hypothesis_id = getattr(node, "hypothesis_id", "")
+        first_pass[hypothesis_id] = _preferred_prediction(node)
+    metric_counts: dict[str, int] = {}
+    for prediction in first_pass.values():
+        metric = getattr(prediction, "metric", None)
+        if (
+            prediction is not None
+            and getattr(prediction, "expected_range", None)
+            and metric in IG_METRIC_PRIORITY
+        ):
+            metric_counts[metric] = metric_counts.get(metric, 0) + 1
+    preferred = None
+    if metric_counts:
+        preferred = max(
+            metric_counts,
+            key=lambda metric: (metric_counts[metric], IG_METRIC_PRIORITY.index(metric)),
+        )
+    selected: dict[str, object] = {}
+    for node in nodes:
+        hypothesis_id = getattr(node, "hypothesis_id", "")
+        if preferred is not None:
+            selected[hypothesis_id] = _preferred_prediction(node, preferred_metric=preferred)
+        else:
+            selected[hypothesis_id] = first_pass.get(hypothesis_id)
+    return selected
+
+
+def _preferred_prediction(node: object, preferred_metric: str | None = None) -> object | None:
+    node_predictions = getattr(node, "predictions", None) or []
+    if preferred_metric is not None:
+        for prediction in node_predictions:
+            if (
+                getattr(prediction, "metric", None) == preferred_metric
+                and getattr(prediction, "expected_range", None)
+            ):
+                return prediction
+    for metric in IG_METRIC_PRIORITY:
+        for prediction in node_predictions:
+            if (
+                getattr(prediction, "metric", None) == metric
+                and getattr(prediction, "expected_range", None)
+            ):
+                return prediction
+    return next(
+        (
+            prediction
+            for prediction in node_predictions
+            if getattr(prediction, "expected_range", None)
+        ),
+        None,
+    )
+
+
+def _expected_effect_for_candidate(
+    *,
+    disagreement_effect: str | None,
+    node: object,
+    llm_prediction: object | None,
+    expected_range: list[float] | None,
+) -> str:
+    if disagreement_effect:
+        return disagreement_effect
+    if llm_prediction is not None:
+        direction = str(getattr(llm_prediction, "expected_direction", "") or "").lower()
+        if direction in {"positive", "negative", "near_zero"}:
+            return direction
+    if expected_range and len(expected_range) == 2:
+        center = (expected_range[0] + expected_range[1]) / 2.0
+        if center > 0.01:
+            return "positive"
+        if center < -0.01:
+            return "negative"
+        return "near_zero"
+    return _expected_from_node(node)
 
 
 def _annotate_candidate_estimates(
@@ -565,28 +1321,43 @@ def _formal_information_gain(
     *,
     current_round: int,
 ) -> tuple[float, str]:
-    predictions = list(candidate.hypothesis_predictions.items())
+    predictions = list(candidate.hypothesis_predictions.values())
     if len(predictions) < 2:
         fallback = 0.5 if candidate.tested_hypotheses else 0.18
         return (
             round(fallback, 4),
             "候选实验涉及的可区分假设不足 2 个，按文档约定退化为中性信息增益估计。"
             if candidate.tested_hypotheses
-            else "baseline/校准实验主要提供基线，不承担核心假设区分任务，因此信息增益记为较低值。",
+            else "对照组/校准实验主要提供对照组，不承担核心假设区分任务，因此信息增益记为较低值。",
         )
 
     pair_scores: list[float] = []
-    for index, (_, left) in enumerate(predictions):
-        for _, right in predictions[index + 1 :]:
+    focus_label = candidate.design.design_focus
+    for index, left in enumerate(predictions):
+        for right in predictions[index + 1 :]:
             overlap = _prediction_overlap(left.expected_range, right.expected_range)
             pair_scores.append(1.0 - overlap)
     ig = sum(pair_scores) / len(pair_scores)
+    focus_text = f"围绕设计焦点 {focus_label}，候选实验针对性区分 " if focus_label else "候选实验共区分 "
+    used_metrics = sorted(
+        {
+            str(prediction.metric)
+            for prediction in predictions
+            if getattr(prediction, "metric", None)
+        }
+    )
+    metric_text = (
+        f"，预测区间来自 LLM 输出（metric={'/'.join(used_metrics)}）"
+        if used_metrics
+        else "，预测区间为程序回退估计"
+    )
     rationale = (
         "按 IG_pair(H_i,H_j)=1-overlap、IG(E)=avg(IG_pair) 计算；"
-        f"本候选共比较 {len(pair_scores)} 组假设预测区间，平均区分度为 {ig:.4f}。"
+        f"{focus_text}{len(predictions)} 个相关竞争假设、{len(pair_scores)} 组预测区间，"
+        f"平均区分度为 {ig:.4f}{metric_text}。"
     )
     if current_round > 1:
-        rationale += " 当前仍用于实验前评估，待实验完成后再用后验 KL 散度做审计。"
+        rationale += " 当前为实验前预估；实验完成后系统以实际观测 Δ 计算后验 KL 散度审计并写入评估结果。"
     return round(min(max(ig, 0.0), 1.0), 4), rationale
 
 
@@ -745,10 +1516,24 @@ def _formal_risk_score(
     d4 = min(0.4 * compute_risk + 0.35 * complexity_risk + 0.25 * human_risk, 1.0)
 
     risk = min(0.35 * d1 + 0.25 * d2 + 0.25 * d3 + 0.15 * d4, 1.0)
+    dimensions = {
+        "支持度先验": d1,
+        "数据质量/对齐": d2,
+        "实验设计": d3,
+        "资源执行": d4,
+    }
+    dominant_dimension = max(dimensions, key=dimensions.get)
     rationale = (
         "按 Risk(E)=0.35·D1+0.25·D2+0.25·D3+0.15·D4 计算；"
-        f"D1={d1:.4f}(支持度先验), D2={d2:.4f}(数据质量/对齐), "
-        f"D3={d3:.4f}(设计风险), D4={d4:.4f}(资源执行风险)。"
+        f"D1={d1:.4f}（支持度先验：{len(supports)} 条假设平均支持度 {avg_support:.4f}、"
+        f"支持度跨度 {support_span:.4f}），"
+        f"D2={d2:.4f}（数据质量/对齐：样本量风险 {sample_risk:.4f}、"
+        f"多源对齐风险 {multi_source_risk:.2f}、未来信息泄露风险 {leakage_risk:.2f}），"
+        f"D3={d3:.4f}（实验设计：设计复杂度 {design_complexity_risk:.4f}、"
+        f"对照充分性 {control_risk:.2f}、历史可重复性 {reproducibility_risk:.2f}），"
+        f"D4={d4:.4f}（资源执行：估算 tokens {estimated_tokens:.0f}/{token_budget}、"
+        f"估算耗时 {compute_seconds:.1f}s/{time_budget}s、人工审核 {human_risk:.2f}）；"
+        f"当前最高风险分项为“{dominant_dimension}”。"
     )
     return round(risk, 4), rationale
 
@@ -764,15 +1549,31 @@ def _formal_cost_score(
     budget = task.payload.constraints.resource_budget
     token_budget = budget.token_budget if budget and budget.token_budget else 200000
     time_budget = budget.max_time_seconds_per_round if budget and budget.max_time_seconds_per_round else 300
-    c1_raw = _estimate_llm_tokens(candidate, hypothesis_tree, experiment_memory)
-    c1 = min(c1_raw / max(token_budget, 1), 1.0)
+    input_tokens, output_tokens = _estimate_llm_token_usage(
+        candidate=candidate,
+        hypothesis_tree=hypothesis_tree,
+        experiment_memory=experiment_memory,
+    )
+    total_tokens = input_tokens + output_tokens
+    model_name = get_llm_model_for_role("experiment_planner")
+    price_rates = _llm_price_rates()
+    input_price = price_rates.get("input", DEFAULT_LLM_INPUT_PRICE)
+    output_price = price_rates.get("output", DEFAULT_LLM_OUTPUT_PRICE)
+    llm_fee_yuan = (input_tokens * input_price + output_tokens * output_price) / 1_000_000.0
+    budget_cost_yuan = _llm_cost_budget_yuan(token_budget, price_rates)
+    c1 = min(llm_fee_yuan / max(budget_cost_yuan, EPSILON), 1.0)
     c2_raw = _estimate_compute_seconds(candidate, data_dictionary)
     c2 = min(c2_raw / max(time_budget, 1), 1.0)
     c3 = 1.0 if candidate.requires_human_review else 0.0
     cost = max(0.50 * c1 + 0.35 * c2 + 0.15 * c3, 0.05)
     rationale = (
         "按 Cost(E)=max(0.50·C1+0.35·C2+0.15·C3, 0.05) 计算；"
-        f"C1={c1:.4f}(token预算占比), C2={c2:.4f}(计算时间占比), C3={c3:.4f}(人工审核成本)。"
+        f"估算输入 tokens={input_tokens:.0f}、输出 tokens={output_tokens:.0f}（合计 {total_tokens:.0f}）；"
+        f"{model_name} 真实计费（输入 {input_price:.2f} 元/百万 tokens、"
+        f"输出 {output_price:.2f} 元/百万 tokens）估算约 {llm_fee_yuan:.4f} 元，"
+        f"本轮费用上限={budget_cost_yuan:.4f} 元；"
+        f"C1={c1:.4f}(LLM真实费用占比), C2={c2:.4f}(计算时间占比 {c2_raw:.1f}s/{time_budget}s), "
+        f"C3={c3:.4f}(人工审核成本)。"
     )
     return round(min(cost, 1.0), 4), rationale
 
@@ -782,13 +1583,62 @@ def _estimate_llm_tokens(
     hypothesis_tree: HypothesisTreeState,
     experiment_memory: ExperimentMemoryState | None,
 ) -> float:
+    input_tokens, output_tokens = _estimate_llm_token_usage(
+        candidate=candidate,
+        hypothesis_tree=hypothesis_tree,
+        experiment_memory=experiment_memory,
+    )
+    return input_tokens + output_tokens
+
+
+def _estimate_llm_token_usage(
+    candidate: CandidateExperiment,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+) -> tuple[float, float]:
+    """Estimate input/output token counts for one candidate experiment."""
     active_hypotheses = [node for node in hypothesis_tree.nodes if node.status in {"active", "converged"}]
     input_tokens = 2000 + len(str(candidate.design.model_dump(mode="json"))) / 3
     input_tokens += sum((len(node.statement) / 3) + 200 for node in active_hypotheses)
+    input_tokens += (len(candidate.purpose or "") + len(candidate.distinguishing_insight or "")) / 3
     history_count = len(experiment_memory.entries[-3:]) if experiment_memory else 0
     input_tokens += 300 * history_count
     output_tokens = 1500
-    return input_tokens + output_tokens
+    return input_tokens, output_tokens
+
+
+def _llm_price_rates() -> dict[str, float]:
+    return get_bailian_model_prices(get_llm_model_for_role("experiment_planner"))
+
+
+def _estimate_llm_cost_yuan(
+    candidate: CandidateExperiment,
+    hypothesis_tree: HypothesisTreeState,
+    experiment_memory: ExperimentMemoryState | None,
+    price_rates: dict[str, float] | None = None,
+) -> float:
+    price_rates = price_rates or _llm_price_rates()
+    input_tokens, output_tokens = _estimate_llm_token_usage(
+        candidate=candidate,
+        hypothesis_tree=hypothesis_tree,
+        experiment_memory=experiment_memory,
+    )
+    input_price = price_rates.get("input", DEFAULT_LLM_INPUT_PRICE)
+    output_price = price_rates.get("output", DEFAULT_LLM_OUTPUT_PRICE)
+    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000.0
+
+
+def _llm_cost_budget_yuan(token_budget: int, price_rates: dict[str, float]) -> float:
+    raw_budget = get_runtime_setting("BAILIAN_COST_BUDGET_YUAN")
+    if raw_budget:
+        try:
+            custom_budget = float(raw_budget)
+        except ValueError:
+            custom_budget = 0.0
+        if custom_budget > 0.0:
+            return custom_budget
+    output_price = price_rates.get("output", DEFAULT_LLM_OUTPUT_PRICE)
+    return max(token_budget, 1) * output_price / 1_000_000.0
 
 
 def _estimate_compute_seconds(candidate: CandidateExperiment, data_dictionary: DataDictionary) -> float:
@@ -913,10 +1763,10 @@ def _estimate_baseline_performance_gain(experiment_memory: ExperimentMemoryState
 def _baseline_performance_gain_rationale(experiment_memory: ExperimentMemoryState | None = None) -> str:
     current_best_rmse = _current_best_rmse(experiment_memory)
     if current_best_rmse is None:
-        return "当前无历史实验 RMSE 可供校准，baseline benchmark 的 PG_expected 记为 0。"
+        return "当前无历史实验 RMSE 可供校准，对照组补位实验的 PG_expected 记为 0。"
     return (
         "按 PG_expected(E) = (RMSE_current_best - RMSE_predicted_after(E)) / RMSE_current_best 估计；"
-        f"baseline benchmark 预期保持当前最优 RMSE={current_best_rmse:.4f}，因此 PG_expected≈0.0000。"
+        f"对照组补位实验预期保持当前最优 RMSE={current_best_rmse:.4f}，因此 PG_expected≈0.0000。"
     )
 
 
@@ -973,6 +1823,10 @@ def _unique_preserve_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
 
 
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", str(text).lower())
+
+
 def _collect_hypothesis_ids(
     top_uncertainties: list[PrioritizedUncertainty],
     uncertainty_state: UncertaintyState,
@@ -991,6 +1845,7 @@ def _build_planning_context(
     planning_feedback: str | None,
     data_dictionary: DataDictionary,
 ) -> PlanningContext:
+    planning_feedback = _sanitize_guidance_text(planning_feedback or "")
     if not planning_feedback:
         return PlanningContext()
 
@@ -1010,6 +1865,33 @@ def _build_planning_context(
         preferred_keywords=keywords,
         prefer_simple_design=prefer_simple_design,
     )
+
+
+def _sanitize_guidance_text(text: str | None) -> str | None:
+    """Drop corrupted or over-long guidance before it reaches candidate notes."""
+    if not text:
+        return None
+    text = str(text).strip()
+    if not text:
+        return None
+    if len(text) > 4000:
+        return None
+    corrupted_markers = (
+        "\\\"",
+        "yload",
+        "project\": {",
+        '"research_question"',
+        '"current_round"',
+        '"active_hypotheses"',
+        '"root_question"',
+        '"data_dictionary_summary"',
+    )
+    lowered = text.lower()
+    if any(marker in lowered for marker in corrupted_markers):
+        return None
+    if " {" in text or text.count("{") > 3:
+        return None
+    return text
 
 
 def _rank_uncertainties_with_feedback(
@@ -1040,9 +1922,10 @@ def _rank_uncertainties_with_feedback(
 
 
 def _planning_notes(planning_context: PlanningContext) -> list[str]:
-    if not planning_context.guidance_text:
+    guidance_text = _sanitize_guidance_text(planning_context.guidance_text)
+    if not guidance_text:
         return []
-    notes = [f"human_feedback:{planning_context.guidance_text}"]
+    notes = [f"human_feedback:{guidance_text}"]
     if planning_context.preferred_features:
         notes.append(f"preferred_features:{','.join(planning_context.preferred_features)}")
     if planning_context.prefer_simple_design:
@@ -1060,8 +1943,9 @@ def _candidate_set_note(candidate_count: int, planning_context: PlanningContext)
     notes: list[str] = []
     if candidate_count < 3:
         notes.append("当前候选实验不足3个，建议后续由实验规划者补充更多候选实验。")
-    if planning_context.guidance_text:
-        notes.append(f"本轮候选已纳入 human_feedback: {planning_context.guidance_text}")
+    guidance_text = _sanitize_guidance_text(planning_context.guidance_text)
+    if guidance_text:
+        notes.append(f"本轮候选已纳入 human_feedback: {guidance_text}")
     return " ".join(notes) if notes else None
 
 
@@ -1109,23 +1993,87 @@ def _candidate_source_context(
 
 
 def _candidate_purpose(record: UncertaintyRecord, rationale_context: dict[str, list[str] | str]) -> str:
-    triggers = rationale_context["trigger_tags"]
-    if triggers:
-        return f"resolve {record.uncertainty_id}: {record.question}，并区分触发源 {','.join(triggers[:2])}"
-    return f"resolve {record.uncertainty_id}: {record.question}"
+    return f"承接 {record.uncertainty_id}：{record.question}"
+
+
+def _replace_hypothesis_ids(text: str, node_index: dict[str, object]) -> str:
+    """Replace hypothesis ids with their statements in display-only text."""
+    display = text
+    for hypothesis_id in sorted(node_index, key=len, reverse=True):
+        node = node_index.get(hypothesis_id)
+        if node is None or not getattr(node, "statement", ""):
+            continue
+        display = display.replace(hypothesis_id, node.statement)
+    return display
+
+
+def _replace_hypothesis_ids_with_short_labels(text: str, node_index: dict[str, object]) -> str:
+    """Replace canonical hypothesis ids with user-facing H1/H2 labels."""
+    display = text
+    for hypothesis_id in sorted(node_index, key=len, reverse=True):
+        node = node_index.get(hypothesis_id)
+        if node is None:
+            continue
+        label = getattr(node, "display_hypothesis_id", None) or (
+            f"H{node.level}" if hasattr(node, "level") else None
+        )
+        if label:
+            display = display.replace(hypothesis_id, label)
+    return display
+
+
+def _apply_semantic_to_candidate_display(
+    candidate: CandidateExperiment,
+    semantic: VariableSemanticService,
+    node_index: dict[str, object],
+) -> None:
+    """Translate user-facing candidate text while keeping execution fields raw."""
+    candidate.purpose = _replace_hypothesis_ids(
+        semantic.display_text(candidate.purpose),
+        node_index,
+    )
+    if candidate.scientific_question:
+        candidate.scientific_question = _replace_hypothesis_ids(
+            semantic.display_text(candidate.scientific_question),
+            node_index,
+        )
+    if candidate.distinguishing_insight:
+        candidate.distinguishing_insight = _replace_hypothesis_ids_with_short_labels(
+            semantic.display_text(candidate.distinguishing_insight),
+            node_index,
+        )
+        candidate.distinguishing_insight = _replace_hypothesis_ids(
+            candidate.distinguishing_insight,
+            node_index,
+        )
+    candidate.design.display_target = semantic.to_display(candidate.design.target)
+    candidate.design.display_control = semantic.display_list(candidate.design.control)
+    candidate.design.display_treatment = semantic.display_list(candidate.design.treatment)
+    if candidate.design.design_focus:
+        candidate.design.display_design_focus = semantic.to_display(candidate.design.design_focus)
 
 
 def _distinguishing_insight(
     record: UncertaintyRecord,
     rationale_context: dict[str, list[str] | str],
     primary_x: str,
+    focus_feature: str | None = None,
 ) -> str:
-    if rationale_context["summary"]:
+    focus_text = focus_feature or primary_x
+    hypothesis_ids = list(record.disagreement.keys()) or record.related_hypotheses[:2]
+    if hypothesis_ids:
         return (
-            f"通过比较 baseline 与 treatment，判断 {primary_x} 是否能减少与 {record.question} 相关的不确定性；"
-            f"本实验重点区分这些假设来源: {rationale_context['summary']}。"
+            f"通过比较对照组与实验组，检验 {focus_text} 的相对增量贡献："
+            f"对照组使用常规日地环境变量但不加入待验证焦点变量 {focus_text}，"
+            f"实验组在相同窗口与超前期下加入 {focus_text}，"
+            f"以相同窗口和超前期评价太阳风速度预测的 RMSE 与 Pearson_r 变化；"
+            f"由此区分假设 { '、'.join(hypothesis_ids[:3]) } 的实证差异。"
         )
-    return f"通过比较 baseline 与 treatment，判断 {primary_x} 是否能减少与 {record.question} 相关的不确定性。"
+    return (
+        f"通过比较对照组与实验组，检验 {focus_text} 的相对增量贡献："
+        "对照组不含待验证焦点变量，实验组在相同窗口与超前期下加入该变量，"
+        "以相同窗口和超前期评价太阳风速度预测的 RMSE 与 Pearson_r 变化。"
+    )
 
 
 def _information_gain_rationale(

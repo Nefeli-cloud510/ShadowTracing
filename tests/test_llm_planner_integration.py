@@ -1,13 +1,30 @@
 import unittest
 
-from core.central_controller_llm import CentralControllerLLM
+from core.central_controller_llm import CentralControllerLLM, _rewrite_candidate_design_focus
 from core.control_unified import HumanControlService
+from core.decision_unified import DecisionLayerService
+from core.hypothesis_generation import HypothesisGenerationResult
 from core.hypothesis_proposer_llm import HypothesisProposerResponse
 from core.planner_unified import PlannerOutputBuilder
 from core.rag_service import RAGContextBundle, RAGEvidenceSnippet
+from core.round_orchestrator import RoundOrchestrator
 from core.scientific_interpreter_llm import ScientificInterpreterLLM
-from core.scientific_questioner_llm import ProposedUncertainty, ScientificQuestionerResponse
-from core.unified_schema import ExperimentStep, ProtocolRefinementSuggestion
+from core.scientific_questioner_llm import (
+    HypothesisQuestioningUpdate,
+    ProposedUncertainty,
+    ScientificQuestionerResponse,
+)
+from core.unified_schema import (
+    CandidateExperiment,
+    ExperimentDesign,
+    ExperimentStep,
+    ProtocolRefinementSuggestion,
+)
+from core.variable_semantic_service import VariableSemanticService
+from tests.test_decision_layer import (
+    StubCandidateExperimentDesigner,
+    StubCandidateExperimentWriter,
+)
 from tests.test_human_control_flow import HumanControlFlowTest
 
 
@@ -101,7 +118,7 @@ class StubHypothesisProposer:
 
 
 class StubScientificQuestioner:
-    def question(self, *, planner_input, rag_context):
+    def question(self, *, planner_input, rag_context, mined_candidates=None):
         return ScientificQuestionerResponse(
             challenge_points=["当前仍需确认 Np 条件路径是否只是伴随相关。"],
             guidance_notes=["questioner_gap:需要把 Np 条件路径显式提升为科学不确定性。"],
@@ -114,9 +131,40 @@ class StubScientificQuestioner:
             ],
         )
 
+    def challenge_hypothesis_tree(self, *, planner_input, rag_context, tree, mined_candidates=None):
+        return ScientificQuestionerResponse(
+            challenge_points=["当前仍需确认 Np 条件路径是否只是伴随相关。"],
+            guidance_notes=["questioner_gap:需要把 Np 条件路径显式提升为科学不确定性。"],
+            proposed_uncertainties=[
+                ProposedUncertainty(
+                    question="DeltaDec 的增量是否只在特定 Np 条件下成立？",
+                    description="需要区分独立信息与密度条件约束路径。",
+                    priority="high",
+                )
+            ],
+            hypothesis_updates=[
+                HypothesisQuestioningUpdate(
+                    hypothesis_id=node.hypothesis_id,
+                    impact_direction="supports",
+                    impact_strength=0.55,
+                    confidence=0.8,
+                    rationale="质询认为当前证据仍偏向支持该假设。",
+                )
+                for node in tree.nodes
+            ],
+        )
+
 
 class StubExperimentPlanner:
-    def refine(self, *, task, candidate, existing_refinements=None):
+    def refine(
+        self,
+        *,
+        task,
+        candidate,
+        existing_refinements=None,
+        semantic_service=None,
+        history_context=None,
+    ):
         return ProtocolRefinementSuggestion(
             suggestion_id="EPL_STUB_001",
             target_candidate_id=candidate.experiment_id,
@@ -135,16 +183,70 @@ class StubExperimentPlanner:
         )
 
 
+class StubHypothesisGenerator:
+    """Offline tree pass-through so round bootstrap can run without LLM proposals."""
+
+    def __init__(self, repository):
+        self.repository = repository
+
+    def build_tree(self, **kwargs):
+        tree = self.repository.load_hypothesis_tree()
+        uncertainties = self.repository.load_uncertainties()
+        return HypothesisGenerationResult(
+            tree=tree,
+            generated_node_ids=(),
+            updated_uncertainties=tuple(uncertainties.records),
+            mode="llm_next_round",
+            source="test_stub",
+        )
+
+
 class LLMPlannerIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.helper = HumanControlFlowTest(methodName="test_round_decision_adjust_rebuilds_candidate_plan")
-        self.helper.setUp()
-        self.repository = self.helper.repository
-        self.project_root = self.helper.project_root
-        self.dictionary = self.helper.dictionary
+        fixture_helper = HumanControlFlowTest(methodName="test_round_decision_adjust_rebuilds_candidate_plan")
+        fixture_helper.setUp()
+        self.helper = fixture_helper
+        self.repository = fixture_helper.repository
+        self.project_root = fixture_helper.project_root
+        self.dictionary = fixture_helper.dictionary
+        candidate_set = self.repository.load_candidate_experiments()
+        if not candidate_set.candidates:
+            DecisionLayerService(
+                self.repository,
+                experiment_designer=StubCandidateExperimentDesigner(),
+                experiment_writer=StubCandidateExperimentWriter(),
+            ).build_candidate_plan(
+                task=self.repository.load_task(),
+                data_dictionary=self.dictionary,
+            )
 
     def tearDown(self) -> None:
         self.helper.tearDown()
+
+    def test_focus_rewrite_applies_llm_feature_to_candidate_design(self) -> None:
+        candidate = CandidateExperiment(
+            experiment_id="E_R99_01",
+            type="distinguishing",
+            purpose="test Np vs Vsw",
+            tested_hypotheses=["H1"],
+            design=ExperimentDesign(
+                target="Vsw",
+                control=["DeltaDec", "By"],
+                treatment=["DeltaDec", "Np"],
+                design_focus="Np",
+            ),
+        )
+        changed = _rewrite_candidate_design_focus(
+            candidate=candidate,
+            feature_focus_raw=["By"],
+            primary_x="DeltaDec",
+            semantic=VariableSemanticService(),
+        )
+        self.assertTrue(changed)
+        self.assertEqual(candidate.design.design_focus, "By")
+        self.assertEqual(candidate.design.control, ["DeltaDec"])
+        self.assertEqual(candidate.design.treatment, ["DeltaDec", "By"])
+        self.assertIn("llm_controller_focus_rewrite:Np->By", candidate.design.notes)
 
     def test_llm_mode_rebuilds_candidate_plan_without_skipping_human_review(self) -> None:
         control = HumanControlService(
@@ -159,7 +261,10 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             hypothesis_proposer=StubHypothesisProposer(),
             scientific_questioner=StubScientificQuestioner(),
             experiment_planner=StubExperimentPlanner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
         )
+        control.hypothesis_generator = StubHypothesisGenerator(self.repository)
         control.request_round_review(
             round_id=1,
             experiment_id="E_R02_01",
@@ -190,13 +295,24 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             ],
         )
 
+        self.helper._mark_round_closed(round_id=1)
         recorded = control.record_round_decision(
             round_id=1,
             decision="adjust",
             human_feedback="下一轮先测试 By 单变量路径",
             data_dictionary=self.dictionary,
         )
+        self.repository.save_data_dictionary(self.dictionary)
+        task = self.repository.load_task()
+        task.payload.constraints.min_active_hypotheses = 2
+        self.repository.save_task(task)
 
+        self.assertEqual(recorded["planning_status"], "awaiting_hypothesis_confirmation")
+        confirmed = control.confirm_hypothesis_tree()
+        self.assertEqual(confirmed["status"], "awaiting_scientific_questioning")
+        questioned = RoundOrchestrator(control).run_next_round_scientific_questioning()
+        self.assertEqual(questioned["planning_status"], "scientific_questioning_completed")
+        recorded = control.start_uncertainty_identification()
         self.assertEqual(recorded["planning_status"], "candidate_plan_rebuilt")
         self.assertEqual(recorded["next_review"]["status"], "awaiting_human_review")
         self.assertEqual(recorded["planner_output"].planner_mode, "llm")
@@ -238,6 +354,8 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             project_root=self.project_root,
             planner_mode="llm",
             experiment_planner=StubExperimentPlanner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
         )
 
         protocol = control.approve_candidate(
@@ -261,6 +379,8 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             project_root=self.project_root,
             planner_mode="llm",
             scientific_interpreter=ScientificInterpreterLLM(gateway=StubScientificInterpreterGateway()),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
         )
 
         executed = control.approve_and_execute_candidate(

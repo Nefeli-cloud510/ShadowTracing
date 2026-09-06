@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from core.unified_schema import (
     CandidateExperimentSet,
@@ -15,7 +15,9 @@ from core.unified_schema import (
     HypothesisNode,
     HypothesisTreeState,
     LatestTreeUpdate,
+    MAX_ACTIVE_UNCERTAINTIES,
     MetricsTimelineState,
+    PrioritizedUncertainty,
     ReasoningPlannerInput,
     ProcessPhase,
     ProcessState,
@@ -51,6 +53,7 @@ class StatePaths:
     candidate_experiments: Path
     planner_input: Path
     planner_output: Path
+    round_snapshots: Path
 
 
 class UnifiedStateRepository:
@@ -75,6 +78,7 @@ class UnifiedStateRepository:
             candidate_experiments=self.state_dir / "candidate_experiments.json",
             planner_input=self.state_dir / "planner_input.json",
             planner_output=self.state_dir / "planner_output.json",
+            round_snapshots=self.state_dir / "round_snapshots",
         )
 
     def initialize_state_skeleton(
@@ -90,7 +94,15 @@ class UnifiedStateRepository:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         generated_node_ids: tuple[str, ...] = ()
-        if initial_hypotheses is None and data_dictionary is not None:
+        has_llm_proposals = bool(
+            planner_input is not None
+            and planner_input.llm_hypothesis_proposals
+        )
+        if (
+            initial_hypotheses is None
+            and data_dictionary is not None
+            and has_llm_proposals
+        ):
             from core.hypothesis_generation import HypothesisGenerationService
 
             generated = HypothesisGenerationService().build_tree(
@@ -209,10 +221,10 @@ class UnifiedStateRepository:
             process_state.phases["hypothesis_generation"] = ProcessPhase(
                 status="completed",
                 completed_at=now,
-                notes="programmatic initial hypothesis tree generated",
+                notes="real-LLM hypothesis tree generated from H1..H5 proposals",
                 steps={
-                    "programmatic_generation": ProcessStep(
-                        name="programmatic_generation",
+                    "llm_hypothesis_generation": ProcessStep(
+                        name="llm_hypothesis_generation",
                         status="completed",
                         requires_user_approval=False,
                     )
@@ -267,13 +279,53 @@ class UnifiedStateRepository:
     def save_hypothesis_tree(self, state: HypothesisTreeState) -> None:
         self._save_model(self.paths.hypothesis_tree, state)
 
+    def pre_questioning_tree_path(self) -> Path:
+        return self.state_dir / "hypothesis_tree.pre_questioning.json"
+
+    def save_pre_questioning_tree(self, state: HypothesisTreeState) -> None:
+        self._save_model(self.pre_questioning_tree_path(), state)
+
+    def load_pre_questioning_tree(self) -> HypothesisTreeState | None:
+        path = self.pre_questioning_tree_path()
+        if not path.exists():
+            return None
+        try:
+            return self._load_model(path, HypothesisTreeState)
+        except Exception:
+            return None
+
     def load_uncertainties(self) -> UncertaintyState:
         return self._load_model(self.paths.uncertainties, UncertaintyState)
 
     def save_uncertainties(self, state: UncertaintyState) -> None:
+        self._reconcile_priority_queue(state)
         self._save_model(self.paths.uncertainties, state)
         if state.priority_queue is not None:
             self._save_model(self.paths.uncertainty_priority, state.priority_queue)
+
+    def _reconcile_priority_queue(self, state: UncertaintyState) -> None:
+        """Keep the persisted active queue bounded and in sync with records."""
+        if state.priority_queue is None:
+            return
+        active_ids = {
+            record.uncertainty_id
+            for record in state.records
+            if record.status not in {"resolved", "deprecated"}
+        }
+        seen_ids: set[str] = set()
+        bounded: list[PrioritizedUncertainty] = []
+        for item in sorted(
+            state.priority_queue.queue,
+            key=lambda entry: entry.priority_score,
+            reverse=True,
+        ):
+            if item.uncertainty_id not in active_ids or item.uncertainty_id in seen_ids:
+                continue
+            seen_ids.add(item.uncertainty_id)
+            bounded.append(item)
+            if len(bounded) >= MAX_ACTIVE_UNCERTAINTIES:
+                break
+        state.priority_queue.queue = bounded
 
     def load_experiment_memory(self) -> ExperimentMemoryState:
         return self._load_model(self.paths.experiment_memory, ExperimentMemoryState)
@@ -330,6 +382,21 @@ class UnifiedStateRepository:
 
     def save_planner_output(self, state) -> None:
         self._save_model(self.paths.planner_output, state)
+
+    def round_snapshot_path(self, round_id: int) -> Path:
+        return self.paths.round_snapshots / f"round_{round_id:02d}.json"
+
+    def save_round_snapshot(self, round_id: int, snapshot: dict[str, Any]) -> Path:
+        path = self.round_snapshot_path(round_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def load_round_snapshot(self, round_id: int) -> dict[str, Any]:
+        return json.loads(self.round_snapshot_path(round_id).read_text(encoding="utf-8"))
+
+    def has_round_snapshot(self, round_id: int) -> bool:
+        return self.round_snapshot_path(round_id).exists()
 
     def relativize(self, path: str | Path | None) -> str | None:
         if path is None:

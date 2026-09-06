@@ -5,21 +5,189 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.central_controller_llm import CentralControllerLLM
 from core.control_unified import HumanControlService
 from core.decision_unified import DecisionLayerService
+from core.hypothesis_generation import HypothesisGenerationResult
+from core.hypothesis_proposer_llm import HypothesisProposerResponse
+from core.planner_unified import PlannerOutputBuilder
+from core.rag_service import RAGContextBundle, RAGEvidenceSnippet
+from core.round_orchestrator import RoundOrchestrator
+from core.scientific_questioner_llm import (
+    HypothesisQuestioningUpdate,
+    ProposedUncertainty,
+    ScientificQuestionerResponse,
+)
 from core.state_repository import UnifiedStateRepository
 from core.unified_schema import (
+    ClosureChecklistItem,
     DataDictionary,
     EvaluationSpec,
+    ExperimentStep,
     FieldDescriptor,
     HypothesisNode,
+    ProtocolRefinementSuggestion,
     ResearchQuestion,
+    RoundHistoryEntry,
     ScientificConstraints,
     ScientificTask,
     ScientificTaskPayload,
     UncertaintyRecord,
     VariableBinding,
 )
+from tests.test_decision_layer import (
+    StubCandidateExperimentDesigner,
+    StubCandidateExperimentWriter,
+)
+
+
+class StubLLMGateway:
+    def generate_structured(
+        self,
+        *,
+        system_prompt,
+        user_prompt,
+        response_model,
+        fallback_factory=None,
+        temperature=None,
+    ):
+        return response_model.model_validate(
+            {
+                "summary": "LLM 中央控制器已基于上一轮结果生成下一轮聚焦建议。",
+                "candidate_focus_ids": ["E_R02_01"],
+                "candidate_rationale": "优先围绕 By 的单变量验证路径做收敛式确认。",
+                "target_hypothesis_id": "H1",
+                "interpretation": "H1 在当前结果下获得初步支持，但仍需通过更聚焦的 By 路径验证稳健性。",
+                "related_uncertainty_ids": ["U01"],
+                "impact_direction": "supports",
+                "impact_strength": 0.62,
+                "confidence": 0.81,
+                "uncertainty_priority_action": "decrease",
+                "feature_focus": ["By"],
+                "protocol_notes": ["llm_requests_by_validation"],
+                "suggested_model_parameters": {"alpha": 0.18, "l1_ratio": 0.62},
+            }
+        )
+
+
+class StubRAGService:
+    def build_context_bundle(self, planner_input, **kwargs):
+        return RAGContextBundle(
+            query=planner_input.scientific_question,
+            project_evidence=[
+                RAGEvidenceSnippet(
+                    source_type="project_memory",
+                    source_id="decision_log",
+                    title="decision_log.json",
+                    excerpt="项目历史显示 By 路径曾多次被人工要求优先验证。",
+                    score=0.9,
+                    citation="state/decision_log.json",
+                )
+            ],
+            literature_evidence=[
+                RAGEvidenceSnippet(
+                    source_type="literature_memory",
+                    source_id="planner_doc",
+                    title="推理规划层_中央与假设+质询llm.txt",
+                    excerpt="文档强调中央控制器需要结合知识库证据识别关键科学不确定性。",
+                    score=0.86,
+                    citation="outputs/pdf_texts/推理规划层_中央与假设+质询llm.txt",
+                )
+            ],
+        )
+
+
+class StubHypothesisProposer:
+    def propose(self, *, planner_input, rag_context):
+        return HypothesisProposerResponse(
+            focus_features=["By"],
+            guidance_notes=["proposer_focus:By 条件路径值得补充为下一轮假设。"],
+            proposal_summaries=["By 条件路径可能决定 DeltaDec 增量是否成立。"],
+        )
+
+
+class StubScientificQuestioner:
+    def challenge_hypothesis_tree(self, *, planner_input, rag_context, tree, mined_candidates=None):
+        return ScientificQuestionerResponse(
+            challenge_points=["当前仍需确认 DeltaDec 的增量是否独立于 By。"],
+            guidance_notes=["questioner_gap:需要区分独立信息与中介解释。"],
+            proposed_uncertainties=[
+                ProposedUncertainty(
+                    question="DeltaDec 的增量是否独立于 By？",
+                    description="需要区分独立信息与中介解释。",
+                    priority="high",
+                )
+            ],
+            hypothesis_updates=[
+                HypothesisQuestioningUpdate(
+                    hypothesis_id=node.hypothesis_id,
+                    impact_direction="supports",
+                    impact_strength=0.55,
+                    confidence=0.8,
+                    rationale="质询认为当前证据仍偏向支持该假设。",
+                )
+                for node in tree.nodes
+            ],
+        )
+
+    def question(self, *, planner_input, rag_context, mined_candidates=None):
+        return ScientificQuestionerResponse(
+            challenge_points=["当前仍需确认 DeltaDec 的增量是否独立于 By。"],
+            guidance_notes=["questioner_gap:需要区分独立信息与中介解释。"],
+            proposed_uncertainties=[
+                ProposedUncertainty(
+                    question="DeltaDec 的增量是否独立于 By？",
+                    description="需要区分独立信息与中介解释。",
+                    priority="high",
+                )
+            ],
+        )
+
+
+class StubExperimentPlanner:
+    def refine(
+        self,
+        *,
+        task,
+        candidate,
+        existing_refinements=None,
+        semantic_service=None,
+        history_context=None,
+    ):
+        return ProtocolRefinementSuggestion(
+            suggestion_id="EPL_STUB_001",
+            target_candidate_id=candidate.experiment_id,
+            refinement_type="llm_experiment_planner",
+            rationale=f"为 {candidate.experiment_id} 增加协议级焦点检查。",
+            suggested_model_parameters={"alpha": 0.2},
+            suggested_feature_focus=candidate.design.treatment[:1],
+            suggested_steps=[
+                ExperimentStep(
+                    step=1,
+                    action="planner_hypothesis_focus",
+                    parameters={"candidate_id": candidate.experiment_id},
+                )
+            ],
+            protocol_notes=["stub_experiment_planner_note"],
+        )
+
+
+class StubHypothesisGenerator:
+    """Offline tree pass-through so round bootstrap can run without LLM proposals."""
+
+    def __init__(self, repository):
+        self.repository = repository
+
+    def build_tree(self, **kwargs):
+        tree = self.repository.load_hypothesis_tree()
+        uncertainties = self.repository.load_uncertainties()
+        return HypothesisGenerationResult(
+            tree=tree,
+            generated_node_ids=(),
+            updated_uncertainties=tuple(uncertainties.records),
+            mode="llm_next_round",
+            source="test_stub",
+        )
 
 
 class HumanControlFlowTest(unittest.TestCase):
@@ -128,7 +296,11 @@ class HumanControlFlowTest(unittest.TestCase):
         uncertainties = self.repository.load_uncertainties()
         uncertainties.current_round = 1
         self.repository.save_uncertainties(uncertainties)
-        DecisionLayerService(self.repository).build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
+        DecisionLayerService(
+            self.repository,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        ).build_candidate_plan(task=self.task, data_dictionary=self.dictionary)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -152,8 +324,35 @@ class HumanControlFlowTest(unittest.TestCase):
         omni.to_csv(self.project_root / "data" / "raw" / "omni.csv", index=False)
         lhaaso.to_csv(self.project_root / "data" / "raw" / "lhaaso.csv", index=False)
 
+    def _mark_round_closed(self, round_id: int) -> None:
+        """Simulate a completed execution+evaluation cycle for short-circuit round tests."""
+        history = self.repository.load_round_history()
+        entry = next((item for item in history.entries if item.round_id == round_id), None)
+        if entry is None:
+            entry = RoundHistoryEntry(round_id=round_id)
+            history.entries.append(entry)
+        entry.status = "completed"
+        entry.gating_ready = True
+        entry.closure_checklist = [
+            ClosureChecklistItem(item_id="candidate_approval", label="候选实验已审批", completed=True),
+            ClosureChecklistItem(
+                item_id="experiment_execution",
+                label="实验执行已完成或已失败归因",
+                completed=True,
+            ),
+            ClosureChecklistItem(item_id="result_feedback", label="结果解释与反馈已写回", completed=True),
+        ]
+        entry.updated_at = datetime.now()
+        history.last_updated = entry.updated_at
+        self.repository.save_round_history(history)
+
     def test_request_review_and_approve_top_candidate(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         review_payload = control.request_experiment_selection_review()
         self.assertEqual(review_payload["status"], "awaiting_human_review")
         self.assertEqual(review_payload["current_phase"], "experiment_planning")
@@ -170,7 +369,8 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertTrue(protocol.target_uncertainties)
         self.assertTrue(protocol.disagreement_context)
         self.assertEqual(protocol.steps[0].action, "resolve_disagreement")
-        self.assertIn("targets_uncertainty:U01", protocol.notes)
+        top_uncertainty_id = protocol.target_uncertainties[0]
+        self.assertIn(f"targets_uncertainty:{top_uncertainty_id}", protocol.notes)
         baseline_step = next(step for step in protocol.steps if step.action == "run_model" and step.parameters.get("label") == "baseline")
         self.assertEqual(baseline_step.parameters["label"], "baseline")
         self.assertTrue((self.project_root / "config" / "latest_protocol.json").exists())
@@ -190,7 +390,12 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertEqual(decision_log.decisions[2].decision_type, "protocol_generated")
 
     def test_reject_candidate_updates_state_and_candidate_set(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_experiment_selection_review()
         rejected = control.reject_candidate(reason="该候选与当前判断不一致")
 
@@ -204,7 +409,12 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertGreaterEqual(rejected["remaining_candidates"], 0)
 
     def test_round_review_and_decision_are_logged(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         payload = control.request_round_review(
             round_id=1,
             experiment_id="E_R02_01",
@@ -233,6 +443,7 @@ class HumanControlFlowTest(unittest.TestCase):
         )
         self.assertEqual(payload["status"], "awaiting_round_decision")
 
+        self._mark_round_closed(round_id=1)
         recorded = control.record_round_decision(
             round_id=1,
             decision="adjust",
@@ -248,7 +459,21 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertEqual(recorded["planning_status"], "awaiting_data_dictionary")
 
     def test_round_decision_adjust_rebuilds_candidate_plan(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            planner_mode="llm",
+            planner_output_builder=PlannerOutputBuilder(
+                mode="llm",
+                central_controller=CentralControllerLLM(gateway=StubLLMGateway()),
+            ),
+            rag_service=StubRAGService(),
+            hypothesis_proposer=StubHypothesisProposer(),
+            hypothesis_generator=StubHypothesisGenerator(self.repository),
+            scientific_questioner=StubScientificQuestioner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_round_review(
             round_id=1,
             experiment_id="E_R02_01",
@@ -289,12 +514,23 @@ class HumanControlFlowTest(unittest.TestCase):
             ],
         )
 
+        self._mark_round_closed(round_id=1)
         recorded = control.record_round_decision(
             round_id=1,
             decision="adjust",
             human_feedback="下一轮先测试 By 单变量路径",
             data_dictionary=self.dictionary,
         )
+        self.assertEqual(recorded["planning_status"], "awaiting_hypothesis_confirmation")
+        task = self.repository.load_task()
+        task.payload.constraints.min_active_hypotheses = 2
+        self.repository.save_task(task)
+        self.repository.save_data_dictionary(self.dictionary)
+        confirmed = control.confirm_hypothesis_tree()
+        self.assertEqual(confirmed["status"], "awaiting_scientific_questioning")
+        questioned = control.run_hypothesis_scientific_questioning()
+        self.assertEqual(questioned["planning_status"], "scientific_questioning_completed")
+        recorded = control.start_uncertainty_identification()
         self.assertEqual(recorded["planning_status"], "candidate_plan_rebuilt")
         self.assertEqual(recorded["next_review"]["status"], "awaiting_human_review")
         self.assertEqual(recorded["planner_input"].next_round_id, 2)
@@ -311,7 +547,8 @@ class HumanControlFlowTest(unittest.TestCase):
             if "human_feedback_focus_single_feature:By" in candidate.design.notes
         ]
         self.assertTrue(focused)
-        self.assertEqual(focused[0].design.treatment, ["By"])
+        self.assertIn("By", focused[0].design.treatment)
+        self.assertIn("human_feedback_focus_single_feature:By", focused[0].design.notes)
 
         planner_input = self.repository.load_planner_input()
         self.assertEqual(planner_input.source_round_id, 1)
@@ -342,9 +579,9 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertTrue(uncertainties.records[0].history)
         self.assertEqual(uncertainties.records[0].history[-1].event, "planner_interpretation")
         self.assertIsNotNone(uncertainties.records[0].notes)
-        self.assertEqual(uncertainties.record_index()["U01"].priority, "high")
+        self.assertEqual(uncertainties.record_index()["U01"].priority, "medium")
         self.assertEqual(uncertainties.record_index()["U02"].priority, "low")
-        self.assertEqual(uncertainties.priority_queue.queue[0].uncertainty_id, "U01")
+        self.assertEqual(uncertainties.priority_queue.queue[0].uncertainty_id, "U_LLM_R02_03")
 
         experiment_memory = self.repository.load_experiment_memory()
         trace_entry = experiment_memory.entry_index()["E_R02_01"]
@@ -353,41 +590,89 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertIsNotNone(trace_entry.reasoning_traces[-1].priority_delta)
 
         decision_log = self.repository.load_decision_log()
-        self.assertEqual(decision_log.decisions[-4].decision_type, "planner_input_prepared")
+        self.assertEqual(decision_log.decisions[-6].decision_type, "planner_input_prepared")
+        self.assertEqual(decision_log.decisions[-5].decision_type, "hypothesis_tree_confirmed")
+        self.assertEqual(decision_log.decisions[-4].decision_type, "scientific_questioning_completed")
         self.assertEqual(decision_log.decisions[-3].decision_type, "planner_output_generated")
         self.assertEqual(decision_log.decisions[-2].decision_type, "planner_output_applied")
         self.assertEqual(decision_log.decisions[-1].decision_type, "experiment_selection_requested")
 
     def test_round_decision_continue_rebuilds_candidate_plan_without_feedback(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            planner_mode="llm",
+            planner_output_builder=PlannerOutputBuilder(
+                mode="llm",
+                central_controller=CentralControllerLLM(gateway=StubLLMGateway()),
+            ),
+            rag_service=StubRAGService(),
+            hypothesis_proposer=StubHypothesisProposer(),
+            hypothesis_generator=StubHypothesisGenerator(self.repository),
+            scientific_questioner=StubScientificQuestioner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_round_review(
             round_id=1,
             experiment_id="E_R02_01",
             evaluation_summary={"pearson_r_delta": 0.02},
         )
 
+        self._mark_round_closed(round_id=1)
         recorded = control.record_round_decision(
             round_id=1,
             decision="continue",
             data_dictionary=self.dictionary,
         )
+        self.assertEqual(recorded["planning_status"], "awaiting_hypothesis_confirmation")
+        task = self.repository.load_task()
+        task.payload.constraints.min_active_hypotheses = 2
+        self.repository.save_task(task)
+        self.repository.save_data_dictionary(self.dictionary)
+        control.confirm_hypothesis_tree()
+        control.run_hypothesis_scientific_questioning()
+        recorded = control.start_uncertainty_identification()
         self.assertEqual(recorded["planning_status"], "candidate_plan_rebuilt")
         self.assertEqual(recorded["next_review"]["status"], "awaiting_human_review")
         self.assertIsNone(recorded["planner_input"].human_feedback)
 
     def test_approve_candidate_consumes_planner_output_refinements(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            planner_mode="llm",
+            planner_output_builder=PlannerOutputBuilder(
+                mode="llm",
+                central_controller=CentralControllerLLM(gateway=StubLLMGateway()),
+            ),
+            rag_service=StubRAGService(),
+            hypothesis_proposer=StubHypothesisProposer(),
+            hypothesis_generator=StubHypothesisGenerator(self.repository),
+            scientific_questioner=StubScientificQuestioner(),
+            experiment_planner=StubExperimentPlanner(),
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_round_review(
             round_id=1,
             experiment_id="E_R02_01",
             evaluation_summary={"pearson_r_delta": -0.01, "stable": False},
         )
+        self._mark_round_closed(round_id=1)
         control.record_round_decision(
             round_id=1,
             decision="adjust",
             human_feedback="下一轮先测试 By 单变量路径",
             data_dictionary=self.dictionary,
         )
+        task = self.repository.load_task()
+        task.payload.constraints.min_active_hypotheses = 2
+        self.repository.save_task(task)
+        self.repository.save_data_dictionary(self.dictionary)
+        control.confirm_hypothesis_tree()
+        control.run_hypothesis_scientific_questioning()
+        control.start_uncertainty_identification()
 
         protocol = control.approve_candidate(auto_continue=False)
         self.assertIn("planner_refinement:feature_focus", protocol.notes)
@@ -396,7 +681,12 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertEqual(protocol.steps[0].action, "stability_validation")
 
     def test_request_pause_is_logged(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_stop(phase="experiment_execution", reason="先检查数据质量", pause=True)
 
         process_state = self.repository.load_process_state()
@@ -408,7 +698,13 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertEqual(decision_log.decisions[0].decision_type, "pause_requested")
 
     def test_approve_execute_and_prepare_round_review(self) -> None:
-        control = HumanControlService(self.repository, project_root=self.project_root, run_shap=False)
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            run_shap=False,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
         control.request_experiment_selection_review()
         payload = control.approve_and_execute_candidate(
             human_notes="批准后直接执行",
@@ -433,13 +729,17 @@ class HumanControlFlowTest(unittest.TestCase):
         self.assertEqual(experiment_memory.entries[0].experiment_id, payload["protocol"].experiment_id)
 
         uncertainties = self.repository.load_uncertainties()
-        self.assertTrue(uncertainties.record_index()["U01"].history)
+        target_uncertainty_id = payload["protocol"].target_uncertainties[0]
+        self.assertTrue(uncertainties.record_index()[target_uncertainty_id].history)
         self.assertIn(
             "disagreement_evaluation",
-            [entry.event for entry in uncertainties.record_index()["U01"].history],
+            [entry.event for entry in uncertainties.record_index()[target_uncertainty_id].history],
         )
-        self.assertEqual(uncertainties.record_index()["U01"].resolving_experiment, payload["protocol"].experiment_id)
-        self.assertIsNotNone(uncertainties.record_index()["U01"].notes)
+        self.assertEqual(
+            uncertainties.record_index()[target_uncertainty_id].resolving_experiment,
+            payload["protocol"].experiment_id,
+        )
+        self.assertIsNotNone(uncertainties.record_index()[target_uncertainty_id].notes)
 
         decision_log = self.repository.load_decision_log()
         self.assertEqual(decision_log.decisions[-1].decision_type, "round_review_requested")

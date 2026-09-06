@@ -5,6 +5,20 @@ import { useTimelineBundle } from '../hooks/useTimelineBundle'
 import { useTabs } from '../contexts/TabContext'
 import { resetClientWorkspaceState } from '../utils/missionControllerPersistence'
 
+function hypothesisStatusLabel(status: string) {
+  const mapping: Record<string, string> = {
+    active: '活跃',
+    newly_split: '本轮新增',
+    observing: '待观察',
+    converged: '可验证',
+    draft: '草稿',
+    pending: '待定',
+    pruned: '剪枝',
+    weakened: '已削弱',
+  }
+  return mapping[status] ?? status
+}
+
 export function ClosedLoopTimelinePage() {
   const { data, loading, error, refreshing, refresh } = useTimelineBundle()
   const rounds = data?.viewModels.rounds ?? []
@@ -14,10 +28,12 @@ export function ClosedLoopTimelinePage() {
   const sessionStatus = data?.snapshot.sessionStatus
   const { addTab } = useTabs()
   const [showHistoryRounds, setShowHistoryRounds] = useState(false)
+  const [showHypothesisTree, setShowHypothesisTree] = useState(false)
   const [resetting, setResetting] = useState(false)
   const currentRound = useMemo(() => rounds.find((round) => round.isCurrent) ?? rounds[rounds.length - 1] ?? null, [rounds])
   const displayQuestion = mission?.scientificQuestion || currentRound?.questionSummary || ''
   const knowledgeCount = knowledgeBase?.collections.reduce((sum, item) => sum + item.count, 0) ?? 0
+  const knowledgeUploadCount = knowledgeBase?.uploads.length ?? 0
   const dataCount = mission?.dataSources.length ?? 0
   const dataTableNames = useMemo(
     () =>
@@ -74,6 +90,17 @@ export function ClosedLoopTimelinePage() {
           </div>
 
           <div className="timeline-nav timeline-nav--tools">
+            <div className="status-chip">
+              <span>运行模型</span>
+              <strong>{String(sessionStatus?.model ?? 'qwen3.8-flash')}</strong>
+            </div>
+            <button
+              type="button"
+              className="timeline-nav__pill"
+              onClick={() => setShowHypothesisTree((value) => !value)}
+            >
+              {showHypothesisTree ? '折叠假设树' : '展开假设树'}
+            </button>
             <button
               type="button"
               className="timeline-nav__pill"
@@ -86,7 +113,7 @@ export function ClosedLoopTimelinePage() {
               className="timeline-nav__pill"
               onClick={() => void handleClearMemory()}
             >
-              {resetting ? '清空中' : '清空本轮闭环记忆'}
+              {resetting ? '清零中' : '实验清零'}
             </button>
             <button
               type="button"
@@ -120,8 +147,8 @@ export function ClosedLoopTimelinePage() {
               <span className="metric-pill__value">{processMonitor?.currentPhase ?? '--'}</span>
             </div>
             <div className="metric-pill">
-              <span className="metric-pill__label">知识条目</span>
-              <span className="metric-pill__value">{knowledgeCount || '--'}</span>
+              <span className="metric-pill__label">知识材料</span>
+              <span className="metric-pill__value">{knowledgeUploadCount || '--'}</span>
             </div>
             <div className="metric-pill">
               <span className="metric-pill__label">数据文件</span>
@@ -129,6 +156,39 @@ export function ClosedLoopTimelinePage() {
             </div>
           </div>
         </section>
+
+        {showHypothesisTree && currentRound ? (
+          <section className="hypothesis-tree-quick-panel">
+            <div className="hypothesis-tree-quick-panel__header">
+              <span className="detail-card__eyebrow">假设树速览</span>
+              <h2>当前假设树 · 第 {currentRound.roundNumber} 轮</h2>
+              <span>当前展示 {currentRound.hypotheses.length} 个竞争假设</span>
+            </div>
+            {currentRound.hypotheses.length > 0 ? (
+              <div className="hypothesis-tree-preview">
+                {currentRound.hypotheses.map((item, index) => (
+                  <article
+                    key={item.id}
+                    className={[
+                      'hypothesis-badge',
+                      `hypothesis-badge--${item.status}`,
+                    ].join(' ')}
+                  >
+                    <span className="hypothesis-badge__id">
+                      {item.displayLabel ?? `H${index + 1}`}
+                    </span>
+                    <span className="hypothesis-badge__label">{item.label}</span>
+                    <span className="hypothesis-badge__score">
+                      {hypothesisStatusLabel(item.status)} · 支持度 {item.supportScore.toFixed(3)}
+                    </span>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="timeline-empty-state">当前轮尚未生成假设树。</p>
+            )}
+          </section>
+        ) : null}
 
         <main className="workflow-board">
           {loading ? (
@@ -153,18 +213,7 @@ export function ClosedLoopTimelinePage() {
                   ))}
                 </div>
 
-                <div className="workflow-insight-grid">
-                  <article className="detail-card">
-                    <span className="detail-card__eyebrow">已上传文件</span>
-                    <h2>知识与数据</h2>
-                    <ul className="detail-list">
-                      <li>知识材料: {knowledgeCount > 0 ? `已接入 ${knowledgeCount} 条知识线索` : '本轮尚未接入知识材料'}</li>
-                      <li>
-                        数据资源: {dataTableNames.join('，') || '暂无'}
-                      </li>
-                    </ul>
-                  </article>
-
+                <div className="workflow-insight-grid workflow-insight-grid--split">
                   <article className="detail-card">
                     <span className="detail-card__eyebrow">当前焦点</span>
                     <h2>{currentRound.stateLabel}</h2>
@@ -179,9 +228,10 @@ export function ClosedLoopTimelinePage() {
                       </div>
                     ) : null}
                     <ul className="detail-list">
-                      {currentRound.hypotheses.slice(0, 3).map((item) => (
+                      {currentRound.hypotheses.map((item) => (
                         <li key={item.id}>
-                          {item.id} · {item.label} · {item.supportScore.toFixed(2)}
+                          <strong>{item.displayLabel ?? item.id}</strong> {item.label} · 支持度{' '}
+                          {item.supportScore.toFixed(3)}
                         </li>
                       ))}
                     </ul>
@@ -225,7 +275,9 @@ export function ClosedLoopTimelinePage() {
                         <strong>Round {round.roundNumber}</strong>
                         <span>{round.stateLabel}</span>
                       </div>
-                      <p>{round.questionSummary}</p>
+                      <p className="workflow-history-card__conclusion">
+                        {round.conclusion || (round.isCurrent ? '本轮结论待生成' : '本轮尚未归档结论')}
+                      </p>
                       <div className="workflow-history-card__meta">
                         <span>假设 {round.hypotheses.length}</span>
                         <span>不确定性 {round.uncertainties.length}</span>
@@ -240,6 +292,95 @@ export function ClosedLoopTimelinePage() {
             <div className="timeline-empty-state">尚未开始实验，请先在中央控制智能体页输入科学问题并上传数据。</div>
           )}
         </main>
+
+        <section className="detail-card detail-card--wide workflow-mission-panel">
+          <div className="workflow-mission-panel__header">
+            <div>
+              <span className="detail-card__eyebrow">Task Definition</span>
+              <h2>任务定义</h2>
+            </div>
+            <span className="detail-card__meta">{mission?.questionType ?? '未定义问题类型'}</span>
+          </div>
+          <div className="workflow-mission-panel__grid">
+            <div className="workflow-mission-panel__cell workflow-mission-panel__cell--wide">
+              <strong>科学问题</strong>
+              <p>{displayQuestion || '尚未录入科学问题'}</p>
+            </div>
+            <div className="workflow-mission-panel__group">
+              <strong className="workflow-mission-panel__group-title">研究目标与变量</strong>
+              <div className="workflow-mission-panel__vars">
+                <div>
+                  <b>研究目标</b>
+                  <span>{mission?.target || '未定义'}</span>
+                </div>
+                <div>
+                  <b>解释变量</b>
+                  <span>{mission?.variables.x || '未定义'}</span>
+                </div>
+                <div>
+                  <b>目标变量</b>
+                  <span>{mission?.variables.y || mission?.target || '未定义'}</span>
+                </div>
+                <div>
+                  <b>候选特征</b>
+                  <span>
+                    {(mission?.variables.mCandidates ?? []).length > 0
+                      ? mission!.variables.mCandidates.join('、')
+                      : '未配置'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="workflow-mission-panel__cell">
+              <strong>约束条件</strong>
+              <ul className="detail-list">
+                {(mission?.constraints ?? []).length > 0
+                  ? mission!.constraints.map((item, index) => <li key={`constraint-${index}`}>{item}</li>)
+                  : <li>未显式配置</li>}
+              </ul>
+            </div>
+            <div className="workflow-mission-panel__cell">
+              <strong>评价指标</strong>
+              <p>{(mission?.metrics ?? []).length > 0 ? mission!.metrics.join('、') : '未配置'}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="detail-card detail-card--wide workflow-upload-panel">
+          <div className="workflow-upload-panel__header">
+            <div>
+              <span className="detail-card__eyebrow">Uploaded Files</span>
+              <h2>已上传文件</h2>
+            </div>
+            <span className="detail-card__meta">{dataTableNames.length} 个数据文件</span>
+          </div>
+          <div className="workflow-upload-panel__grid">
+            <div>
+              <strong>数据文件</strong>
+              {dataTableNames.length > 0 ? (
+                <ul className="workflow-mission-panel__files">
+                  {dataTableNames.map((name) => <li key={name}>{name}</li>)}
+                </ul>
+              ) : (
+                <p>尚未上传数据文件</p>
+              )}
+            </div>
+            <div>
+              <strong>知识材料</strong>
+              {(knowledgeBase?.uploads ?? []).length > 0 ? (
+                <ul className="detail-list">
+                  {knowledgeBase!.uploads.map((item) => <li key={item.id}>{item.fileName}</li>)}
+                </ul>
+              ) : (
+                <p>尚未接入独立知识文件</p>
+              )}
+            </div>
+            <div>
+              <strong>推理痕迹</strong>
+              <p>{knowledgeCount > 0 ? `当前上下文包含 ${knowledgeCount} 条智能体推理片段` : '暂无推理痕迹'}</p>
+            </div>
+          </div>
+        </section>
 
         <footer className="timeline-progress">
           <div className="timeline-progress__label">

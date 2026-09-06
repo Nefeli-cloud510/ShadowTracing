@@ -3,11 +3,17 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from core.protocol_bridge import ElasticNetDataSourceConfig, ElasticNetProtocolBridge
 from core.result_unified import build_experiment_result, export_result_bundle
-from core.unified_schema import ExperimentProtocol, ExperimentResult, VisualizationArtifact
+from core.unified_schema import (
+    DataSourceCoverage,
+    ExperimentProtocol,
+    ExperimentResult,
+    VisualizationArtifact,
+)
 from models import elasticnet_runner as runner
 
 
@@ -90,6 +96,11 @@ class UnifiedExperimentHarness:
         }
 
         visualizations = self._collect_visualizations(protocol, baseline_output, treatment_output)
+        coverage_entries: list[DataSourceCoverage] = []
+        outputs_to_track = [baseline_output] if is_baseline_single_arm else [baseline_output, treatment_output]
+        for output in outputs_to_track:
+            for entry in output.get("data_coverage", []):
+                coverage_entries.append(DataSourceCoverage.model_validate(entry))
         result = build_experiment_result(
             protocol,
             baseline_output=baseline_output,
@@ -97,6 +108,7 @@ class UnifiedExperimentHarness:
             prediction_paths=prediction_paths,
             visualizations=visualizations,
             duration_seconds=duration_seconds,
+            data_coverage=coverage_entries,
         )
         export_result_bundle(
             result,
@@ -132,32 +144,75 @@ class UnifiedExperimentHarness:
         output_dir: Path,
     ) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
-        runner_config = self.bridge.build_runner_config(protocol, feature_columns)
+        arm_windows = protocol.model.parameters.get("arm_time_windows")
+        arm_overrides = arm_windows.get(label) if isinstance(arm_windows, dict) else None
+        runner_config = self.bridge.build_runner_config(
+            protocol,
+            feature_columns,
+            arm_overrides=arm_overrides,
+        )
 
-        x_raw, y_raw, time_raw = runner.load_and_merge_data(runner_config)
-        x_all, y_all, time_all, feature_names = runner.build_sliding_window(
-            x_raw,
-            y_raw,
-            time_raw,
+        merged = runner.load_and_merge_data(runner_config)
+        window_result = runner.build_sliding_window(
+            merged.X,
+            merged.y,
+            merged.time,
             runner_config.time_window_config,
         )
         xtr, xte, ytr, yte, time_train, time_test, scaler = runner.split_and_scale_dataset(
-            x_all,
-            y_all,
-            time_all,
+            window_result.X_all,
+            window_result.y_all,
+            window_result.time_all,
             runner_config.time_window_config.test_split_ratio,
-            feature_names,
+            window_result.feature_names,
         )
 
         model = runner.train_elasticnet_model(xtr, ytr, runner_config.elasticnet_config)
         metrics, ytr_pred, yte_pred = runner.evaluate_model(model, xtr, xte, ytr, yte)
-        coef_df = runner.make_coefficient_table(model, feature_names)
+        coef_df = runner.make_coefficient_table(model, window_result.feature_names)
         coef_df.to_csv(output_dir / f"{label}_coefficients.csv", index=False, encoding="utf-8-sig")
 
+        sparse_labels = set(merged.active_sparse_sources)
+        coverage_entries: list[dict] = []
+        # 只有本轮真正启用了稀疏数据源的缺失日处理时，才对外输出覆盖审计；
+        # 本轮仅使用 OMNI + LHAASO 时，不把故意剔除 ICME 的日期误报为缺失。
+        if sparse_labels:
+            for cov in merged.coverage:
+                if cov.source not in sparse_labels:
+                    continue
+                entry = cov.to_dict()
+                entry["run_id"] = label
+                entry["dropped_gap_windows"] = 0
+                entry["note"] = "缺失记录已按行剔除（inner merge + dropna），窗口直接基于剩余行构造"
+                coverage_entries.append(entry)
+
+        full_time = np.concatenate([time_train, time_test])
+        x_limits = (full_time.min(), full_time.max()) if len(full_time) > 0 else None
+        split_time = time_test[0] if len(time_test) > 0 else None
+        chart_label = f"{protocol.experiment_id} / {label}"
         figure_paths = {
             "coefficients": runner.plot_feature_coefficients(coef_df, output_dir),
-            "scatter": runner.plot_prediction_scatter(yte, yte_pred, metrics, output_dir),
-            "timeseries": runner.plot_prediction_series(time_test, yte, yte_pred, output_dir),
+            "scatter": runner.plot_prediction_scatter(
+                yte,
+                yte_pred,
+                metrics,
+                output_dir,
+                experiment_label=chart_label,
+                train_true=ytr,
+                train_pred=ytr_pred,
+            ),
+            "timeseries": runner.plot_prediction_series(
+                time_test,
+                yte,
+                yte_pred,
+                output_dir,
+                experiment_label=chart_label,
+                time_train=time_train,
+                train_true=ytr,
+                train_pred=ytr_pred,
+                x_limits=x_limits,
+                split_time=split_time,
+            ),
             "residual_scatter": runner.plot_residual_scatter(yte_pred, yte - yte_pred, output_dir),
             "residual_hist": runner.plot_residual_histogram(yte - yte_pred, output_dir),
         }
@@ -172,6 +227,8 @@ class UnifiedExperimentHarness:
                 "bar": str(shap_result["bar_path"]),
                 "waterfall": str(shap_result["waterfall_path"]),
                 "importance_csv": str(shap_result["importance_path"]),
+                "variable_importance_csv": str(shap_result["variable_importance_path"]),
+                "lag_profile_csv": str(shap_result["lag_profile_path"]),
             }
 
         return {
@@ -190,6 +247,9 @@ class UnifiedExperimentHarness:
             "figure_paths": {name: str(path) for name, path in figure_paths.items()},
             "shap_paths": shap_paths,
             "shap_importance": shap_importance,
+            "data_coverage": coverage_entries,
+            "sliding_window_total": window_result.total_windows,
+            "sliding_window_dropped": window_result.dropped_gap_windows,
         }
 
     @staticmethod

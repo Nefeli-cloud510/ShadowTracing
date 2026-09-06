@@ -27,8 +27,9 @@ export interface TimelineNodeData {
 
 export interface HypothesisPreviewNode {
   id: string
+  displayLabel?: string
   label: string
-  status: 'active' | 'newly_split' | 'observing' | 'weakened'
+  status: 'active' | 'newly_split' | 'observing' | 'weakened' | 'converged' | 'pruned' | 'pending' | 'draft'
   supportScore: number
   level?: number
 }
@@ -62,6 +63,18 @@ export interface EvaluationPreview {
   stable?: boolean
 }
 
+export interface DataCoverageViewModel {
+  source?: string
+  runId?: string
+  expectedDays?: number
+  observedDays?: number
+  missingDays?: number
+  coverageRatio?: number
+  droppedGapWindows?: number
+  interpolatedDays?: number
+  note?: string
+}
+
 export interface RoundData {
   id: string
   roundNumber: number
@@ -69,6 +82,7 @@ export interface RoundData {
   subtitle: string
   stateLabel: string
   questionSummary: string
+  conclusion?: string
   isCurrent: boolean
   isCollapsed: boolean
   nodes: TimelineNodeData[]
@@ -146,9 +160,20 @@ export interface KnowledgeMemoryViewModel {
 export interface ExperimentEvaluationViewModel {
   recommendedExperimentId?: string
   executionPlanSummary?: string
+  executedExperimentId?: string
+  evaluatedRound?: number
+  executionPlanExperimentId?: string
   candidateExperiments: any[]
   experimentEntries: any[]
   latestEvaluation?: EvaluationPreview
+  modelParameters?: Record<string, unknown>
+  tuningNarrative?: string
+  tuningEntries?: Array<{
+    refinementType?: string
+    rationale?: string
+    modelParameters?: Record<string, unknown>
+    protocolNotes?: string[]
+  }>
   metricComparison?: {
     baselineRmse?: number
     treatmentRmse?: number
@@ -157,6 +182,7 @@ export interface ExperimentEvaluationViewModel {
     deltaPearsonR?: number
     deltaRmse?: number
   }
+  dataCoverage: DataCoverageViewModel[]
   visualizationPaths: string[]
   visualizationItems: Array<{
     path: string
@@ -254,6 +280,9 @@ export interface ProcessMonitorViewModel {
 export interface RoundReportViewModel {
   roundNumber: number
   recommendedAction: 'next_round' | 'adjust' | 'stop'
+  sourceExperimentId?: string
+  sourceUpdatedAt?: string
+  threeLayerConclusion?: ThreeLayerConclusionViewModel
   summary: {
     baselinePearsonR?: number
     treatmentPearsonR?: number
@@ -262,10 +291,98 @@ export interface RoundReportViewModel {
     treatmentRmse?: number
     deltaRmse?: number
   }
+  dataCoverage: DataCoverageViewModel[]
   scientificConclusions: string[]
   highlightedHypotheses: HypothesisPreviewNode[]
   unresolvedQuestions: string[]
   decisionOptions: string[]
+  iterationEvidence?: {
+    sourceRound: number
+    inputSources: string[]
+    validations: Array<{
+      itemId: string
+      label: string
+      passed: boolean
+      detail?: string
+    }>
+    previousFocus?: string
+    nextFocus?: string
+    previousExperimentId?: string
+    nextExperimentId?: string
+  }
+  candidateEvolution?: {
+    previousId?: string
+    nextId?: string
+    previousFocus?: string
+    nextFocus?: string
+    previousTreatment: string[]
+    nextTreatment: string[]
+    summary: string
+  }
+  modelParameters?: Record<string, unknown>
+  tuningNarrative?: string
+  tuningEntries?: Array<{
+    refinementType?: string
+    rationale?: string
+    modelParameters?: Record<string, unknown>
+    protocolNotes?: string[]
+  }>
+}
+
+export interface ThreeLayerConclusionExperimentLayer {
+  experimentId: string
+  designSummary: string
+  probeAxis?: string
+  forecastHorizonDays?: number
+  baselineRmse?: number
+  treatmentRmse?: number
+  baselinePearsonR?: number
+  treatmentPearsonR?: number
+  skillDelta?: number
+  decisive: boolean
+}
+
+export interface ThreeLayerConclusionHypothesisRow {
+  hypothesisId: string
+  displayHypothesisId: string
+  statement: string
+  predictedDirection?: string
+  predictedRange?: [number, number]
+  actualDelta?: number
+  directionMatched?: boolean | string
+  magnitudeMatched?: boolean | string
+  conclusion: string
+  supportAfter?: number
+}
+
+export interface ThreeLayerConclusionScientificLayer {
+  mainQuestion: string
+  answer: string
+  pathQuestion?: string
+  pathAnswer?: string
+  evidenceText?: string
+}
+
+export interface ConclusionDataLayer {
+  rmseAttribution?: string
+  pearsonAttribution?: string
+  skillDeltaMeaning?: string
+  anomalies: string[]
+  nextFocus?: string
+}
+
+export interface ConclusionTrackingLayer {
+  auditItems: string[]
+  sources: string[]
+  snapshotRefs: string[]
+}
+
+export interface ThreeLayerConclusionViewModel {
+  experimentLayer: ThreeLayerConclusionExperimentLayer
+  hypothesisLayer: ThreeLayerConclusionHypothesisRow[]
+  scientificLayer: ThreeLayerConclusionScientificLayer
+  dataLayer?: ConclusionDataLayer
+  trackingLayer?: ConclusionTrackingLayer
 }
 
 export interface ApprovalOverlayViewModel {

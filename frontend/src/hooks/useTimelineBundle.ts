@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { loadTimelineBundle } from '../data/realStateLoader'
 import type { TimelineDataBundle } from '../types/timeline'
 
@@ -16,30 +16,36 @@ export function useTimelineBundle() {
     refreshing: false,
     error: null,
   })
+  const latestDataRef = useRef<TimelineDataBundle | null>(null)
 
   useEffect(() => {
     let isMounted = true
     let intervalId: number | null = null
 
     async function load(isRefresh = false) {
-      if (isMounted) {
+      if (isRefresh && isMounted) {
         setState((current) => ({
           ...current,
-          loading: current.data ? false : !isRefresh,
-          refreshing: isRefresh,
+          refreshing: true,
           error: null,
         }))
       }
 
       try {
         const data = await loadTimelineBundle()
+        latestDataRef.current = data
         if (isMounted) {
-          setState({ data, loading: false, refreshing: false, error: null })
+          setState({
+            data,
+            loading: false,
+            refreshing: false,
+            error: null,
+          })
         }
       } catch (error) {
         if (isMounted) {
           setState((current) => ({
-            data: isRefresh ? current.data : null,
+            data: current.data,
             loading: false,
             refreshing: false,
             error: error instanceof Error ? error.message : 'Failed to load timeline data',
@@ -50,8 +56,11 @@ export function useTimelineBundle() {
 
     void load()
     intervalId = window.setInterval(() => {
-      void load(true)
-    }, 4000)
+      if (document.hidden) {
+        return
+      }
+      void load(false)
+    }, 8000)
 
     return () => {
       isMounted = false

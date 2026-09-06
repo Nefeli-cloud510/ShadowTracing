@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from core.unified_schema import (
+    DataSourceCoverage,
     ExecutionSummary,
     ExperimentProtocol,
     ExperimentResult,
@@ -40,6 +41,7 @@ def build_experiment_result(
     prediction_paths: dict[str, str | Path],
     visualizations: list[VisualizationArtifact],
     duration_seconds: float,
+    data_coverage: list[DataSourceCoverage] | None = None,
 ) -> ExperimentResult:
     baseline_metrics = baseline_output["metrics"]
     treatment_metrics = treatment_output["metrics"]
@@ -64,6 +66,7 @@ def build_experiment_result(
         ],
         comparison=build_metric_delta(baseline_metrics, treatment_metrics),
         visualizations=visualizations,
+        data_coverage=data_coverage or [],
         execution=ExecutionSummary(
             duration_seconds=duration_seconds,
             compute_seconds=duration_seconds,

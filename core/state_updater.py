@@ -5,6 +5,15 @@ from typing import Any
 
 from core.state_repository import UnifiedStateRepository
 from core.support_update_rules import compute_support_update_from_reasoning, priority_after_action
+from core.hypothesis_state_machine import (
+    ACTIVATION_THRESHOLD,
+    ACTIVE,
+    CONVERGED,
+    OBSERVING,
+    PENDING,
+    PRUNED,
+    resolve_status,
+)
 from core.unified_schema import (
     ClosureChecklistItem,
     CritiqueRecord,
@@ -19,6 +28,7 @@ from core.unified_schema import (
     HypothesisTreeState,
     InterpretationEnhancement,
     LatestTreeUpdate,
+    MAX_ACTIVE_UNCERTAINTIES,
     MetricsTimelineEntry,
     MetricsTimelineState,
     ProcessPhase,
@@ -35,6 +45,71 @@ from core.unified_schema import (
     UncertaintyRecord,
     UncertaintyState,
 )
+from core.variable_semantic_service import VariableSemanticService
+
+
+def translate_three_layer_conclusion(
+    repository: UnifiedStateRepository,
+    evaluation: EvaluationResult,
+) -> None:
+    """Replace raw column names with physical display names in the conclusion."""
+    conclusion = evaluation.scientific.three_layer_conclusion
+    if conclusion is None:
+        return
+    try:
+        data_dictionary = repository.load_data_dictionary()
+        semantic = (
+            VariableSemanticService.from_data_dictionary(data_dictionary)
+            if data_dictionary
+            else VariableSemanticService()
+        )
+    except Exception:
+        semantic = VariableSemanticService()
+
+    try:
+        tree = repository.load_hypothesis_tree()
+    except Exception:
+        tree = None
+
+    tree = tree or HypothesisTreeState(
+        tree_id="empty",
+        task_id="empty",
+        root_question="",
+        nodes=[],
+    )
+
+    conclusion.experiment_layer.design_summary = semantic.display_text(
+        conclusion.experiment_layer.design_summary
+    )
+    scientific = conclusion.scientific_layer
+    scientific.main_question = semantic.display_text(scientific.main_question)
+    scientific.answer = semantic.display_text(scientific.answer)
+    scientific.path_question = semantic.display_text(scientific.path_question)
+    scientific.path_answer = semantic.display_text(scientific.path_answer)
+    scientific.evidence_text = semantic.display_text(scientific.evidence_text)
+    if conclusion.data_layer is not None:
+        data = conclusion.data_layer
+        data.rmse_attribution = semantic.display_text(data.rmse_attribution)
+        data.pearson_attribution = semantic.display_text(data.pearson_attribution)
+        data.skill_delta_meaning = semantic.display_text(data.skill_delta_meaning)
+        data.anomalies = [
+            semantic.display_text(item)
+            for item in data.anomalies
+        ]
+        data.next_focus = semantic.display_text(data.next_focus)
+    from core.hypothesis_identity import remap_hypothesis_id, resolve_hypothesis_display
+
+    for row in conclusion.hypothesis_layer:
+        resolved = resolve_hypothesis_display(tree, row.hypothesis_id, row.statement, semantic)
+        if resolved is None:
+            continue
+        display_label, canonical_statement = resolved
+        row.hypothesis_id = remap_hypothesis_id(tree, row.hypothesis_id, row.statement)
+        row.display_hypothesis_id = display_label
+        row.statement = canonical_statement
+        original_prefix = row.conclusion.split(" ")[0].strip("：:：")
+        if original_prefix and row.conclusion.startswith(original_prefix):
+            row.conclusion = row.conclusion.replace(original_prefix, row.display_hypothesis_id, 1)
 
 
 class UnifiedStateUpdater:
@@ -42,6 +117,18 @@ class UnifiedStateUpdater:
 
     def __init__(self, repository: UnifiedStateRepository) -> None:
         self.repository = repository
+
+    def _display_service(self) -> VariableSemanticService:
+        try:
+            data_dictionary = self.repository.load_data_dictionary()
+            if data_dictionary:
+                return VariableSemanticService.from_data_dictionary(data_dictionary)
+        except Exception:
+            pass
+        return VariableSemanticService()
+
+    def _translate_three_layer_conclusion(self, evaluation: EvaluationResult) -> None:
+        translate_three_layer_conclusion(self.repository, evaluation)
 
     def apply_evaluation(
         self,
@@ -88,6 +175,8 @@ class UnifiedStateUpdater:
                 interpretation_enhancements=interpretation_enhancements,
                 interpreter_source=interpreter_source,
             )
+        if evaluation and evaluation.scientific.three_layer_conclusion is not None:
+            self._translate_three_layer_conclusion(evaluation)
         round_history = self._update_round_history(
             round_history,
             protocol=protocol,
@@ -254,13 +343,19 @@ class UnifiedStateUpdater:
         now = datetime.now()
 
         for enhancement in interpretation_enhancements:
-            support_outcome = compute_support_update_from_reasoning(
-                current_support=node_index.get(enhancement.target_hypothesis_id).support_score
+            target_node = (
+                node_index.get(enhancement.target_hypothesis_id)
                 if enhancement.target_hypothesis_id and enhancement.target_hypothesis_id in node_index
-                else 0.5,
+                else None
+            )
+            support_outcome = compute_support_update_from_reasoning(
+                current_support=target_node.support_score if target_node is not None else 0.5,
                 impact_direction=enhancement.impact_direction,
                 impact_strength=enhancement.impact_strength,
                 confidence=enhancement.confidence,
+                previous_status=target_node.status if target_node is not None else None,
+                support_history=target_node.support_history if target_node is not None else [],
+                current_round=protocol.round_id,
             )
             if enhancement.target_hypothesis_id:
                 node = node_index.get(enhancement.target_hypothesis_id)
@@ -373,7 +468,7 @@ class UnifiedStateUpdater:
                 ],
                 key=lambda item: item.priority_score,
                 reverse=True,
-            ),
+            )[:MAX_ACTIVE_UNCERTAINTIES],
             resolved=[record.uncertainty_id for record in uncertainties.records if record.status == "resolved"],
             deprecated=[record.uncertainty_id for record in uncertainties.records if record.status == "deprecated"],
         )
@@ -416,7 +511,17 @@ class UnifiedStateUpdater:
                 reason = "基于最小可运行评价回写，按实验结果信号对支持度做保守更新。"
 
             node.support_score = after
-            node.status = _tree_status_after_update(before, after, signal, node.status)
+            node.status = resolve_status(
+                previous_status=node.status,
+                support_after=after,
+                support_history=node.support_history,
+                current_round=protocol.round_id,
+                parent_support=(
+                    node_index.get(node.parent_id).support_score
+                    if node.parent_id and node.parent_id in node_index
+                    else None
+                ),
+            )
             node.updated_at_round = protocol.round_id
             node.support_history.append(
                 SupportHistoryEntry(
@@ -560,7 +665,9 @@ class UnifiedStateUpdater:
         state.priority_queue = UncertaintyPriorityQueue(
             last_updated=now,
             current_round=protocol.round_id,
-            queue=sorted(queue_items, key=lambda item: item.priority_score, reverse=True),
+            queue=sorted(queue_items, key=lambda item: item.priority_score, reverse=True)[
+                :MAX_ACTIVE_UNCERTAINTIES
+            ],
             resolved=[record.uncertainty_id for record in state.records if record.status == "resolved"],
             deprecated=[record.uncertainty_id for record in state.records if record.status == "deprecated"],
         )
@@ -579,15 +686,20 @@ class UnifiedStateUpdater:
     ):
         now = datetime.now()
         entry_index = memory.entry_index()
+        semantic = self._display_service()
         key_findings = [
-            item.claim for item in evaluation.scientific.evidence_summary.new_evidence_for
+            semantic.display_text(item.claim)
+            for item in evaluation.scientific.evidence_summary.new_evidence_for
         ] + [
-            item.claim for item in evaluation.scientific.evidence_summary.new_evidence_against
+            semantic.display_text(item.claim)
+            for item in evaluation.scientific.evidence_summary.new_evidence_against
         ]
         key_findings.append(
-            _build_vsw_performance_summary(
-                target=protocol.target,
-                metrics=evaluation.metrics,
+            semantic.display_text(
+                _build_vsw_performance_summary(
+                    target=protocol.target,
+                    metrics=evaluation.metrics,
+                )
             )
         )
 
@@ -605,6 +717,7 @@ class UnifiedStateUpdater:
                 metrics_snapshot=evaluation.metrics,
                 key_findings=key_findings,
                 visualizations=[item.path for item in evaluation.visualizations],
+                data_coverage=result.data_coverage,
                 created_at=now,
                 updated_at=now,
             )
@@ -620,6 +733,7 @@ class UnifiedStateUpdater:
             entry.metrics_snapshot = evaluation.metrics
             entry.key_findings = key_findings
             entry.visualizations = [item.path for item in evaluation.visualizations]
+            entry.data_coverage = result.data_coverage
             entry.updated_at = now
 
         memory.current_round = max(memory.current_round, protocol.round_id)
@@ -677,6 +791,16 @@ class UnifiedStateUpdater:
                 failure_reason or "已写入评价摘要",
             ),
         ]
+        semantic = self._display_service()
+        closure = [
+            _closure_item(
+                item.item_id,
+                item.label,
+                item.completed,
+                semantic.display_text(item.detail or ""),
+            )
+            for item in closure
+        ]
 
         entry.status = "failed" if failure_reason else "completed"
         entry.source_experiment_id = protocol.experiment_id
@@ -687,7 +811,15 @@ class UnifiedStateUpdater:
         entry.target_uncertainties = list(target_uncertainties[:8])
         entry.unresolved_uncertainties = list(target_uncertainties[:5])
         entry.highlighted_hypotheses = list(tested_hypotheses[:5])
-        entry.scientific_findings = findings or ([failure_reason] if failure_reason else [])
+        entry.scientific_findings = [
+            semantic.display_text(str(item))
+            for item in (findings or ([failure_reason] if failure_reason else []))
+        ]
+        entry.three_layer_conclusion = (
+            evaluation.scientific.three_layer_conclusion.model_copy(deep=True)
+            if evaluation is not None and evaluation.scientific.three_layer_conclusion is not None
+            else None
+        )
         entry.failure_reason = failure_reason
         entry.metrics_snapshot = evaluation.metrics if evaluation is not None else None
         entry.updated_at = now
@@ -876,27 +1008,6 @@ def _apply_support_shift(current_score: float, signal: str) -> float:
     return round(min(max(current_score + shift, 0.0), 1.0), 4)
 
 
-def _status_from_signal(signal: str) -> str:
-    mapping = {"supports": "supported", "weakens": "weakened", "mixed": "partially_supported"}
-    return mapping.get(signal, "pending")
-
-
-def _tree_status_after_update(before: float, after: float, signal: str, previous_status: str) -> str:
-    if after < 0.20:
-        return "pruned"
-    if after >= 0.70 and previous_status in {"active", "converged"} and abs(after - before) < 0.05:
-        return "converged"
-    if after < 0.40 and after < before:
-        return "observing"
-    if previous_status == "pending" and after >= 0.40:
-        return "active"
-    if signal == "supports":
-        return "active"
-    if signal == "mixed":
-        return "active" if after >= 0.40 else "observing"
-    return "active" if after >= 0.40 else "observing"
-
-
 def _rebuild_tree_summary(tree: HypothesisTreeState) -> TreeSummary:
     return TreeSummary(
         total_nodes=len(tree.nodes),
@@ -919,7 +1030,6 @@ def _propagate_tree_state(
     min_active_hypotheses: int,
 ) -> None:
     node_index = tree.node_index()
-    active_like = {"active", "converged"}
 
     for node in tree.nodes:
         if node.status != "pruned" or not node.children_ids:
@@ -933,14 +1043,9 @@ def _propagate_tree_state(
             child.prune_reason = "父假设剪枝，继承剪枝"
             child.updated_at_round = round_id
 
-    active_count = sum(1 for node in tree.nodes if node.status in active_like)
-    activation_threshold = 0.35 if active_count < min_active_hypotheses else 0.40
-
     changed = True
     while changed:
         changed = False
-        active_count = sum(1 for node in tree.nodes if node.status in active_like)
-        activation_threshold = 0.35 if active_count < min_active_hypotheses else 0.40
 
         for node in tree.nodes:
             if node.parent_id is None:
@@ -955,16 +1060,19 @@ def _propagate_tree_state(
                 node.updated_at_round = round_id
                 changed = True
                 continue
-            if node.status in {"draft", "pending"} and parent.support_score >= activation_threshold:
-                node.status = "active"
+            if node.status == PENDING and parent.support_score >= ACTIVATION_THRESHOLD:
+                # 父假设达标只解锁参与资格，子节点仍按自身支持度定状态。
+                node.status = (
+                    ACTIVE if node.support_score >= ACTIVATION_THRESHOLD else OBSERVING
+                )
                 node.activated_at_round = node.activated_at_round or round_id
                 node.updated_at_round = round_id
-                if not any(item.round == round_id and item.event == "auto_activation" for item in node.support_history):
+                if not any(item.round == round_id and item.event == "parent_support_activation" for item in node.support_history):
                     node.support_history.append(
                         SupportHistoryEntry(
                             round=round_id,
                             score=node.support_score,
-                            event="auto_activation",
+                            event="parent_support_activation",
                         )
                     )
                 changed = True

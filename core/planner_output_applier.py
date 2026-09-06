@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from core.state_repository import UnifiedStateRepository
+from core.hypothesis_state_machine import ACTIVATION_THRESHOLD, previous_round_score
 from core.support_update_rules import (
     compute_support_update_from_reasoning,
     priority_after_action,
@@ -14,6 +15,7 @@ from core.unified_schema import (
     EvidenceItem,
     ExperimentMemoryEntry,
     LatestTreeUpdate,
+    MAX_ACTIVE_UNCERTAINTIES,
     PrioritizedUncertainty,
     ReasoningPlannerOutput,
     ReasoningTraceEntry,
@@ -92,6 +94,11 @@ class PlannerOutputApplier:
             rationale_note = f"planner_rationale:{supplement.rationale}"
             if proposal.experiment_id in existing:
                 candidate = existing[proposal.experiment_id]
+                llm_refined = any(
+                    note.startswith("llm_controller_") for note in proposal.design.notes
+                )
+                if llm_refined:
+                    candidate.design = proposal.design.model_copy(deep=True)
                 for proposal_note in proposal.design.notes:
                     if proposal_note not in candidate.design.notes:
                         candidate.design.notes.append(proposal_note)
@@ -131,14 +138,27 @@ class PlannerOutputApplier:
         trace_entry = _get_or_create_memory_entry(experiment_memory, planner_output)
 
         for enhancement in planner_output.interpretation_enhancements:
-            support_outcome = compute_support_update_from_reasoning(
-                current_support=node_index.get(enhancement.target_hypothesis_id).support_score
+            target_node = (
+                node_index.get(enhancement.target_hypothesis_id)
                 if enhancement.target_hypothesis_id and enhancement.target_hypothesis_id in node_index
-                else 0.5,
+                else None
+            )
+            support_outcome = compute_support_update_from_reasoning(
+                current_support=target_node.support_score if target_node is not None else 0.5,
                 impact_direction=enhancement.impact_direction,
                 impact_strength=enhancement.impact_strength,
                 confidence=enhancement.confidence,
-            )
+                previous_status=target_node.status if target_node is not None else None,
+            support_history=target_node.support_history if target_node is not None else [],
+            current_round=planner_output.next_round_id,
+            parent_support=(
+                node_index.get(target_node.parent_id).support_score
+                if target_node is not None
+                and target_node.parent_id
+                and target_node.parent_id in node_index
+                else None
+            ),
+        )
             if enhancement.target_hypothesis_id:
                 node = node_index.get(enhancement.target_hypothesis_id)
                 if node is not None:
@@ -261,6 +281,16 @@ def _rebuild_priority_queue(uncertainties) -> UncertaintyPriorityQueue:
         if record.status not in {"resolved", "deprecated"}
     ]
     queue.sort(key=lambda item: item.priority_score, reverse=True)
+    seen_ids: set[str] = set()
+    bounded: list[PrioritizedUncertainty] = []
+    for item in queue:
+        if item.uncertainty_id in seen_ids:
+            continue
+        seen_ids.add(item.uncertainty_id)
+        bounded.append(item)
+        if len(bounded) >= MAX_ACTIVE_UNCERTAINTIES:
+            break
+    queue = bounded
     return UncertaintyPriorityQueue(
         last_updated=datetime.now(),
         current_round=uncertainties.current_round,
@@ -280,8 +310,17 @@ def _ensure_min_active_hypotheses(
     if active_count >= min_required:
         return
 
+    node_index = {node.hypothesis_id: node for node in nodes}
     candidates = sorted(
-        [node for node in nodes if node.status in {"draft", "pending", "observing"}],
+        [
+            node
+            for node in nodes
+            if _may_activate_by_rule(
+                node,
+                node_index=node_index,
+                current_round=current_round,
+            )
+        ],
         key=lambda item: item.support_score,
         reverse=True,
     )
@@ -289,17 +328,38 @@ def _ensure_min_active_hypotheses(
         node.status = "active"
         node.activated_at_round = node.activated_at_round or current_round
         node.updated_at_round = current_round
-        if not any(item.round == current_round and item.event == "planner_reactivation" for item in node.support_history):
+        if not any(item.round == current_round and item.event == "min_active_fallback" for item in node.support_history):
             node.support_history.append(
                 SupportHistoryEntry(
                     round=current_round,
                     score=node.support_score,
-                    event="planner_reactivation",
+                    event="min_active_fallback",
                 )
             )
         active_count += 1
         if active_count >= min_required:
             break
+
+
+def _may_activate_by_rule(node, *, node_index, current_round: int) -> bool:
+    if node.status == "pending":
+        parent = node_index.get(node.parent_id) if node.parent_id else None
+        return (
+            parent is not None
+            and parent.support_score >= ACTIVATION_THRESHOLD
+            and node.support_score >= ACTIVATION_THRESHOLD
+        )
+    if node.status == "observing":
+        previous = previous_round_score(
+            node.support_history,
+            current_round=current_round,
+            current_score=node.support_score,
+        )
+        return (
+            node.support_score >= ACTIVATION_THRESHOLD
+            and (previous is None or node.support_score > previous)
+        )
+    return False
 
 
 def _get_or_create_memory_entry(experiment_memory, planner_output: ReasoningPlannerOutput):

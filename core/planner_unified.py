@@ -20,6 +20,7 @@ from core.unified_schema import (
     ReasoningPlannerOutput,
     ProtocolRefinementSuggestion,
 )
+from core.variable_semantic_service import VariableSemanticService
 
 
 class ReasoningPlannerInputBuilder:
@@ -53,6 +54,14 @@ class ReasoningPlannerInputBuilder:
             review_entry.details if review_entry else {},
         )
         recent_human_feedback = _build_recent_human_feedback(decision_log, source_round_id)
+        base_dictionary_summary = DataDictionarySummary(
+            dictionary_id=data_dictionary.dictionary_id,
+            dataset_name=data_dictionary.dataset_name,
+            time_column=data_dictionary.time_column,
+            target_candidates=data_dictionary.target_candidates,
+            feature_candidates=data_dictionary.feature_candidates,
+        )
+        semantic_service = VariableSemanticService.from_data_dictionary(data_dictionary)
         planner_input = ReasoningPlannerInput(
             task_id=task.task_id,
             source_round_id=source_round_id,
@@ -68,13 +77,7 @@ class ReasoningPlannerInputBuilder:
             recent_disagreement_updates=recent_disagreement_updates,
             recent_reasoning_traces=recent_reasoning_traces,
             recent_human_feedback=recent_human_feedback,
-            data_dictionary_summary=DataDictionarySummary(
-                dictionary_id=data_dictionary.dictionary_id,
-                dataset_name=data_dictionary.dataset_name,
-                time_column=data_dictionary.time_column,
-                target_candidates=data_dictionary.target_candidates,
-                feature_candidates=data_dictionary.feature_candidates,
-            ),
+            data_dictionary_summary=semantic_service.build_display_summary(base_dictionary_summary),
             planning_constraints=_build_constraints(task),
             planner_guidance=_build_planner_guidance(
                 human_feedback=human_feedback,
@@ -83,6 +86,7 @@ class ReasoningPlannerInputBuilder:
                 recent_disagreement_updates=recent_disagreement_updates,
                 recent_reasoning_traces=recent_reasoning_traces,
                 recent_human_feedback=recent_human_feedback,
+                active_hypotheses=active_hypotheses,
             ),
         )
         return planner_input
@@ -205,7 +209,7 @@ def _build_active_hypotheses(tree) -> list[HypothesisSnapshot]:
     snapshots = [
         HypothesisSnapshot(
             hypothesis_id=node.hypothesis_id,
-            statement=node.statement,
+            statement=(node.display_statement or node.statement),
             status=node.status,
             support_score=node.support_score,
         )
@@ -236,6 +240,7 @@ def _build_planner_guidance(
     recent_disagreement_updates: list[PlannerDisagreementUpdateItem] | None = None,
     recent_reasoning_traces: list[PlannerReasoningTraceItem] | None = None,
     recent_human_feedback: list[PlannerHumanFeedbackItem] | None = None,
+    active_hypotheses: list[HypothesisSnapshot] | None = None,
 ) -> list[str]:
     guidance: list[str] = []
     if human_feedback:
@@ -248,8 +253,18 @@ def _build_planner_guidance(
         guidance.append(f"优先关注未解决不确定性: {unresolved_uncertainties[0].question}")
     if recent_disagreement_updates:
         update = recent_disagreement_updates[0]
+        leading_label = "未标记"
+        if update.leading_hypothesis_id and active_hypotheses:
+            leading_label = next(
+                (
+                    item.statement if len(item.statement) <= 48 else f"{item.statement[:48]}…"
+                    for item in active_hypotheses
+                    if item.hypothesis_id == update.leading_hypothesis_id
+                ),
+                update.leading_hypothesis_id,
+            )
         guidance.append(
-            f"最近分歧状态: {update.uncertainty_id} -> {update.resolution_status}, leading={update.leading_hypothesis_id or 'n/a'}"
+            f"最近分歧状态: {update.uncertainty_id} -> {update.resolution_status}, leading={leading_label}"
         )
     if recent_reasoning_traces:
         guidance.append(f"上一轮程序解释重点: {recent_reasoning_traces[0].summary}")
@@ -297,7 +312,10 @@ def _build_interpretation_enhancements(
             InterpretationEnhancement(
                 enhancement_id="IE001",
                 target_hypothesis_id=top.hypothesis_id,
-                interpretation=f"{top.hypothesis_id} 当前支持度为 {top.support_score:.2f}，结合上一轮表现，{direction}。",
+                interpretation=(
+                    f"主假设“{top.statement if len(top.statement) <= 56 else top.statement[:56] + '…'}”"
+                    f"当前支持度为 {top.support_score:.2f}，结合上一轮表现，{direction}。"
+                ),
                 evidence_basis=planner_input.evaluation_summary.key_findings[:2],
                 related_uncertainties=[item.uncertainty_id for item in planner_input.unresolved_uncertainties[:2]],
                 suggested_state_note="可由科学解释者补充方向/幅度/精密度的更细解释。",

@@ -129,7 +129,8 @@ class StateWritebackTest(unittest.TestCase):
         self.assertTrue((self.project_root / "state" / "task.json").exists())
         self.assertTrue((self.project_root / "state" / "decision_log.json").exists())
         self.assertAlmostEqual(tree.node_index()["H1"].support_score, 0.58)
-        self.assertEqual(tree.node_index()["H1a"].status, "active")
+        # 父假设达标只解锁子假设参与资格，子节点支持度 0.36 仍进入观察期。
+        self.assertEqual(tree.node_index()["H1a"].status, "observing")
         self.assertEqual(tree.node_index()["H1a"].activated_at_round, 1)
         self.assertEqual(tree.latest_update.event, "evaluation_writeback")
         self.assertEqual(uncertainties.records[0].priority, "high")

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 MetricName = Literal["RMSE", "MAE", "Pearson_r", "Skill", "R2"]
+MAX_ACTIVE_UNCERTAINTIES = 10
 HypothesisStatus = Literal[
     "draft",
     "pending",
@@ -23,6 +24,8 @@ DecisionType = Literal[
     "task_approved",
     "task_revised",
     "hypothesis_generated",
+    "supplemental_hypothesis_added",
+    "hypothesis_tree_confirmed",
     "experiment_selection_requested",
     "experiment_approved",
     "experiment_rejected",
@@ -33,6 +36,8 @@ DecisionType = Literal[
     "pause_requested",
     "round_review_requested",
     "scientific_interpreter_applied",
+    "scientific_questioning_completed",
+    "scientific_questioning_undone",
     "planner_input_prepared",
     "planner_output_generated",
     "planner_output_applied",
@@ -121,6 +126,8 @@ class FieldDescriptor(ShadowBaseModel):
     field_name: str = Field(min_length=1)
     data_type: str = Field(min_length=1)
     physical_meaning: str = Field(min_length=1)
+    physical_name: str | None = None
+    display_name: str | None = None
     unit: str | None = None
     format: str | None = None
     range: list[float | int] | None = None
@@ -211,15 +218,37 @@ class HypothesisGenerationRationale(ShadowBaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class HypothesisQuestioningRecord(ShadowBaseModel):
+    round: int = Field(ge=0)
+    impact_direction: str = Field(min_length=1)
+    impact_strength: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1)
+    support_before: float = Field(ge=0.0, le=1.0)
+    support_after: float = Field(ge=0.0, le=1.0)
+    status: str = Field(min_length=1)
+    source_type: Literal["advisory", "experimental", "human"] = "advisory"
+    falsification_basis: str = ""
+
+
 class HypothesisNode(ShadowBaseModel):
     hypothesis_id: str = Field(min_length=1)
+    display_hypothesis_id: str | None = Field(
+        default=None,
+        description="user-facing hypothesis label such as H1/H2/H3",
+    )
     statement: str = Field(min_length=1)
+    display_statement: str | None = Field(
+        default=None,
+        description="user-facing statement built from physical variable display names",
+    )
     level: int = Field(ge=1)
     parent_id: str | None = None
     children_ids: list[str] = Field(default_factory=list)
     status: HypothesisStatus = "draft"
     support_score: float = Field(ge=0.0, le=1.0)
     support_history: list[SupportHistoryEntry] = Field(default_factory=list)
+    questioning_records: list[HypothesisQuestioningRecord] = Field(default_factory=list)
     activation_condition: str = Field(min_length=1)
     activated_at_round: int | None = Field(default=None, ge=0)
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
@@ -253,6 +282,10 @@ class HypothesisTreeState(ShadowBaseModel):
     task_id: str = Field(min_length=1)
     current_round: int = Field(ge=0, default=0)
     root_question: str = Field(min_length=1)
+    generated_at: datetime | None = Field(
+        default=None,
+        description="ISO timestamp recorded when the LLM generated the hypothesis proposal",
+    )
     nodes: list[HypothesisNode] = Field(default_factory=list)
     active_hypotheses: list[str] = Field(default_factory=list)
     pruned_hypotheses: list[str] = Field(default_factory=list)
@@ -282,7 +315,29 @@ class HypothesisTreeState(ShadowBaseModel):
         return self
 
     def node_index(self) -> dict[str, HypothesisNode]:
-        return {node.hypothesis_id: node for node in self.nodes}
+        index: dict[str, HypothesisNode] = {}
+        canonical_triggers = {
+            "canonical_incremental_gain",
+            "canonical_mediated_path",
+            "canonical_beyond_path",
+            "canonical_lead_time",
+            "canonical_stability",
+        }
+        for node in self.nodes:
+            index.setdefault(node.hypothesis_id, node)
+        for node in self.nodes:
+            alias = node.display_hypothesis_id
+            if not alias or alias == node.hypothesis_id:
+                continue
+            trigger = (
+                node.generation_rationale.trigger
+                if node.generation_rationale and node.generation_rationale.trigger
+                else ""
+            )
+            is_canonical = trigger in canonical_triggers
+            if alias not in index or is_canonical:
+                index[alias] = node
+        return index
 
 
 class UncertaintyDisagreement(ShadowBaseModel):
@@ -315,6 +370,7 @@ class UncertaintyRecord(ShadowBaseModel):
     description: str = Field(min_length=1)
     related_hypotheses: list[str] = Field(default_factory=list)
     disagreement: dict[str, UncertaintyDisagreement | dict[str, Any]] = Field(default_factory=dict)
+    mining_sources: list[str] = Field(default_factory=list)
     status: UncertaintyStatus = "identified"
     priority: PriorityLevel = "medium"
     priority_factors: PriorityFactors | None = None
@@ -354,12 +410,32 @@ class ExperimentDesign(ShadowBaseModel):
     control: list[str] = Field(default_factory=list)
     treatment: list[str] = Field(default_factory=list)
     lags: dict[str, list[int]] = Field(default_factory=dict)
+    probe_axis: str | None = Field(
+        default=None,
+        description="which scientific axis this experiment discriminates: incremental_gain, physical_path, lead_time, robustness",
+    )
+    forecast_horizon_days: int | None = Field(default=None, ge=1)
+    past_lag_days: int | None = Field(default=None, ge=1)
+    window_size: int | None = Field(default=None, ge=1)
+    control_lag_days: int | None = Field(default=None, ge=1)
+    treatment_lag_days: int | None = Field(default=None, ge=1)
+    control_forecast_horizon_days: int | None = Field(default=None, ge=1)
+    treatment_forecast_horizon_days: int | None = Field(default=None, ge=1)
     notes: list[str] = Field(default_factory=list)
+    design_focus: str | None = Field(default=None, description="raw feature name this candidate isolates")
+    display_target: str | None = Field(default=None, description="user-facing target variable name")
+    display_control: list[str] = Field(default_factory=list, description="user-facing control variable names")
+    display_treatment: list[str] = Field(default_factory=list, description="user-facing treatment variable names")
+    display_design_focus: str | None = Field(default=None, description="user-facing design focus name")
 
 
 class HypothesisPrediction(ShadowBaseModel):
     expected_effect: ExpectedEffect | str
     expected_range: list[float] | None = None
+    metric: str | None = Field(
+        default=None,
+        description="metric on which the LLM expected_range is measured",
+    )
 
     @field_validator("expected_range")
     @classmethod
@@ -386,6 +462,7 @@ class CandidateExperiment(ShadowBaseModel):
     design: ExperimentDesign
     hypothesis_predictions: dict[str, HypothesisPrediction] = Field(default_factory=dict)
     distinguishing_insight: str | None = None
+    value_analysis: str | None = None
     estimated_information_gain: EstimatedValue | None = None
     estimated_performance_gain: EstimatedValue | None = None
     estimated_risk: EstimatedValue | None = None
@@ -514,6 +591,20 @@ class ExecutionSummary(ShadowBaseModel):
     message: str | None = None
 
 
+class DataSourceCoverage(ShadowBaseModel):
+    """单个实验臂内某个数据源的日历覆盖与缺失日处理审计信息。"""
+
+    source: str = Field(min_length=1)
+    run_id: str | None = None
+    expected_days: int | None = Field(default=None, ge=0)
+    observed_days: int | None = Field(default=None, ge=0)
+    missing_days: int | None = Field(default=None, ge=0)
+    coverage_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    dropped_gap_windows: int | None = Field(default=None, ge=0)
+    interpolated_days: int | None = Field(default=None, ge=0)
+    note: str | None = None
+
+
 class ExperimentResult(ShadowBaseModel):
     experiment_id: str = Field(min_length=1)
     round_id: int = Field(ge=0)
@@ -521,6 +612,7 @@ class ExperimentResult(ShadowBaseModel):
     runs: list[ExperimentRun] = Field(default_factory=list)
     comparison: MetricDelta = Field(default_factory=MetricDelta)
     visualizations: list[VisualizationArtifact] = Field(default_factory=list)
+    data_coverage: list[DataSourceCoverage] = Field(default_factory=list)
     execution: ExecutionSummary
 
 
@@ -538,6 +630,13 @@ class PerformanceMetrics(ShadowBaseModel):
     pg_actual_signed: float | None = None
     pg_actual_clipped: float | None = Field(default=None, ge=0.0, le=1.0)
     delta: MetricDelta = Field(default_factory=MetricDelta)
+    information_gain_kl: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="post-experiment KL information-gain audit from actual observed delta",
+    )
+    ig_prior_probs: dict[str, float] | None = None
+    ig_posterior_probs: dict[str, float] | None = None
 
 
 class BootstrapReport(ShadowBaseModel):
@@ -607,12 +706,73 @@ class DisagreementUpdate(ShadowBaseModel):
     summary: str = Field(min_length=1)
 
 
+class ConclusionExperimentLayer(ShadowBaseModel):
+    experiment_id: str = Field(min_length=1)
+    design_summary: str = Field(min_length=1)
+    probe_axis: str | None = None
+    forecast_horizon_days: int | None = None
+    baseline_rmse: float | None = None
+    treatment_rmse: float | None = None
+    baseline_pearson_r: float | None = None
+    treatment_pearson_r: float | None = None
+    skill_delta: float | None = None
+    decisive: bool = False
+
+
+class ConclusionHypothesisRow(ShadowBaseModel):
+    hypothesis_id: str = Field(min_length=1)
+    display_hypothesis_id: str | None = None
+    statement: str = Field(min_length=1)
+    predicted_direction: str | None = None
+    predicted_range: list[float] | None = None
+    actual_delta: float | None = None
+    direction_matched: bool | str | None = None
+    magnitude_matched: bool | str | None = None
+    conclusion: str = Field(min_length=1)
+    support_after: float | None = None
+
+
+class ConclusionScientificLayer(ShadowBaseModel):
+    main_question: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    path_question: str | None = None
+    path_answer: str | None = None
+    evidence_text: str | None = None
+
+
+class ConclusionDataLayer(ShadowBaseModel):
+    """LLM numerical interpretation layer for round report."""
+
+    rmse_attribution: str | None = None
+    pearson_attribution: str | None = None
+    skill_delta_meaning: str | None = None
+    anomalies: list[str] = Field(default_factory=list)
+    next_focus: str | None = None
+
+
+class ConclusionTrackingLayer(ShadowBaseModel):
+    """Program-generated audit and provenance layer for round report."""
+
+    audit_items: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    snapshot_refs: list[str] = Field(default_factory=list)
+
+
+class ThreeLayerConclusion(ShadowBaseModel):
+    experiment_layer: ConclusionExperimentLayer
+    hypothesis_layer: list[ConclusionHypothesisRow] = Field(default_factory=list)
+    scientific_layer: ConclusionScientificLayer
+    data_layer: ConclusionDataLayer | None = None
+    tracking_layer: ConclusionTrackingLayer | None = None
+
+
 class ScientificEvaluation(ShadowBaseModel):
     experiment_id: str = Field(min_length=1)
     round_id: int = Field(ge=0)
     hypothesis_assessments: list[HypothesisAssessment] = Field(default_factory=list)
     disagreement_updates: list[DisagreementUpdate] = Field(default_factory=list)
     evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
+    three_layer_conclusion: ThreeLayerConclusion | None = None
 
 
 class EvaluationResult(ShadowBaseModel):
@@ -656,6 +816,11 @@ class DataDictionarySummary(ShadowBaseModel):
     time_column: str = Field(min_length=1)
     target_candidates: list[str] = Field(default_factory=list)
     feature_candidates: list[str] = Field(default_factory=list)
+    display_time_column: str | None = None
+    display_target_candidates: list[str] = Field(default_factory=list)
+    display_feature_candidates: list[str] = Field(default_factory=list)
+    raw_display_map: dict[str, str] = Field(default_factory=dict)
+    display_raw_map: dict[str, str] = Field(default_factory=dict)
 
 
 class PlannerEvaluationSummary(ShadowBaseModel):
@@ -723,6 +888,10 @@ class ReasoningPlannerInput(ShadowBaseModel):
     data_dictionary_summary: DataDictionarySummary
     planning_constraints: dict[str, Any] = Field(default_factory=dict)
     planner_guidance: list[str] = Field(default_factory=list)
+    llm_hypothesis_proposals: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="LLM-written final hypothesis texts for the next tree rebuild",
+    )
     generated_at: datetime = Field(default_factory=datetime.now)
 
     def to_central_controller_payload(self) -> dict[str, Any]:
@@ -790,15 +959,50 @@ class ReasoningPlannerInput(ShadowBaseModel):
 
     def merged_guidance_text(self) -> str | None:
         parts: list[str] = []
-        if self.human_feedback:
+        if self.human_feedback and self._guidance_part_is_clean(self.human_feedback):
             parts.append(self.human_feedback)
         parts.extend(self.evaluation_summary.key_findings[:2])
         parts.extend(item.summary for item in self.recent_disagreement_updates[:2])
-        parts.extend(item.summary for item in self.recent_reasoning_traces[:2])
-        parts.extend(item.content for item in self.recent_human_feedback[:2])
-        parts.extend(item.question for item in self.unresolved_uncertainties[:2])
-        parts.extend(self.planner_guidance[:2])
+        parts.extend(
+            item.summary
+            for item in self.recent_reasoning_traces[:2]
+            if self._guidance_part_is_clean(item.summary)
+        )
+        parts.extend(
+            item.content
+            for item in self.recent_human_feedback[:2]
+            if self._guidance_part_is_clean(item.content)
+        )
+        parts.extend(
+            item.question
+            for item in self.unresolved_uncertainties[:2]
+            if self._guidance_part_is_clean(item.question)
+        )
+        parts.extend(
+            part for part in self.planner_guidance[:2] if self._guidance_part_is_clean(part)
+        )
         return " ".join(part for part in parts if part) or None
+
+    @staticmethod
+    def _guidance_part_is_clean(part: str | None) -> bool:
+        """Refuse malformed JSON fragments from ever reaching user-facing notes."""
+        if not part:
+            return False
+        lowered = str(part).lower()
+        corrupted_markers = (
+            "yload",
+            "\\\"",
+            '"research_question"',
+            '"current_round"',
+            '"root_question"',
+            '"active_hypotheses"',
+            '"data_dictionary_summary"',
+        )
+        if any(marker in lowered for marker in corrupted_markers):
+            return False
+        if len(part) > 4000:
+            return False
+        return True
 
 
 class PlannerCandidateSupplement(ShadowBaseModel):
@@ -895,6 +1099,7 @@ class ExperimentMemoryEntry(ShadowBaseModel):
     metrics_snapshot: PerformanceMetrics | None = None
     key_findings: list[str] = Field(default_factory=list)
     visualizations: list[str] = Field(default_factory=list)
+    data_coverage: list[DataSourceCoverage] = Field(default_factory=list)
     reasoning_traces: list["ReasoningTraceEntry"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -954,8 +1159,12 @@ class RoundHistoryEntry(ShadowBaseModel):
     unresolved_uncertainties: list[str] = Field(default_factory=list)
     highlighted_hypotheses: list[str] = Field(default_factory=list)
     scientific_findings: list[str] = Field(default_factory=list)
+    three_layer_conclusion: ThreeLayerConclusion | None = None
     failure_reason: str | None = None
     metrics_snapshot: PerformanceMetrics | None = None
+    round_snapshot_path: str | None = None
+    iterative_validations: list[dict[str, Any]] = Field(default_factory=list)
+    iteration_input_sources: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -1068,7 +1277,7 @@ class DecisionEntry(ShadowBaseModel):
     phase: str | None = None
     step: str | None = None
     decision_type: DecisionType
-    made_by: Literal["human_pi", "system"]
+    made_by: Literal["human_pi", "system", "hypothesis_proposer_llm", "scientific_questioner_llm"]
     summary: str = Field(min_length=1)
     details: dict[str, Any] = Field(default_factory=dict)
 

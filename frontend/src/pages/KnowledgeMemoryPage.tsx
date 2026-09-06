@@ -1,4 +1,5 @@
 import { PageTabs } from '../components/PageTabs'
+import { toDisplayText } from '../data/realStateLoader'
 import { useTimelineBundle } from '../hooks/useTimelineBundle'
 
 export function KnowledgeMemoryPage() {
@@ -6,6 +7,20 @@ export function KnowledgeMemoryPage() {
   const knowledge = data?.viewModels.knowledgeMemory
   const hypothesisTree = data?.snapshot.hypothesisTree
   const uncertainties = data?.snapshot.uncertainties
+  const dictionary = data?.snapshot.plannerInput?.data_dictionary_summary
+
+  function hypothesisTitle(item: any, index = 0) {
+    const statement = toDisplayText(item?.statement ?? item?.label ?? '', dictionary).trim()
+    if (statement) {
+      return statement.length > 44 ? `${statement.slice(0, 44)}…` : statement
+    }
+    return `假设 ${Number(index) + 1}`
+  }
+
+  function hypothesisMeta(item: any, index = 0) {
+    const statement = toDisplayText(item?.statement ?? item?.label ?? '', dictionary).trim()
+    return statement ? `假设 ${Number(index) + 1}` : (item?.hypothesis_id ?? item?.id ?? '')
+  }
 
   return (
     <div className="timeline-shell">
@@ -51,10 +66,10 @@ export function KnowledgeMemoryPage() {
                   <span className="detail-card__eyebrow">Highlighted Tree</span>
                   <h2>关键假设分支</h2>
                   <div className="collection-grid">
-                    {knowledge.highlightedHypotheses.map((item) => (
+                    {knowledge.highlightedHypotheses.map((item, index) => (
                       <article key={item.id} className="collection-card">
-                        <strong>{item.id}</strong>
-                        <p>{item.label}</p>
+                        <strong>{hypothesisTitle(item, index)}</strong>
+                        <p className="collection-card__meta">{hypothesisMeta(item, index)}</p>
                         <div className="collection-card__meta">
                           <span>状态: {item.status}</span>
                           <span>支持度: {item.supportScore.toFixed(3)}</span>
@@ -68,13 +83,13 @@ export function KnowledgeMemoryPage() {
                   <span className="detail-card__eyebrow">Full Tree History</span>
                   <h2>完整假设树历史</h2>
                   <div className="tree-history-list">
-                    {(hypothesisTree?.nodes ?? []).map((item: any) => (
+                    {(hypothesisTree?.nodes ?? []).map((item: any, index: number) => (
                       <article key={item.hypothesis_id} className="tree-history-card">
                         <div className="tree-history-card__header">
-                          <strong>{item.hypothesis_id}</strong>
+                          <strong>{hypothesisMeta(item, index)}</strong>
                           <span>{item.status ?? '--'}</span>
                         </div>
-                        <p>{item.statement}</p>
+                        <p>{toDisplayText(item.statement, dictionary)}</p>
                         <div className="support-history-strip">
                           {(item.support_history ?? []).map((history: any, index: number) => (
                             <div key={`${item.hypothesis_id}-${index}`} className="support-history-point">
@@ -96,10 +111,10 @@ export function KnowledgeMemoryPage() {
                     {knowledge.uncertaintyQueue.map((item) => (
                       <article key={item.id} className="record-card">
                         <div className="record-card__header">
-                          <strong>{item.id}</strong>
+                          <strong>不确定性 {item.id}</strong>
                           <span>{item.priorityScore.toFixed(2)}</span>
                         </div>
-                        <p>{item.question}</p>
+                        <p>{toDisplayText(item.question, dictionary)}</p>
                       </article>
                     ))}
                   </div>
@@ -112,17 +127,17 @@ export function KnowledgeMemoryPage() {
                     {(uncertainties?.records ?? []).map((item: any) => (
                       <article key={item.uncertainty_id} className="uncertainty-timeline__card">
                         <div className="uncertainty-timeline__header">
-                          <strong>{item.uncertainty_id}</strong>
+                          <strong>不确定性 {item.uncertainty_id.split('_').pop()}</strong>
                           <span>{item.resolution_status ?? item.status ?? '--'}</span>
                         </div>
-                        <p>{item.question}</p>
+                        <p>{toDisplayText(item.question, dictionary)}</p>
                         <div className="uncertainty-timeline__events">
                           {(item.history ?? []).map((history: any, index: number) => (
                             <div key={`${item.uncertainty_id}-${index}`} className="uncertainty-event">
                               <span className="uncertainty-event__round">R{history.round ?? '--'}</span>
                               <div>
                                 <strong>{history.event ?? '--'}</strong>
-                                <p>{history.description ?? '--'}</p>
+                                <p>{toDisplayText(history.description, dictionary)}</p>
                               </div>
                             </div>
                           ))}
@@ -151,7 +166,7 @@ export function KnowledgeMemoryPage() {
                     {knowledge.experimentEntries.map((entry) => (
                       <article key={`${entry.round_id}-${entry.experiment_id}`} className="collection-card">
                         <strong>{entry.experiment_id}</strong>
-                        <p>{entry.key_findings?.[0] ?? '暂无摘要'}</p>
+                        <p>{toDisplayText(entry.key_findings?.[0], dictionary) ?? '暂无摘要'}</p>
                         <div className="collection-card__meta">
                           <span>Round {entry.round_id ?? '--'}</span>
                           <span>状态: {entry.status ?? '--'}</span>

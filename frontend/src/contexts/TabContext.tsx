@@ -24,9 +24,9 @@ const TabContext = createContext<TabContextType | null>(null)
 const CORE_TABS: Tab[] = [
   { id: 'workflow', title: '主流程', path: '/workflow', pageId: 'workflow' },
   { id: 'dialogue', title: '智能体交互控制台', path: '/dialogue', pageId: 'dialogue' },
-  { id: 'data-dictionary', title: '数据字典配置', path: '/data-dictionary', pageId: 'data-dictionary' },
+  { id: 'data-dictionary', title: '数据变量库', path: '/data-dictionary', pageId: 'data-dictionary' },
   { id: 'hypotheses', title: '科学假设生成', path: '/hypotheses', pageId: 'hypotheses' },
-  { id: 'uncertainties', title: '不确定性识别', path: '/uncertainties', pageId: 'uncertainties' },
+  { id: 'uncertainties', title: '不确定性与实验', path: '/uncertainties', pageId: 'uncertainties' },
   { id: 'approval', title: '候选实验审批', path: '/approval', pageId: 'approval' },
   { id: 'execution', title: '实验执行', path: '/execution', pageId: 'execution' },
   { id: 'report', title: '轮次报告', path: '/report', pageId: 'report' },

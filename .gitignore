@@ -1,1 +1,44 @@
 .env
+.env.*
+!.env.example
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# Frontend build artifacts
+node_modules/
+frontend/dist/
+frontend/pnpm-debug.log*
+
+# Logs and local runtime
+*.log
+runtime/
+outputs/_tmp_*
+tmp_*
+tmp_validation/
+
+# One-off local debug state
+/0
+/cand.json
+/mem.json
+/pin.json
+/state.json
+/task.json
+/test_*.txt
+
+# One-off local repair/diagnostic scripts
+/scripts/_*.py
+/scripts/backfill_protocol_parameters.py
+/scripts/debug_bootstrap_round2.py
+/scripts/diag_sparse_modes.py
+/scripts/polish_tuning_explanations.py
+/scripts/reconcile_hypothesis_state_machine.py
+/scripts/regenerate_live_visualizations.py
+/scripts/repair_live_round_closure.py
+/scripts/repair_round2_execution.py
+/scripts/repair_round2_real_llm.py
