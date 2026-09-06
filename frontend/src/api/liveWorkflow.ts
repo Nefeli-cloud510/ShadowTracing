@@ -5,7 +5,7 @@ const LOCAL_API_ORIGIN =
 
 const API_ROOT =
   typeof import.meta !== 'undefined'
-    ? import.meta.env.VITE_WORKFLOW_API_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api` : '')
+    ? import.meta.env.VITE_WORKFLOW_API_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api` : '/api')
     : ''
 
 export interface StartWorkflowPayload {

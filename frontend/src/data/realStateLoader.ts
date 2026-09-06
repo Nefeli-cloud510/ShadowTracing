@@ -588,11 +588,11 @@ const LOCAL_API_ORIGIN =
     : ''
 const API_STATE_BASE =
   typeof import.meta !== 'undefined'
-    ? import.meta.env.VITE_STATE_API_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api/state` : '')
+    ? import.meta.env.VITE_STATE_API_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api/state` : '/api/state')
     : ''
 const API_IMAGE_BASE =
   typeof import.meta !== 'undefined'
-    ? import.meta.env.VITE_STATE_API_IMAGE_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api/visualizations` : '')
+    ? import.meta.env.VITE_STATE_API_IMAGE_BASE?.trim() ?? (LOCAL_API_ORIGIN ? `${LOCAL_API_ORIGIN}/api/visualizations` : '/api/visualizations')
     : ''
 const API_SESSION_URL =
   typeof import.meta !== 'undefined'
@@ -600,7 +600,7 @@ const API_SESSION_URL =
       ? `${import.meta.env.VITE_WORKFLOW_API_BASE.trim().replace(/\/+$/, '')}/session`
       : LOCAL_API_ORIGIN
         ? `${LOCAL_API_ORIGIN}/api/session`
-        : ''
+        : '/api/session'
     : ''
 
 const WORKSPACE_RESET_AT_KEY = 'shadowtracing.workspaceResetAt'

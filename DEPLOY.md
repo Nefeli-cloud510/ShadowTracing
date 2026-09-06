@@ -46,7 +46,14 @@ DASHSCOPE_BASE_URL=https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/com
 BAILIAN_MODEL=qwen3.8-flash
 ```
 
-若使用独立域名或跨域访问，可在前端构建时设置 `VITE_WORKFLOW_API_BASE`。
+同源部署（前端静态文件与 `/api` 都由同一个 nginx 提供服务）不需要设置任何前端环境变量，前端构建后会默认使用相对路径 `/api`。只有后端部署在独立域名或跨域端口时，才需要在构建前端时设置 `VITE_WORKFLOW_API_BASE`；例如：
+
+```bash
+cd /opt/ShadowTracing/frontend
+VITE_WORKFLOW_API_BASE=https://api.example.com/api pnpm build
+```
+
+跨域场景下，还需要同时设置 `VITE_STATE_API_BASE` 与 `VITE_STATE_API_IMAGE_BASE`，分别指向状态 JSON 和可视化图片的 API 前缀。
 
 ## 4. 构建前端
 
