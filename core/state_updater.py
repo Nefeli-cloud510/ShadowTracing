@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from core.state_repository import UnifiedStateRepository
 from core.support_update_rules import compute_support_update_from_reasoning, priority_after_action
+from core.hypothesis_linkage import build_predictions_for_nodes
 from core.hypothesis_state_machine import (
     ACTIVATION_THRESHOLD,
     ACTIVE,
@@ -154,6 +157,26 @@ class UnifiedStateUpdater:
             tree=tree,
             uncertainties=uncertainties,
         )
+        protocol_payload = json.dumps(
+            protocol.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False,
+            indent=2,
+        )
+        resolved_protocol_path = (
+            self.repository.project_root / protocol_path
+            if protocol_path
+            else self.repository.project_root / "config" / "latest_protocol.json"
+        )
+        resolved_protocol_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_protocol_path.write_text(protocol_payload, encoding="utf-8")
+        round_protocol = (
+            self.repository.project_root
+            / "results"
+            / f"round_{protocol.round_id:02d}"
+            / "protocol.json"
+        )
+        round_protocol.parent.mkdir(parents=True, exist_ok=True)
+        round_protocol.write_text(protocol_payload, encoding="utf-8")
 
         tree = self._update_hypothesis_tree(tree, protocol, evaluation)
         uncertainties = self._update_uncertainties(uncertainties, protocol, evaluation)
@@ -311,7 +334,12 @@ class UnifiedStateUpdater:
     ) -> ExperimentProtocol:
         tested_hypotheses = _unique_preserve_order(protocol.tested_hypotheses)
         if not tested_hypotheses:
-            tested_hypotheses = _infer_tested_hypotheses(protocol=protocol, evaluation=evaluation, tree=tree)
+            tested_hypotheses = _infer_tested_hypotheses(
+                protocol=protocol,
+                evaluation=evaluation,
+                tree=tree,
+                uncertainties=uncertainties,
+            )
             if tested_hypotheses:
                 protocol.notes.append("auto_filled_tested_hypotheses")
         target_uncertainties = _unique_preserve_order(protocol.target_uncertainties)
@@ -325,6 +353,11 @@ class UnifiedStateUpdater:
                 protocol.notes.append("auto_filled_target_uncertainties")
         protocol.tested_hypotheses = tested_hypotheses
         protocol.target_uncertainties = target_uncertainties
+        if tested_hypotheses and not protocol.hypothesis_predictions:
+            predicted = build_predictions_for_nodes(tree, tested_hypotheses)
+            if predicted:
+                protocol.hypothesis_predictions.update(predicted)
+                protocol.notes.append("auto_filled_hypothesis_predictions")
         return protocol
 
     def _apply_interpretation_enhancements(
@@ -934,8 +967,18 @@ def _infer_tested_hypotheses(
     protocol: ExperimentProtocol,
     evaluation: EvaluationResult | None,
     tree: HypothesisTreeState,
+    uncertainties: UncertaintyState,
 ) -> list[str]:
     inferred = []
+    uncertainty_index = uncertainties.record_index()
+    for uncertainty_id in protocol.target_uncertainties:
+        record = uncertainty_index.get(uncertainty_id)
+        if record is not None:
+            inferred.extend(
+                hypothesis_id
+                for hypothesis_id in record.related_hypotheses
+                if hypothesis_id
+            )
     if evaluation is not None:
         inferred.extend(item.hypothesis_id for item in evaluation.scientific.hypothesis_assessments if item.hypothesis_id)
         inferred.extend(

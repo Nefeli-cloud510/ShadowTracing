@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +55,78 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
     def __init__(self, *, gateway: LLMGateway | None = None) -> None:
         self.gateway = gateway or LLMGateway()
 
+    @staticmethod
+    def _fix_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """Repair common JSON null/type quirks so a real LLM answer survives validation."""
+        normalized = dict(payload)
+        for field in ("challenge_points", "guidance_notes"):
+            values = normalized.get(field)
+            if isinstance(values, list):
+                normalized[field] = [_text_or_json(item) for item in values]
+
+        proposed = normalized.get("proposed_uncertainties")
+        if isinstance(proposed, list):
+            repaired = []
+            for item in proposed:
+                if not isinstance(item, dict):
+                    repaired.append(
+                        {
+                            "question": _nonempty_text(item),
+                            "description": _nonempty_text(item),
+                            "priority": "medium",
+                        }
+                    )
+                    continue
+                fixed = dict(item)
+                fixed["question"] = _nonempty_text(
+                    fixed.get("question") or fixed.get("text") or fixed.get("summary")
+                )
+                if not fixed["question"]:
+                    continue
+                fixed["description"] = _nonempty_text(
+                    fixed.get("description")
+                    or fixed.get("details")
+                    or fixed.get("summary")
+                    or fixed.get("question")
+                )
+                fixed["priority"] = _nonempty_text(fixed.get("priority")) or "medium"
+                for list_field in ("mining_sources", "related_hypotheses", "features"):
+                    raw_list = fixed.get(list_field)
+                    if isinstance(raw_list, list):
+                        fixed[list_field] = [str(item) for item in raw_list if item is not None]
+                repaired.append(fixed)
+            normalized["proposed_uncertainties"] = repaired
+
+        updates = normalized.get("hypothesis_updates")
+        if isinstance(updates, list):
+            repaired = []
+            for item in updates:
+                if not isinstance(item, dict):
+                    continue
+                fixed = dict(item)
+                direction = _nonempty_text(fixed.get("impact_direction")).lower()
+                if direction not in {"supports", "weakens", "clarifies"}:
+                    direction = "clarifies"
+                falsification_basis = _nonempty_text(fixed.get("falsification_basis"))
+                if direction == "weakens" and not falsification_basis:
+                    direction = "clarifies"
+                fixed["impact_direction"] = direction
+                fixed["falsification_basis"] = falsification_basis
+                fixed["rationale"] = _nonempty_text(fixed.get("rationale"))
+                fixed["hypothesis_id"] = _nonempty_text(fixed.get("hypothesis_id"))
+                if not fixed["hypothesis_id"]:
+                    continue
+                for numeric_field, default in (("impact_strength", 0.5), ("confidence", 0.5)):
+                    raw_value = fixed.get(numeric_field)
+                    try:
+                        numeric = float(raw_value) if raw_value is not None else default
+                    except (TypeError, ValueError):
+                        numeric = default
+                    fixed[numeric_field] = max(0.0, min(1.0, numeric))
+                repaired.append(fixed)
+            normalized["hypothesis_updates"] = repaired
+        return normalized
+
     def question(
         self,
         *,
@@ -77,7 +150,7 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
                     "hypothesis_id": item.hypothesis_id,
                     "statement": semantic.display_text(item.statement),
                 }
-                for item in planner_input.active_hypotheses[:3]
+                for item in planner_input.active_hypotheses[:5]
             ],
             "unresolved_uncertainties": [
                 {
@@ -107,11 +180,13 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
                 "名称规则：问题文本、description、features 一律使用 display_dictionary 中的展示名，"
                 "例如“宇宙线日影南北偏移”“太阳风速度”“行星际磁场Y分量”，"
                 "禁止输出原始表头或“SW Plasma Speed, km/s”这类英文单位标签。\n"
-                "related_hypotheses 只能填 active_hypotheses 中确实相关的假设编号，没有明确对应时留空；"
+                "related_hypotheses 应尽量填写 active_hypotheses 中确实相关的假设编号，"
+                "不确定时填最相关的一个或多个，不要整组留空；"
                 "请结合 mined_candidates 的假设冲突、残差、支持度变化与失败归因线索归纳去重，"
                 "输出 6-10 条有效 uncertainty，并尽量保留 mining_sources 来源标签。"
             ),
             response_model=ScientificQuestionerResponse,
+            payload_fixer=self._fix_payload,
             fallback_factory=lambda: self._fallback(planner_input, rag_context, mined_candidates),
         )
 
@@ -165,6 +240,7 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
                 "名称规则：文本与 features 一律使用 display_dictionary 中的展示名，禁止输出原始表头或英文单位标签。"
             ),
             response_model=ScientificQuestionerResponse,
+            payload_fixer=self._fix_payload,
             fallback_factory=lambda: self._fallback(
                 planner_input,
                 rag_context,
@@ -376,6 +452,25 @@ def _allowed_display_fields(planner_input: ReasoningPlannerInput) -> list[str]:
     display_targets = list(summary.display_target_candidates or summary.target_candidates)
     display_time = summary.display_time_column or summary.time_column
     return [*display_features, *display_targets, display_time]
+
+
+def _nonempty_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list)):
+        return ""
+    return str(value).strip()
+
+
+def _text_or_json(value: Any) -> str:
+    text = _nonempty_text(value)
+    if text:
+        return text
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return ""
 
 
 def _display_dictionary_block(summary) -> str:

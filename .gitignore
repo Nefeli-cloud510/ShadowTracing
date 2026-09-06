@@ -33,6 +33,7 @@ tmp_validation/
 
 # One-off local repair/diagnostic scripts
 /scripts/_*.py
+/scripts/_*.ps1
 /scripts/backfill_protocol_parameters.py
 /scripts/debug_bootstrap_round2.py
 /scripts/diag_sparse_modes.py

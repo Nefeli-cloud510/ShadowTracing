@@ -84,6 +84,7 @@ def build_minimal_scientific_evaluation(
     protocol: ExperimentProtocol | None = None,
     remaining_uncertainties: list[dict] | None = None,
     main_question: str | None = None,
+    prior_supports: dict[str, float] | None = None,
 ) -> ScientificEvaluation:
     evidence_for: list[EvidenceClaim] = []
     evidence_against: list[EvidenceClaim] = []
@@ -129,7 +130,7 @@ def build_minimal_scientific_evaluation(
             prediction = protocol.hypothesis_predictions.get(hypothesis_id)
             if prediction is not None:
                 outcome = compute_support_update_from_prediction(
-                    current_support=0.5,
+                    current_support=(prior_supports or {}).get(hypothesis_id, 0.5),
                     expected_effect=prediction.expected_effect,
                     expected_range=prediction.expected_range,
                     observed_delta=observed_delta,
@@ -244,6 +245,7 @@ def evaluate_experiment(
             protocol=protocol,
             remaining_uncertainties=remaining_uncertainties,
             main_question=main_question,
+            prior_supports=prior_supports,
         ),
         visualizations=result.visualizations,
     )

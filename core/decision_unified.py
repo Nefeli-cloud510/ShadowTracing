@@ -30,6 +30,7 @@ from core.unified_schema import (
     UncertaintyState,
 )
 from core.hypothesis_generation import HypothesisGenerationService
+from core.hypothesis_identity import infer_related_hypothesis_ids
 from core.experiment_planner_llm import CandidateExperimentDesignerLLM, CandidateExperimentWriterLLM
 from core.runtime_config import (
     get_bailian_model_prices,
@@ -400,6 +401,18 @@ class CandidateExperimentGenerator:
                     for hypothesis_id in record.related_hypotheses
                     if hypothesis_id in node_index
                 ]
+            if not tested_hypotheses:
+                tested_hypotheses = infer_related_hypothesis_ids(
+                    hypothesis_tree,
+                    record.question or "",
+                    record.description or "",
+                    list(record.related_hypotheses),
+                )
+                tested_hypotheses = [
+                    hypothesis_id
+                    for hypothesis_id in tested_hypotheses
+                    if hypothesis_id in node_index
+                ] or _tree_active_hypothesis_ids(hypothesis_tree, node_index)
             candidate = CandidateExperiment(
                 experiment_id=f"E_R{next_round:02d}_{len(candidates) + 1:02d}",
                 type=_candidate_type(record),
@@ -1130,6 +1143,17 @@ def _focus_hypothesis_ids(
     ]
 
 
+def _tree_active_hypothesis_ids(
+    tree: HypothesisTreeState,
+    node_index: dict[str, object],
+) -> list[str]:
+    return _unique_preserve_order(
+        hypothesis_id
+        for hypothesis_id in tree.active_hypotheses
+        if hypothesis_id in node_index
+    )
+
+
 def _build_hypothesis_predictions(
     record: UncertaintyRecord,
     node_index: dict[str, object],
@@ -1323,12 +1347,11 @@ def _formal_information_gain(
 ) -> tuple[float, str]:
     predictions = list(candidate.hypothesis_predictions.values())
     if len(predictions) < 2:
-        fallback = 0.5 if candidate.tested_hypotheses else 0.18
         return (
-            round(fallback, 4),
-            "候选实验涉及的可区分假设不足 2 个，按文档约定退化为中性信息增益估计。"
-            if candidate.tested_hypotheses
-            else "对照组/校准实验主要提供对照组，不承担核心假设区分任务，因此信息增益记为较低值。",
+            0.5,
+            "候选实验当前关联的可区分假设不足 2 个，无法按 IG_pair=1-overlap 计算，"
+            "按文档约定退化为中性信息增益 0.5；后续关联到至少 2 个假设后，"
+            "将改用预测区间重叠度重新计算，不再使用固定低值模板。",
         )
 
     pair_scores: list[float] = []

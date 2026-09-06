@@ -15,6 +15,11 @@ from core.experiment_planner_llm import (
     ExperimentPlannerLLM,
 )
 from core.harness_unified import UnifiedExperimentHarness
+from core.hypothesis_identity import infer_related_hypothesis_ids
+from core.hypothesis_linkage import (
+    build_predictions_for_nodes,
+    related_hypotheses_for_uncertainty,
+)
 from core.hypothesis_proposer_llm import HypothesisProposerLLM
 from core.hypothesis_generation import HypothesisGenerationService, refresh_tree_metadata
 from core.hypothesis_state_machine import ACTIVE_LIKE
@@ -299,7 +304,10 @@ class HumanControlService:
             gateway=LLMGateway(model=get_llm_model_for_role("hypothesis_proposer"))
         )
         self.scientific_questioner = scientific_questioner or ScientificQuestionerLLM(
-            gateway=LLMGateway(model=get_llm_model_for_role("scientific_questioner"))
+            gateway=LLMGateway(
+                model=get_llm_model_for_role("scientific_questioner"),
+                allow_fallback=False,
+            )
         )
         self.experiment_planner = experiment_planner or ExperimentPlannerLLM(
             gateway=LLMGateway(model=get_llm_model_for_role("experiment_planner"))
@@ -1061,6 +1069,76 @@ class HumanControlService:
         except Exception:
             return None
 
+    def _repair_candidate_hypothesis_links(self, candidate: CandidateExperiment) -> None:
+        if candidate.tested_hypotheses and candidate.hypothesis_predictions:
+            return
+        tree = self.repository.load_hypothesis_tree()
+        node_index = tree.node_index()
+        if not candidate.tested_hypotheses:
+            inferences: list[str] = []
+            uncertainty_state = self.repository.load_uncertainties()
+            record_index = uncertainty_state.record_index()
+            for uncertainty_id in candidate.related_uncertainties:
+                record = record_index.get(uncertainty_id)
+                if record is not None:
+                    inferences.extend(record.related_hypotheses)
+                    if not record.related_hypotheses:
+                        inferences.extend(
+                            related_hypotheses_for_uncertainty(
+                                tree=tree,
+                                question=record.question or candidate.scientific_question or "",
+                                description=record.description or "",
+                                existing=[],
+                            )
+                        )
+            if not inferences:
+                inferences = infer_related_hypothesis_ids(
+                    tree,
+                    candidate.scientific_question or candidate.purpose or "",
+                    candidate.distinguishing_insight or "",
+                    [],
+                )
+            candidate.tested_hypotheses = [
+                hypothesis_id
+                for hypothesis_id in dict.fromkeys(inferences)
+                if hypothesis_id in node_index
+            ] or [hypothesis_id for hypothesis_id in tree.active_hypotheses if hypothesis_id in node_index]
+        if candidate.tested_hypotheses and not candidate.hypothesis_predictions:
+            candidate.hypothesis_predictions = build_predictions_for_nodes(
+                tree,
+                candidate.tested_hypotheses,
+            )
+
+    def _repair_protocol_hypothesis_links(self, protocol: ExperimentProtocol) -> None:
+        if protocol.tested_hypotheses and protocol.hypothesis_predictions:
+            return
+        candidate = protocol.source_candidate_id or ""
+        candidate_set = self.repository.load_candidate_experiments()
+        candidate_model = next(
+            (
+                item
+                for item in candidate_set.candidates
+                if item.experiment_id == candidate
+            ),
+            None,
+        )
+        tree = self.repository.load_hypothesis_tree()
+        if candidate_model is not None:
+            self._repair_candidate_hypothesis_links(candidate_model)
+            protocol.tested_hypotheses = list(candidate_model.tested_hypotheses)
+            protocol.hypothesis_predictions = candidate_model.hypothesis_predictions
+        if not protocol.tested_hypotheses:
+            protocol.tested_hypotheses = [
+                hypothesis_id
+                for hypothesis_id in tree.active_hypotheses
+                if hypothesis_id in tree.node_index()
+            ]
+        if protocol.tested_hypotheses and not protocol.hypothesis_predictions:
+            protocol.hypothesis_predictions = build_predictions_for_nodes(
+                tree,
+                protocol.tested_hypotheses,
+            )
+
     def approve_candidate(
         self,
         *,
@@ -1072,6 +1150,7 @@ class HumanControlService:
         task = self.repository.load_task()
         candidate_set = self.repository.load_candidate_experiments()
         candidate = self._select_candidate(candidate_set, candidate_id)
+        self._repair_candidate_hypothesis_links(candidate)
         protocol_refinements = self._build_protocol_refinements(
             task=task,
             candidate=candidate,
@@ -1084,6 +1163,7 @@ class HumanControlService:
             model_parameters=model_parameters,
             protocol_refinements=protocol_refinements,
         )
+        self._repair_protocol_hypothesis_links(protocol)
         plan_summary = self._build_execution_plan_summary(
             task=task,
             candidate=candidate,
@@ -2443,6 +2523,7 @@ class HumanControlService:
         uncertainties,
     ) -> tuple[ReasoningPlannerInput, object]:
         """Phase 2 LLM pass: consume the frozen tree, then generate uncertainties and traces."""
+        hypothesis_tree = self.repository.load_hypothesis_tree()
         miner = MultiSourceUncertaintyMiner(self.repository)
         mining_context = miner._build_context(
             planner_input=planner_input,
@@ -2477,6 +2558,7 @@ class HumanControlService:
             uncertainties=uncertainties,
             planner_input=planner_input,
             proposed=questioner_output.proposed_uncertainties,
+            hypothesis_tree=hypothesis_tree,
         )
         planner_input.planner_guidance.append(
             "multi_source_mining:"
@@ -2583,6 +2665,7 @@ class HumanControlService:
         uncertainties,
         planner_input: ReasoningPlannerInput,
         proposed: list,
+        hypothesis_tree=None,
     ):
         existing_questions = {
             "".join(str(record.question or "").lower().split())
@@ -2603,17 +2686,24 @@ class HumanControlService:
                 uncertainty_id = f"U_LLM_R{planner_input.next_round_id:02d}_{next_index:02d}"
             related_hypotheses = list(item.related_hypotheses)
             if not related_hypotheses:
-                related_hypotheses = [
-                    entry.hypothesis_id
-                    for entry in planner_input.active_hypotheses
-                    if entry.hypothesis_id
-                    and (
-                        (entry.statement and f"假设“{entry.statement}”" in f"{item.question} {item.description}")
-                        or (entry.statement and entry.statement in f"{item.question} {item.description}")
-                    )
-                ]
-            # Do not invent an H1 link when the LLM or miner did not associate one;
-            # the UI should show the true hypothesis mapping from the output.
+                related_hypotheses = related_hypotheses_for_uncertainty(
+                    tree=hypothesis_tree,
+                    question=display_question or item.question or "",
+                    description=display_description or item.description or "",
+                    existing=list(item.related_hypotheses),
+                )
+                if not related_hypotheses:
+                    related_hypotheses = [
+                        entry.hypothesis_id
+                        for entry in planner_input.active_hypotheses
+                        if entry.hypothesis_id
+                        and (
+                            (entry.statement and f"假设“{entry.statement}”" in f"{item.question} {item.description}")
+                            or (entry.statement and entry.statement in f"{item.question} {item.description}")
+                        )
+                    ]
+            # Keep the true mapping from the LLM when it is present; the helper
+            # only fills missing links so later protocols stay linked.
             notes = ["generated_from_scientific_questioner_llm"]
             if item.mining_sources:
                 notes.append(f"mining_sources:{','.join(item.mining_sources)}")

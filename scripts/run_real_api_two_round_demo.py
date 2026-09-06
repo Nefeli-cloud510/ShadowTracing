@@ -112,7 +112,7 @@ class ObservedLLMGateway(LLMGateway):
             event["used_fallback"] = True
             event["error"] = "client_unavailable"
             self.call_history.append(event)
-            if fallback_factory is None:
+            if fallback_factory is None or not self.allow_fallback:
                 raise RuntimeError("LLM client is unavailable and no fallback_factory was provided.")
             return self._coerce_response(response_model, fallback_factory())
 
@@ -136,7 +136,7 @@ class ObservedLLMGateway(LLMGateway):
             event["used_fallback"] = True
             event["error"] = repr(exc)
             self.call_history.append(event)
-            if fallback_factory is None:
+            if fallback_factory is None or not self.allow_fallback:
                 raise
             return self._coerce_response(response_model, fallback_factory())
 
@@ -191,38 +191,7 @@ def _normalize_llm_payload(response_model: type[BaseModel], payload: dict[str, A
         return normalized
 
     if model_name == "ScientificQuestionerResponse":
-        challenges = normalized.get("challenge_points")
-        if isinstance(challenges, list):
-            normalized["challenge_points"] = [
-                item.get("description") or item.get("content") or item.get("summary") or json.dumps(item, ensure_ascii=False)
-                if isinstance(item, dict)
-                else str(item)
-                for item in challenges
-            ]
-        proposed = normalized.get("proposed_uncertainties")
-        if isinstance(proposed, list):
-            repaired = []
-            for item in proposed:
-                if isinstance(item, dict):
-                    fixed = dict(item)
-                    fixed["description"] = (
-                        fixed.get("description")
-                        or fixed.get("details")
-                        or fixed.get("summary")
-                        or fixed.get("question")
-                        or "需要进一步验证。"
-                    )
-                    repaired.append(fixed)
-                else:
-                    repaired.append(
-                        {
-                            "question": str(item),
-                            "description": str(item),
-                            "priority": "medium",
-                        }
-                    )
-            normalized["proposed_uncertainties"] = repaired
-        return normalized
+        return ScientificQuestionerLLM._fix_payload(normalized)
 
     if model_name == "HypothesisProposerResponse":
         proposed = normalized.get("proposed_hypotheses")
