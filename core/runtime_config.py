@@ -35,7 +35,7 @@ BAILIAN_MODEL_PRICES: dict[str, dict[str, float]] = {
 
 
 def load_project_env(start_path: Path | None = None) -> Path | None:
-    """Load .env from the nearest project root without overriding existing env vars."""
+    """Load .env from the nearest project root with .env taking precedence."""
     for env_path in _candidate_env_paths(start_path):
         if not env_path.exists():
             continue
@@ -46,7 +46,7 @@ def load_project_env(start_path: Path | None = None) -> Path | None:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
         return env_path
     return None
 

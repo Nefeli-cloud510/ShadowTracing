@@ -46,6 +46,8 @@ DASHSCOPE_BASE_URL=https://llm-jz60biyiqkkwzssm.cn-beijing.maas.aliyuncs.com/com
 BAILIAN_MODEL=qwen3.8-flash
 ```
 
+项目代码在启动时会以 `.env` 文件中的值为准。若服务器系统环境变量、`/root/.bashrc` 或 systemd 环境里残留了旧 Key，应先删除同名变量或直接让 `.env` 覆盖，避免旧 Key 继续生效。
+
 同源部署（前端静态文件与 `/api` 都由同一个 nginx 提供服务）不需要设置任何前端环境变量，前端构建后会默认使用相对路径 `/api`。只有后端部署在独立域名或跨域端口时，才需要在构建前端时设置 `VITE_WORKFLOW_API_BASE`；例如：
 
 ```bash
