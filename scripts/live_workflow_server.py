@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from core.control_unified import HumanControlService
 from core.decision_unified import DecisionLayerService
+from core.display_text_cleaner import clean_repository_text
 from core.llm_gateway import LLMGateway
 from core.multi_source_uncertainty_miner import MIN_UNCERTAINTIES
 from core.runtime_config import get_default_llm_model, get_llm_role_models, load_project_env
@@ -944,6 +945,15 @@ class LiveSessionManager:
                 pass
         self._status["model"] = get_default_llm_model()
         self._synchronize_from_runtime_artifacts()
+        if self._needs_analysis_resume():
+            try:
+                self.resume_analysis()
+            except Exception as exc:
+                self._update(
+                    status="failed",
+                    stage="failed",
+                    message=f"检测到中断的结果分析任务，但自动恢复失败：{exc}",
+                )
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -1004,6 +1014,17 @@ class LiveSessionManager:
             "runRoot": str(LIVE_ROOT),
             "currentRound": current_round,
         }
+
+        if self._status.get("workerError"):
+            status_updates.update(
+                status="failed",
+                stage="failed",
+                message=str(self._status.get("message") or "流程执行失败。"),
+                planning_status="failed",
+                workerError=self._status["workerError"],
+            )
+            self._status.update(status_updates)
+            return
 
         if process_state.current_stage == "awaiting_hypothesis_confirmation":
             status_updates.update(
@@ -1167,11 +1188,63 @@ class LiveSessionManager:
     def _current_model(self) -> str:
         return str(self._status.get("model") or get_default_llm_model())
 
+    def _needs_analysis_resume(self) -> bool:
+        if self._worker is not None and self._worker.is_alive():
+            return False
+        try:
+            repo = UnifiedStateRepository(LIVE_ROOT)
+            process_state = repo.load_process_state()
+            if process_state.current_phase != "result_analysis":
+                return False
+            round_dir = LIVE_ROOT / "results" / f"round_{process_state.current_round:02d}"
+            return (round_dir / "protocol.json").exists() and (round_dir / "result_unified.json").exists()
+        except Exception:
+            return False
+
     def _current_round(self) -> int:
         repo = UnifiedStateRepository(LIVE_ROOT)
         process_state = repo.load_process_state()
         candidate_set = repo.load_candidate_experiments()
         return max(process_state.current_round, candidate_set.round or 0, 1)
+
+    def resume_analysis(self) -> dict[str, Any]:
+        """Resume a result-analysis step that was interrupted by a restart."""
+        self._assert_not_busy()
+        self._update(
+            status="running",
+            stage="result_analysis",
+            planning_status="result_analyzing",
+            workerError=None,
+            message="正在恢复中断的结果分析，本轮实验不会重复执行。",
+        )
+        return self._start_worker(self._run_resume_analysis)
+
+    def _run_resume_analysis(self, *, _generation: int) -> None:
+        try:
+            self._abort_if_stale(_generation)
+            repo = UnifiedStateRepository(LIVE_ROOT)
+            control = self._build_control(repo)
+            execution = control.resume_evaluation_from_persisted_run()
+            self._abort_if_stale(_generation)
+            self._update(
+                _generation=_generation,
+                status="awaiting_round_decision",
+                stage="round_review_requested",
+                workerError=None,
+                message="本轮实验已跑完，结果分析已恢复完成，请输入整轮反馈并决定是否继续。",
+                currentRound=execution["protocol"].round_id,
+            )
+        except StaleSessionError:
+            self._cleanup_if_stale(_generation)
+        except Exception as exc:
+            traceback.print_exc()
+            self._update(
+                _generation=_generation,
+                status="failed",
+                stage="failed",
+                workerError=str(exc),
+                message=f"结果分析恢复失败：{exc}",
+            )
 
     def recover_uncertainties(
         self,
@@ -1886,6 +1959,9 @@ class LiveWorkflowHandler(BaseHTTPRequestHandler):
         if self.path == "/api/health":
             self._write_json({"status": "ok", "service": "live_workflow_server"})
             return
+        if self.path.startswith("/api/report/export"):
+            self._handle_report_export()
+            return
         if self.path == "/api/session":
             self._write_json(SESSION_MANAGER.snapshot())
             return
@@ -1932,6 +2008,9 @@ class LiveWorkflowHandler(BaseHTTPRequestHandler):
         if self.path == "/api/workflow/approval":
             self._handle_approval_action()
             return
+        if self.path == "/api/workflow/resume-analysis":
+            self._handle_resume_analysis()
+            return
         if self.path == "/api/workflow/round-decision":
             self._handle_round_decision()
             return
@@ -1967,6 +2046,55 @@ class LiveWorkflowHandler(BaseHTTPRequestHandler):
     def _write_json(self, payload: dict[str, Any], status: int = HTTPStatus.OK) -> None:
         self._set_headers(status=status)
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def _handle_report_export(self) -> None:
+        try:
+            from scripts.report_exporter import (
+                build_all_rounds_report_html,
+                build_round_report_html,
+                render_report_pdf,
+                report_export_filename,
+            )
+
+            params = parse_qs(urlparse(self.path).query)
+            scope = (params.get("scope") or ["round"])[0].lower()
+            round_number: int | None = None
+            if scope == "all":
+                html_text = build_all_rounds_report_html()
+            elif scope == "round":
+                raw_round = (params.get("round") or [""])[0]
+                if not raw_round.isdigit():
+                    self._write_json({"message": "缺少有效的轮次参数。"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                round_number = int(raw_round)
+                html_text = build_round_report_html(round_number)
+            else:
+                self._write_json({"message": "scope 仅支持 round 或 all。"}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            stem = report_export_filename(scope, round_number or 1)
+            pdf_bytes, used_html_fallback = render_report_pdf(html_text, stem)
+            if pdf_bytes is not None:
+                self._set_headers(
+                    status=HTTPStatus.OK,
+                    content_type="application/pdf",
+                    extra_headers=[("Content-Disposition", f'attachment; filename="{stem}"')],
+                )
+                self.wfile.write(pdf_bytes)
+                return
+            html_stem = stem[:-4] + ".html"
+            self._set_headers(
+                status=HTTPStatus.OK,
+                content_type="text/html; charset=utf-8",
+                extra_headers=[("Content-Disposition", f'attachment; filename="{html_stem}"')],
+            )
+            self.wfile.write(html_text.encode("utf-8"))
+        except Exception as exc:
+            traceback.print_exc()
+            self._write_json(
+                {"message": f"报告导出失败：{exc}"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def _serve_state_file(self) -> None:
         file_name = Path(unquote(self.path.removeprefix("/api/state/"))).name
@@ -2112,6 +2240,13 @@ class LiveWorkflowHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._write_json({"message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_resume_analysis(self) -> None:
+        try:
+            status = SESSION_MANAGER.resume_analysis()
+            self._write_json(status, status=HTTPStatus.ACCEPTED)
+        except Exception as exc:
+            self._write_json({"message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_round_decision(self) -> None:
         try:
             payload = self._read_json_body()
@@ -2244,6 +2379,11 @@ class LiveWorkflowHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     load_project_env(REPO_ROOT)
+    try:
+        clean_repository_text(LIVE_ROOT)
+        print("[live-server] display-text cleanup complete")
+    except Exception as exc:
+        print(f"[live-server] warning: display-text cleanup skipped: {exc}")
     server = ThreadingHTTPServer((HOST, PORT), LiveWorkflowHandler)
     print(f"[live-server] http://{HOST}:{PORT}")
     try:

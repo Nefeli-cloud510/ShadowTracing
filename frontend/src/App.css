@@ -3268,6 +3268,10 @@ select {
   grid-column: 1 / -1;
 }
 
+.three-layer-conclusion__data-item--full {
+  grid-column: 1 / -1;
+}
+
 .three-layer-conclusion__data-item {
   display: grid;
   gap: 6px;
@@ -3289,6 +3293,186 @@ select {
   margin: 0;
   color: rgba(15, 33, 66, 0.78);
   line-height: 1.7;
+}
+
+.three-layer-conclusion__charts {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.three-layer-conclusion__charts-title {
+  color: #25578f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.three-layer-conclusion__chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.three-layer-conclusion__chart {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(12, 42, 95, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.three-layer-conclusion__chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.three-layer-conclusion__chart-head strong {
+  color: #0f2142;
+  font-size: 14px;
+}
+
+.three-layer-conclusion__chart-head span {
+  flex-shrink: 0;
+  color: #6e767e;
+  font-size: 12px;
+}
+
+.three-layer-conclusion__chart-image {
+  width: 100%;
+  height: auto;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid rgba(12, 42, 95, 0.1);
+  background: #fff;
+}
+
+.three-layer-conclusion__chart p {
+  margin: 0;
+  color: rgba(15, 33, 66, 0.78);
+  line-height: 1.7;
+}
+
+.three-layer-conclusion__chart-insight {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(208, 138, 30, 0.1);
+  color: rgba(15, 33, 66, 0.82);
+  font-size: 13px;
+}
+
+.three-layer-conclusion__llm-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(37, 87, 143, 0.14);
+  border-left: 4px solid #25578f;
+  border-radius: 10px;
+  background: rgba(37, 87, 143, 0.05);
+}
+
+.three-layer-conclusion__llm-summary span {
+  color: #25578f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.three-layer-conclusion__llm-summary p {
+  margin: 0;
+  color: rgba(15, 33, 66, 0.8);
+  line-height: 1.75;
+}
+
+.next-round-suggestion {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid rgba(12, 42, 95, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.next-round-suggestion__lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.next-round-suggestion__list,
+.next-round-suggestion__item,
+.next-round-suggestion__recommendation {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(12, 42, 95, 0.09);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.next-round-suggestion__list--resolved {
+  border-left: 4px solid #2d7a46;
+}
+
+.next-round-suggestion__list--unresolved {
+  border-left: 4px solid #d08a1e;
+}
+
+.next-round-suggestion__list > span,
+.next-round-suggestion__item > span {
+  color: #25578f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.next-round-suggestion__list ul,
+.next-round-suggestion__item ul {
+  margin: 0;
+}
+
+.next-round-suggestion__item p {
+  margin: 0;
+  color: rgba(15, 33, 66, 0.8);
+  line-height: 1.7;
+}
+
+.next-round-suggestion__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.next-round-suggestion__recommendation {
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: start;
+  width: fit-content;
+}
+
+.next-round-suggestion__recommendation span {
+  color: #6e767e;
+  font-size: 12px;
+}
+
+.next-round-suggestion__recommendation strong {
+  color: #25578f;
+  font-size: 14px;
+}
+
+.scientific-overall-summary {
+  margin: 0;
+  padding: 14px 16px;
+  border-left: 4px solid #25578f;
+  border-radius: 10px;
+  background: rgba(37, 87, 143, 0.06);
+  color: rgba(15, 33, 66, 0.82);
+  line-height: 1.8;
 }
 
 .three-layer-conclusion__data-item ul,
@@ -3442,7 +3626,10 @@ select {
   .four-layer-conclusion,
   .three-layer-conclusion__summary,
   .three-layer-conclusion__tracking,
-  .three-layer-conclusion__data {
+  .three-layer-conclusion__data,
+  .three-layer-conclusion__chart-grid,
+  .next-round-suggestion__lists,
+  .next-round-suggestion__grid {
     grid-template-columns: 1fr;
   }
 

@@ -54,6 +54,8 @@ DEFAULT_TWO_LAYER_PARENT = {
     "H4": CANONICAL_ID_BY_DISPLAY["H1"],
     "H5": CANONICAL_ID_BY_DISPLAY["H1"],
 }
+DIVERGENCE_GAP_THRESHOLD = 0.10
+TARGETED_STATUSES = frozenset({"draft", "observing", "pending"})
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,45 @@ def refresh_tree_metadata(tree: HypothesisTreeState) -> None:
         pruned_count=len(tree.pruned_hypotheses),
         pending_count=len(tree.pending_hypotheses),
     )
+
+
+def compute_targeted_interrogation_scope(
+    tree: HypothesisTreeState | None,
+    *,
+    current_round: int,
+) -> set[str]:
+    """Return hypothesis ids that need re-questioning in the current round.
+
+    Inherited, already-questioned stable nodes are deliberately excluded so
+    their questioning traces stay untouched; the LLM only re-examines:
+    - nodes created in this round or never questioned before,
+    - weak nodes still in draft/observing/pending,
+    - the closest-split level-1 competing hypotheses from the inherited tree.
+    """
+    if tree is None or not tree.nodes:
+        return set()
+    targeted: set[str] = set()
+    root_candidates: list[HypothesisNode] = []
+    for node in tree.nodes:
+        if node.status == "pruned":
+            continue
+        if node.created_at_round >= current_round or not node.questioning_records:
+            targeted.add(node.hypothesis_id)
+        if node.status in TARGETED_STATUSES:
+            targeted.add(node.hypothesis_id)
+        if node.level <= 1:
+            root_candidates.append(node)
+    if len(root_candidates) >= 2:
+        root_candidates.sort(key=lambda node: node.support_score)
+        min_gap = min(
+            round(next_node.support_score - node.support_score, 4)
+            for node, next_node in zip(root_candidates, root_candidates[1:])
+        )
+        for node, next_node in zip(root_candidates, root_candidates[1:]):
+            gap = round(next_node.support_score - node.support_score, 4)
+            if gap <= min_gap + 1e-9:
+                targeted.update({node.hypothesis_id, next_node.hypothesis_id})
+    return targeted
 
 
 class HypothesisGenerationService:
@@ -385,8 +426,8 @@ def _nodes_from_llm_proposals(
             if str(item).strip()
         ]
         if inherited_node is not None:
-            # 第二轮起继承上一轮轮末的支持度、状态与支持度历史；上一轮科学质询输出
-            # 不继承，由新一轮质询基于继承树重新生成。
+            # 第二轮起继承上一轮轮末的支持度、状态、支持度历史，并保留历史科学
+            # 质询记录与批判痕迹；新一轮只对定向作用域内的节点补充质询。
             initial_support = round(inherited_node.support_score, 3)
             status = str(inherited_node.status)
             support_history = [
@@ -399,7 +440,10 @@ def _nodes_from_llm_proposals(
                     event="round_continuation",
                 )
             )
-            questioning_records = []
+            questioning_records = [
+                record.model_copy(deep=True)
+                for record in inherited_node.questioning_records
+            ]
             evidence_items = _merge_evidence_items(
                 existing=inherited_node.evidence_items,
                 new=new_evidence_items,
@@ -407,7 +451,9 @@ def _nodes_from_llm_proposals(
             evidence_against = [
                 item.model_copy(deep=True) for item in inherited_node.evidence_against
             ]
-            critiques = []
+            critiques = [
+                record.model_copy(deep=True) for record in inherited_node.critiques
+            ]
             alternative_explanations = _merge_texts(
                 inherited_node.alternative_explanations,
                 new_alternative_explanations,

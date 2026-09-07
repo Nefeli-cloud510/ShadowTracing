@@ -6,15 +6,18 @@ from pathlib import Path
 from core.control_unified import HumanControlService
 from core.decision_unified import DecisionLayerService
 from core.hypothesis_generation import HypothesisGenerationResult, HypothesisGenerationService
+from core.hypothesis_generation import compute_targeted_interrogation_scope
 from core.state_repository import UnifiedStateRepository
 from core.unified_schema import (
     ClosureChecklistItem,
+    CritiqueRecord,
     DataDictionary,
     DataDictionarySummary,
     EvaluationSpec,
     FieldDescriptor,
     HypothesisNode,
     HypothesisQuestioningRecord,
+    HypothesisTreeState,
     PlannerEvaluationSummary,
     ResearchQuestion,
     ReasoningPlannerInput,
@@ -341,7 +344,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         generation_entries = [entry for entry in decision_log.decisions if entry.decision_type == "hypothesis_generated"]
         self.assertTrue(generation_entries[-1].details["generated_hypotheses"])
 
-    def test_round_two_inherits_round_end_support_status_history_without_old_questioning(self) -> None:
+    def test_round_two_inherits_round_end_support_status_history_and_questioning_traces(self) -> None:
         service = HypothesisGenerationService()
         round_one = service.build_tree(
             task=self.task,
@@ -378,6 +381,14 @@ class HypothesisGenerationTest(unittest.TestCase):
                     status=status,
                 )
             )
+            node.critiques.append(
+                CritiqueRecord(
+                    id=f"{display_id}_crit_1",
+                    content=f"{display_id} 第一轮科学质询批判",
+                    from_role="scientific_questioner",
+                    added_at_round=1,
+                )
+            )
 
         round_two = service.build_tree(
             task=self.task,
@@ -395,12 +406,145 @@ class HypothesisGenerationTest(unittest.TestCase):
             self.assertEqual(inherited.support_history[-1].event, "round_continuation")
             self.assertEqual(inherited.support_history[-1].round, 2)
             self.assertAlmostEqual(inherited.support_history[-1].score, round(support, 3))
-            self.assertEqual(inherited.questioning_records, [])
-            self.assertEqual(inherited.critiques, [])
+            self.assertEqual(len(inherited.questioning_records), 1)
+            self.assertEqual(inherited.questioning_records[0].round, 1)
+            self.assertEqual(inherited.questioning_records[0].rationale, f"{display_id} 第一轮质询结论")
+            self.assertEqual(len(inherited.critiques), 1)
+            self.assertEqual(inherited.critiques[0].from_role, "scientific_questioner")
             self.assertTrue(inherited.statement.startswith("第2轮"))
             self.assertIn("继承上一轮轮末状态", inherited.generation_rationale.summary)
             self.assertEqual(inherited.created_at_round, 1)
             self.assertEqual(len(inherited.evidence_items), 2)
+
+    def test_targeted_interrogation_scope_covers_new_weak_and_closest_split_nodes(self) -> None:
+        tree = HypothesisTreeState(
+            tree_id="ST_SCOPE",
+            task_id="ST_SCOPE",
+            current_round=2,
+            root_question="DeltaDec 是否包含独立预测信息",
+            nodes=[
+                HypothesisNode(
+                    hypothesis_id="H1",
+                    display_hypothesis_id="H1",
+                    statement="H1 独立增量成立",
+                    level=1,
+                    status="active",
+                    support_score=0.58,
+                    activation_condition="always",
+                    created_at_round=1,
+                    questioning_records=[
+                        HypothesisQuestioningRecord(
+                            round=1,
+                            impact_direction="supports",
+                            impact_strength=0.4,
+                            confidence=0.8,
+                            rationale="H1 首轮质询",
+                            support_before=0.5,
+                            support_after=0.58,
+                            status="active",
+                        )
+                    ],
+                ),
+                HypothesisNode(
+                    hypothesis_id="H2",
+                    display_hypothesis_id="H2",
+                    statement="H2 中介路径成立",
+                    level=1,
+                    status="active",
+                    support_score=0.55,
+                    activation_condition="always",
+                    created_at_round=1,
+                    questioning_records=[
+                        HypothesisQuestioningRecord(
+                            round=1,
+                            impact_direction="clarifies",
+                            impact_strength=0.3,
+                            confidence=0.7,
+                            rationale="H2 首轮质询",
+                            support_before=0.5,
+                            support_after=0.55,
+                            status="active",
+                        )
+                    ],
+                ),
+                HypothesisNode(
+                    hypothesis_id="H3",
+                    display_hypothesis_id="H3",
+                    statement="H3 稳定子假设",
+                    level=2,
+                    parent_id="H1",
+                    status="active",
+                    support_score=0.72,
+                    activation_condition="父假设支持度>=0.40",
+                    created_at_round=1,
+                    questioning_records=[
+                        HypothesisQuestioningRecord(
+                            round=1,
+                            impact_direction="supports",
+                            impact_strength=0.5,
+                            confidence=0.8,
+                            rationale="H3 首轮质询",
+                            support_before=0.4,
+                            support_after=0.72,
+                            status="active",
+                        )
+                    ],
+                ),
+                HypothesisNode(
+                    hypothesis_id="H4",
+                    display_hypothesis_id="H4",
+                    statement="H4 观察期子假设",
+                    level=2,
+                    parent_id="H2",
+                    status="observing",
+                    support_score=0.3,
+                    activation_condition="父假设支持度>=0.40",
+                    created_at_round=1,
+                    questioning_records=[
+                        HypothesisQuestioningRecord(
+                            round=1,
+                            impact_direction="weakens",
+                            impact_strength=0.5,
+                            confidence=0.8,
+                            rationale="H4 首轮质询",
+                            support_before=0.4,
+                            support_after=0.3,
+                            status="observing",
+                        )
+                    ],
+                ),
+                HypothesisNode(
+                    hypothesis_id="H5_sup",
+                    display_hypothesis_id="H5",
+                    statement="H5 本轮新补充",
+                    level=1,
+                    status="active",
+                    support_score=0.4,
+                    activation_condition="always",
+                    created_at_round=2,
+                ),
+                HypothesisNode(
+                    hypothesis_id="H6_pruned",
+                    display_hypothesis_id="H6",
+                    statement="H6 已剪枝",
+                    level=1,
+                    status="pruned",
+                    support_score=0.12,
+                    activation_condition="always",
+                    created_at_round=1,
+                    pruned_at_round=2,
+                ),
+            ],
+        )
+
+        targeted = compute_targeted_interrogation_scope(tree, current_round=2)
+
+        self.assertIn("H1", targeted)
+        self.assertIn("H2", targeted)
+        self.assertIn("H4", targeted)
+        self.assertIn("H5_sup", targeted)
+        self.assertNotIn("H3", targeted)
+        self.assertNotIn("H6_pruned", targeted)
 
 
 if __name__ == "__main__":

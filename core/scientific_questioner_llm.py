@@ -49,6 +49,7 @@ class ScientificQuestionerLLM:
 proposed_uncertainties 的 question 和 description 必须写成自然、专业、可直接展示的物理语言，
 表述成真正的科学问题（例如“控制行星际磁场Y分量后，宇宙线日影南北偏移对太阳风速度的预测增益是否仍然存在？”），
 禁止使用“关于 A 与 B 的解释是否仍受未建模条件约束”这类固定填空句式，也不要机械复述字段标签。
+任何叙述文本不得出现 H_*、U_*、status=、narrowed=、before_span= 等内部机器标识；提及假设用 H1..H5 或自然语言名称，提及不确定性用问题原文，内部 ID 只允许出现在指定 id 字段。
 proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 字段用于来源追溯；请优先使用系统给出的 mined_candidates 线索，并在归纳时保留原始来源标签。
 不要直接修改状态文件，只给出 challenge_points、guidance_notes、proposed_uncertainties。""" + "\n\n" + ELASTIC_NET_EXECUTION_RULE
 
@@ -197,11 +198,24 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
         rag_context: RAGContextBundle,
         tree,
         mined_candidates: list[dict[str, object]] | None = None,
+        targeted_hypothesis_ids: list[str] | None = None,
     ) -> ScientificQuestionerResponse:
-        """Challenge every frozen hypothesis and return support/status updates."""
+        """Question the frozen hypothesis tree within the targeted scope.
+
+        Historically questioned stable nodes are inherited without a new pass:
+        they appear only as retained context, while hypothesis_updates are
+        requested solely for targeted_hypothesis_ids.
+        """
         semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
-        hypothesis_nodes = [
-            {
+        target_set = (
+            set(targeted_hypothesis_ids)
+            if targeted_hypothesis_ids is not None
+            else {node.hypothesis_id for node in tree.nodes}
+        )
+
+        def _node_snapshot(node) -> dict[str, object]:
+            latest = node.questioning_records[-1] if node.questioning_records else None
+            snapshot: dict[str, object] = {
                 "hypothesis_id": node.hypothesis_id,
                 "display_hypothesis_id": node.display_hypothesis_id or f"H{node.level}",
                 "statement": semantic.display_text(node.display_statement or node.statement),
@@ -210,7 +224,21 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
                 "level": node.level,
                 "parent_id": node.parent_id,
             }
-            for node in tree.nodes
+            if latest is not None:
+                snapshot["latest_questioning"] = {
+                    "round": latest.round,
+                    "impact_direction": latest.impact_direction,
+                    "support_after": latest.support_after,
+                    "rationale": latest.rationale,
+                    "falsification_basis": latest.falsification_basis or "",
+                }
+            return snapshot
+
+        hypothesis_nodes = [
+            _node_snapshot(node) for node in tree.nodes if node.hypothesis_id in target_set
+        ]
+        retained_nodes = [
+            _node_snapshot(node) for node in tree.nodes if node.hypothesis_id not in target_set
         ]
         compact = {
             "question": semantic.display_text(planner_input.scientific_question),
@@ -222,7 +250,8 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
                 "stable": planner_input.evaluation_summary.stable,
                 "key_findings": planner_input.evaluation_summary.key_findings[:2],
             },
-            "hypothesis_tree": hypothesis_nodes,
+            "targeted_hypotheses": hypothesis_nodes,
+            "retained_hypotheses": retained_nodes,
             "rag_notes": rag_context.guidance_notes()[:4],
             "mined_candidates": (mined_candidates or [])[:8],
         }
@@ -230,11 +259,15 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
             system_prompt=self.QUESTIONING_SYSTEM_PROMPT,
             user_prompt=(
                 f"context={compact}\n"
-                "逐条输出 hypothesis_updates：对树中每一个 hypothesis_id 都给出一项更新，"
+                "逐条输出 hypothesis_updates：只对 targeted_hypotheses 中每一个 hypothesis_id"
+                "给出一项更新；retained_hypotheses 是已继承的稳定节点，本轮不重新质询，"
+                "禁止为 retained_hypotheses 输出 hypothesis_updates。"
                 "impact_direction 只能是 supports / weakens / clarifies，"
                 "impact_strength 与 confidence 均为 0-1 小数，rationale 用自然物理语言说明判断依据；"
                 "选择 weakens 时必须填写 falsification_basis，给出可证否的具体依据"
                 "（证据缺口、违反物理规律或与真实实验结果矛盾），只表达担忧而没有依据时只能选 clarifies。\n"
+                "继承说明：targeted_hypotheses 与 retained_hypotheses 里的 latest_questioning"
+                "是历史质询结果，供你在已有判断基础上给出增量意见；未重新质询的节点保持原状。\n"
                 "科学书写规则：challenge_points 与 proposed_uncertainties 必须写成自然、专业、物理语义清晰的文本，"
                 "明确自变量、因变量与物理路径关系；禁止固定填空句式，禁止机械复述字段标签。\n"
                 "名称规则：文本与 features 一律使用 display_dictionary 中的展示名，禁止输出原始表头或英文单位标签。"
@@ -428,11 +461,12 @@ proposed_uncertainties 可附带 mining_sources、related_hypotheses、features 
 
     SYSTEM_PROMPT = """你是“逐影 Shadow Tracing”的科学质询顾问。
 
-你的任务是对冻结后的假设树逐条开展科学质询：作为顾问提供支持、削弱或澄清意见，
+你的任务是对冻结后的假设树开展定向科学质询：作为顾问提供支持、削弱或澄清意见，
 同时识别证据缺口、替代解释和仍需验证的问题。你的质询意见是 advisory，不是最终裁决：
 单次弱化最多把活跃节点降至待观察，不能直接剪枝；只有真实弹性回归实验结果或人工 PI 覆盖
 才是强证据，能驱动剪枝与收敛。
-必须为假设树中每一个 hypothesis_id 输出一条 hypothesis_updates，
+必须严格为 prompt 中 targeted_hypotheses 里的每一个 hypothesis_id 输出一条 hypothesis_updates，
+retained_hypotheses 只是继承上下文，禁止为其输出更新；
 impact_direction 只能是 supports / weakens / clarifies，
 impact_strength 与 confidence 均为 0-1 小数，rationale 必须写明物理判断依据。
 选择 weakens 时必须同时填写 falsification_basis，给出可证否的具体依据

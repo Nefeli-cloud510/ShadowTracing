@@ -12,6 +12,7 @@ from core.unified_schema import (
     DataDictionary,
     EvaluationSpec,
     FieldDescriptor,
+    HypothesisNode,
     ResearchQuestion,
     ScientificConstraints,
     ScientificTask,
@@ -87,12 +88,38 @@ class SystemAuditClosureTest(unittest.TestCase):
         )
         self.repository.initialize_state_skeleton(
             self.task,
+            initial_hypotheses=[
+                HypothesisNode(
+                    hypothesis_id="H1",
+                    statement="DeltaDec 提供独立于 IMF 的增量预测信息",
+                    level=1,
+                    status="active",
+                    support_score=0.45,
+                    activation_condition="always",
+                ),
+                HypothesisNode(
+                    hypothesis_id="H2",
+                    statement="DeltaDec 主要通过 By 路径影响 Vsw 预测",
+                    level=1,
+                    status="active",
+                    support_score=0.35,
+                    activation_condition="always",
+                ),
+                HypothesisNode(
+                    hypothesis_id="H3",
+                    statement="DeltaDec 的增益仅在特定时段稳定",
+                    level=1,
+                    status="active",
+                    support_score=0.30,
+                    activation_condition="always",
+                ),
+            ],
             initial_uncertainties=[
                 UncertaintyRecord(
                     uncertainty_id="U01",
                     question="DeltaDec 的贡献是否独立于 By？",
                     description="需要区分独立增量与中介解释。",
-                    related_hypotheses=[],
+                    related_hypotheses=["H1", "H2"],
                     status="active",
                     priority="high",
                     created_at_round=0,
@@ -102,7 +129,7 @@ class SystemAuditClosureTest(unittest.TestCase):
                     uncertainty_id="U02",
                     question="DeltaDec 的增益是否跨时间段稳定？",
                     description="需要检验滞后稳定性。",
-                    related_hypotheses=[],
+                    related_hypotheses=["H1", "H3"],
                     status="active",
                     priority="medium",
                     created_at_round=0,

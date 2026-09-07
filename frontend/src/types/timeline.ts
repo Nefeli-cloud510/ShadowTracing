@@ -369,6 +369,29 @@ export interface ConclusionDataLayer {
   skillDeltaMeaning?: string
   anomalies: string[]
   nextFocus?: string
+  chartAnalyses?: ConclusionChartAnalysis[]
+  comparisonAnalysis?: string
+}
+
+export interface ConclusionChartAnalysis {
+  chartName: string
+  chartRole: string
+  chartImagePath?: string
+  description: string
+  keyObservations: string[]
+  anomalyOrInsight?: string
+}
+
+export interface ConclusionNextRoundSuggestion {
+  evidenceSummary?: string
+  resolvedUncertaintiesThisRound: string[]
+  unresolvedUncertaintiesTodo: string[]
+  remainingUncertaintyAnalysis?: string
+  recommendation?: 'continue' | 'adjust' | 'stop'
+  piDecisionAdvice?: string
+  experimentDesignAdvice?: string
+  hypothesisSpaceAdvice?: string
+  notes: string[]
 }
 
 export interface ConclusionTrackingLayer {
@@ -383,6 +406,9 @@ export interface ThreeLayerConclusionViewModel {
   scientificLayer: ThreeLayerConclusionScientificLayer
   dataLayer?: ConclusionDataLayer
   trackingLayer?: ConclusionTrackingLayer
+  hypothesisLayerSummary?: string
+  overallSummary?: string
+  nextRoundSuggestion?: ConclusionNextRoundSuggestion
 }
 
 export interface ApprovalOverlayViewModel {

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -27,6 +28,8 @@ from core.unified_schema import (
     FieldDescriptor,
     HypothesisNode,
     ProtocolRefinementSuggestion,
+    ProcessPhase,
+    ProcessStep,
     ResearchQuestion,
     RoundHistoryEntry,
     ScientificConstraints,
@@ -49,7 +52,9 @@ class StubLLMGateway:
         user_prompt,
         response_model,
         fallback_factory=None,
+        payload_fixer=None,
         temperature=None,
+        image_paths=None,
     ):
         return response_model.model_validate(
             {
@@ -107,7 +112,15 @@ class StubHypothesisProposer:
 
 
 class StubScientificQuestioner:
-    def challenge_hypothesis_tree(self, *, planner_input, rag_context, tree, mined_candidates=None):
+    def challenge_hypothesis_tree(
+        self,
+        *,
+        planner_input,
+        rag_context,
+        tree,
+        mined_candidates=None,
+        targeted_hypothesis_ids=None,
+    ):
         return ScientificQuestionerResponse(
             challenge_points=["当前仍需确认 DeltaDec 的增量是否独立于 By。"],
             guidance_notes=["questioner_gap:需要区分独立信息与中介解释。"],
@@ -127,6 +140,8 @@ class StubScientificQuestioner:
                     rationale="质询认为当前证据仍偏向支持该假设。",
                 )
                 for node in tree.nodes
+                if targeted_hypothesis_ids is None
+                or node.hypothesis_id in targeted_hypothesis_ids
             ],
         )
 
@@ -157,7 +172,7 @@ class StubExperimentPlanner:
         return ProtocolRefinementSuggestion(
             suggestion_id="EPL_STUB_001",
             target_candidate_id=candidate.experiment_id,
-            refinement_type="llm_experiment_planner",
+            refinement_type="实验规划者llm",
             rationale=f"为 {candidate.experiment_id} 增加协议级焦点检查。",
             suggested_model_parameters={"alpha": 0.2},
             suggested_feature_focus=candidate.design.treatment[:1],
@@ -743,6 +758,63 @@ class HumanControlFlowTest(unittest.TestCase):
 
         decision_log = self.repository.load_decision_log()
         self.assertEqual(decision_log.decisions[-1].decision_type, "round_review_requested")
+
+    def test_resume_evaluation_from_persisted_run_without_rerunning(self) -> None:
+        control = HumanControlService(
+            self.repository,
+            project_root=self.project_root,
+            run_shap=False,
+            experiment_designer=StubCandidateExperimentDesigner(),
+            experiment_writer=StubCandidateExperimentWriter(),
+        )
+        control.request_experiment_selection_review()
+        payload = control.approve_and_execute_candidate(
+            human_notes="批准后直接执行",
+            auto_continue=False,
+        )
+        protocol = payload["protocol"]
+        round_dir = self.project_root / "results" / f"round_{protocol.round_id:02d}"
+        evaluation_path = round_dir / "evaluation_unified.json"
+        result_path = round_dir / "result_unified.json"
+        self.assertTrue(evaluation_path.exists())
+        persisted_result = result_path.read_bytes()
+
+        # Simulate the server restarting right after the experiment finished but
+        # before result analysis was persisted.
+        evaluation_path.unlink()
+        process_state = self.repository.load_process_state()
+        process_state.current_phase = "result_analysis"
+        process_state.current_stage = "evaluating_results"
+        process_state.current_step = "evaluation"
+        process_state.progress_percentage = 72
+        process_state.phases["result_analysis"] = ProcessPhase(
+            status="in_progress",
+            started_at=datetime.now(),
+            steps={
+                "evaluation": ProcessStep(name="计算指标与稳健性分析", status="in_progress"),
+                "scientific_interpretation": ProcessStep(name="生成科学解释", status="pending"),
+            },
+        )
+        self.repository.save_process_state(process_state)
+
+        recovered = control.resume_evaluation_from_persisted_run(
+            round_id=protocol.round_id,
+            experiment_id=protocol.experiment_id,
+        )
+
+        self.assertEqual(recovered["protocol"].experiment_id, protocol.experiment_id)
+        self.assertEqual(recovered["result"].status, "completed")
+        self.assertEqual(recovered["review"]["status"], "awaiting_round_decision")
+        self.assertTrue(evaluation_path.exists())
+        self.assertEqual(result_path.read_bytes(), persisted_result)
+
+        final_state = self.repository.load_process_state()
+        self.assertEqual(final_state.current_stage, "awaiting_round_decision")
+        self.assertEqual(final_state.current_phase, "decision_making")
+        self.assertEqual(final_state.phases["result_analysis"].status, "completed")
+
+        persisted_evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted_evaluation["metrics"]["experiment_id"], protocol.experiment_id)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel
@@ -50,6 +52,7 @@ class LLMGateway:
         fallback_factory: Callable[[], SchemaModelT | dict[str, Any]] | None = None,
         payload_fixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         temperature: float | None = None,
+        image_paths: list[str] | None = None,
     ) -> SchemaModelT:
         if self.client is None:
             if fallback_factory is None or not self.allow_fallback:
@@ -57,11 +60,27 @@ class LLMGateway:
             return self._coerce_response(response_model, fallback_factory())
 
         try:
+            user_content: Any = user_prompt
+            if image_paths:
+                content_parts: list[dict[str, Any]] = [
+                    {"type": "text", "text": user_prompt},
+                ]
+                for image_path in image_paths:
+                    encoded, media_type = _encode_image(image_path)
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{encoded}",
+                            },
+                        }
+                    )
+                user_content = content_parts
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": user_content},
                 ],
                 temperature=self.temperature if temperature is None else temperature,
             )
@@ -97,6 +116,20 @@ class LLMGateway:
         if isinstance(payload, response_model):
             return payload
         return response_model.model_validate(payload)
+
+
+def _encode_image(path: str) -> tuple[str, str]:
+    image_path = Path(path)
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Report chart not found for LLM analysis: {path}")
+    media_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(image_path.suffix.lower(), "image/png")
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return encoded, media_type
 
 
 def _extract_json_payload(content: str) -> dict[str, Any]:

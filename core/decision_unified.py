@@ -32,6 +32,7 @@ from core.unified_schema import (
 from core.hypothesis_generation import HypothesisGenerationService
 from core.hypothesis_identity import infer_related_hypothesis_ids
 from core.experiment_planner_llm import CandidateExperimentDesignerLLM, CandidateExperimentWriterLLM
+from core.display_text_cleaner import clean_llm_text
 from core.runtime_config import (
     get_bailian_model_prices,
     get_llm_model_for_role,
@@ -466,7 +467,14 @@ class CandidateExperimentGenerator:
                 novelty=_build_candidate_novelty(planning_context),
             )
             candidate.design.notes.extend(_planning_notes(planning_context))
-            candidate.design.notes.extend(_rationale_design_notes(record, rationale_context))
+            candidate.design.notes.extend(
+                _rationale_design_notes(
+                    record,
+                    rationale_context,
+                    tree=hypothesis_tree,
+                    uncertainty_records=uncertainty_state.records,
+                )
+            )
             if experiment_memory and len(experiment_memory.entries):
                 preset = WINDOW_PRESETS[(len(experiment_memory.entries) + 1) % len(WINDOW_PRESETS)]
                 window_note = (
@@ -677,6 +685,7 @@ class DecisionLayerService:
             semantic_service=semantic_service,
             node_index=node_index,
             round_id=resolved_round or candidates.round,
+            uncertainty_index=uncertainty_index,
         )
         scored = self.scorer.score(candidates, experiment_memory=experiment_memory)
         uncertainty_index = uncertainties.record_index()
@@ -1991,7 +2000,12 @@ def _candidate_rationale_context(record: UncertaintyRecord, node_index: dict[str
             continue
         rationale = node.generation_rationale
         trigger_tags.append(rationale.trigger)
-        summaries.append(f"{hypothesis_id}:{rationale.summary}")
+        label = (
+            getattr(node, "display_hypothesis_id", None)
+            or (f"H{node.level}" if getattr(node, "level", None) else "")
+            or hypothesis_id
+        )
+        summaries.append(f"{label}:{rationale.summary}")
         focus_features.extend(rationale.derived_features)
         source_types.extend(signal.signal_type for signal in rationale.source_signals)
     return {
@@ -2016,7 +2030,7 @@ def _candidate_source_context(
 
 
 def _candidate_purpose(record: UncertaintyRecord, rationale_context: dict[str, list[str] | str]) -> str:
-    return f"承接 {record.uncertainty_id}：{record.question}"
+    return f"承接科学不确定性：{record.question}"
 
 
 def _replace_hypothesis_ids(text: str, node_index: dict[str, object]) -> str:
@@ -2114,12 +2128,19 @@ def _information_gain_rationale(
 def _rationale_design_notes(
     record: UncertaintyRecord,
     rationale_context: dict[str, list[str] | str],
+    *,
+    tree=None,
+    uncertainty_records=None,
 ) -> list[str]:
-    notes: list[str] = []
+    raw_notes: list[str] = []
     if rationale_context["trigger_tags"]:
-        notes.append(f"hypothesis_triggers:{','.join(rationale_context['trigger_tags'])}")
+        raw_notes.append(f"hypothesis_triggers:{','.join(rationale_context['trigger_tags'])}")
     if rationale_context["summary"]:
-        notes.append(f"hypothesis_source_summary:{rationale_context['summary']}")
+        raw_notes.append(f"hypothesis_source_summary:{rationale_context['summary']}")
     if record.disagreement:
-        notes.append(f"disagreement_hypotheses:{','.join(record.disagreement.keys())}")
-    return notes
+        raw_notes.append(f"disagreement_hypotheses:{','.join(record.disagreement.keys())}")
+    return [
+        clean_llm_text(note, tree=tree, uncertainty_records=uncertainty_records)
+        for note in raw_notes
+        if note
+    ]

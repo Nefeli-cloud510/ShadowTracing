@@ -740,6 +740,31 @@ class ConclusionScientificLayer(ShadowBaseModel):
     evidence_text: str | None = None
 
 
+class ConclusionChartAnalysis(ShadowBaseModel):
+    """LLM description of one report chart, kept together with its image path."""
+
+    chart_name: str = Field(min_length=1)
+    chart_role: str = Field(min_length=1)
+    chart_image_path: str | None = None
+    description: str = Field(min_length=1)
+    key_observations: list[str] = Field(default_factory=list)
+    anomaly_or_insight: str | None = None
+
+
+class ConclusionNextRoundSuggestion(ShadowBaseModel):
+    """Real-LLM advice payload persisted for the next planning round."""
+
+    evidence_summary: str | None = None
+    resolved_uncertainties_this_round: list[str] = Field(default_factory=list)
+    unresolved_uncertainties_todo: list[str] = Field(default_factory=list)
+    remaining_uncertainty_analysis: str | None = None
+    recommendation: Literal["continue", "adjust", "stop"] | None = None
+    pi_decision_advice: str | None = None
+    experiment_design_advice: str | None = None
+    hypothesis_space_advice: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class ConclusionDataLayer(ShadowBaseModel):
     """LLM numerical interpretation layer for round report."""
 
@@ -748,6 +773,8 @@ class ConclusionDataLayer(ShadowBaseModel):
     skill_delta_meaning: str | None = None
     anomalies: list[str] = Field(default_factory=list)
     next_focus: str | None = None
+    chart_analyses: list[ConclusionChartAnalysis] = Field(default_factory=list)
+    comparison_analysis: str | None = None
 
 
 class ConclusionTrackingLayer(ShadowBaseModel):
@@ -764,6 +791,9 @@ class ThreeLayerConclusion(ShadowBaseModel):
     scientific_layer: ConclusionScientificLayer
     data_layer: ConclusionDataLayer | None = None
     tracking_layer: ConclusionTrackingLayer | None = None
+    hypothesis_layer_summary: str | None = None
+    overall_summary: str | None = None
+    next_round_suggestion: ConclusionNextRoundSuggestion | None = None
 
 
 class ScientificEvaluation(ShadowBaseModel):

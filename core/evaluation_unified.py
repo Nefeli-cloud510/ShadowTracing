@@ -10,6 +10,7 @@ from core.support_update_rules import (
     signal_from_metric_deltas,
     signal_strength,
 )
+from core.hypothesis_identity import CANONICAL_HYPOTHESIS_IDS
 from core.unified_schema import (
     BootstrapReport,
     ConclusionDataLayer,
@@ -153,9 +154,10 @@ def build_minimal_scientific_evaluation(
                     )
                 )
             target_list = evidence_for if improvement_signal == "supports" else evidence_against
+            display_label = _display_hypothesis_label(hypothesis_id)
             target_list.append(
                 EvidenceClaim(
-                    claim=f"{hypothesis_id} 在本轮被间接检验，但仍缺少与方向/量级预测严格对齐的证据。",
+                    claim=f"{display_label} 在本轮被间接检验，但仍缺少与方向/量级预测严格对齐的证据。",
                     strength="medium",
                     source="protocol.tested_hypotheses",
                 )
@@ -308,17 +310,18 @@ def _hypothesis_layer_conclusion(
     predicted_direction: str | None,
     actual_delta: float | None,
 ) -> str:
+    display_label = _display_hypothesis_label(hypothesis_id)
     if direction_matched is False:
-        return f"{hypothesis_id} 观测方向与预期不符，证据不支持该约定"
+        return f"{display_label} 观测方向与预期不符，证据不支持该约定"
     if magnitude_matched is False:
-        return f"{hypothesis_id} 方向正确，幅度不足预期"
+        return f"{display_label} 方向正确，幅度不足预期"
     if direction_matched is True:
-        return f"{hypothesis_id} 与预期一致，获得支持"
+        return f"{display_label} 与预期一致，获得支持"
     if predicted_direction == "near_zero" and actual_delta is not None and abs(actual_delta) < _CONCLUSION_THRESHOLD:
-        return f"{hypothesis_id} 观测接近零效应，与预期一致"
+        return f"{display_label} 观测接近零效应，与预期一致"
     if actual_delta is not None and abs(actual_delta) < _CONCLUSION_THRESHOLD:
-        return f"{hypothesis_id} 观测接近零增益，证据不足以支持"
-    return f"{hypothesis_id} 证据方向待后续实验继续收敛"
+        return f"{display_label} 观测接近零增益，证据不足以支持"
+    return f"{display_label} 证据方向待后续实验继续收敛"
 
 
 def _build_three_layer_conclusion(
@@ -369,7 +372,7 @@ def _build_three_layer_conclusion(
         hypothesis_rows.append(
             ConclusionHypothesisRow(
                 hypothesis_id=hypothesis_id,
-                statement=hypothesis_id,
+                statement=_display_hypothesis_label(hypothesis_id),
                 predicted_direction=predicted_direction,
                 predicted_range=predicted_range,
                 actual_delta=observed_delta,
@@ -540,13 +543,33 @@ def _assessment_reason(
     direction_matched: bool | str,
     magnitude_matched: bool | str,
 ) -> str:
+    display_label = _display_hypothesis_label(hypothesis_id)
     if prediction is None:
-        return f"{hypothesis_id} 缺少结构化预测范围，当前仅依据实验增量信号做最小判断。"
+        return f"{display_label} 缺少结构化预测范围，当前仅依据实验增量信号做最小判断。"
     return (
-        f"{hypothesis_id} 预期效应为 {prediction.expected_effect}，"
+        f"{display_label} 预期效应为 {prediction.expected_effect}，"
         f"观测到的增量为 {observed_delta:.4f}；"
-        f"direction_matched={direction_matched}, magnitude_matched={magnitude_matched}。"
+        f"方向匹配情况为{_matched_label(direction_matched)}，"
+        f"幅度匹配情况为{_matched_label(magnitude_matched)}。"
     )
+
+
+def _display_hypothesis_label(hypothesis_id: str) -> str:
+    if hypothesis_id in CANONICAL_HYPOTHESIS_IDS:
+        return f"H{CANONICAL_HYPOTHESIS_IDS.index(hypothesis_id) + 1}"
+    if str(hypothesis_id).startswith("H_supplemental_"):
+        return "补充假设"
+    return hypothesis_id
+
+
+def _matched_label(value: bool | str | None) -> str:
+    if value is True:
+        return "一致"
+    if value is False:
+        return "不一致"
+    if value == "partial":
+        return "部分一致"
+    return "未知"
 
 
 def _build_disagreement_updates(
@@ -585,9 +608,27 @@ def _build_disagreement_updates(
             for hypothesis_id, score in after_scores.items()
             if sorted_after and sorted_after[0][1] - score < 0.12
         ]
+        question = _uncertainty_question_from_protocol(protocol, uncertainty_id)
+        summary_question = (
+            f"“{question}”"
+            if question and question != uncertainty_id
+            else "对应科学不确定性"
+        )
+        leading_hypothesis = sorted_after[0][0] if sorted_after else None
+        leading_text = (
+            _display_hypothesis_label(leading_hypothesis)
+            if leading_hypothesis
+            else "无"
+        )
+        status_text = {
+            "resolved": "已解决",
+            "partially_resolved": "部分解决",
+            "unresolved": "未解决",
+        }[resolution_status]
+        narrowed_text = "已收窄" if narrowed else "尚未收窄"
         summary = (
-            f"{uncertainty_id} before_span={before_span:.3f}, after_span={after_span:.3f}, "
-            f"leading={sorted_after[0][0] if sorted_after else 'n/a'}, status={resolution_status}"
+            f"{summary_question} 实验后支持度跨度由 {before_span:.3f} 变化至 {after_span:.3f}，"
+            f"前沿假设为 {leading_text}，区分状态为{status_text}，跨度{narrowed_text}。"
         )
         updates.append(
             DisagreementUpdate(

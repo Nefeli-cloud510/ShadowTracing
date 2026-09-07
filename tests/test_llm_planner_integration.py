@@ -4,7 +4,7 @@ from core.central_controller_llm import CentralControllerLLM, _rewrite_candidate
 from core.control_unified import HumanControlService
 from core.decision_unified import DecisionLayerService
 from core.hypothesis_generation import HypothesisGenerationResult
-from core.hypothesis_proposer_llm import HypothesisProposerResponse
+from core.hypothesis_proposer_llm import HypothesisProposerResponse, ProposedHypothesis
 from core.planner_unified import PlannerOutputBuilder
 from core.rag_service import RAGContextBundle, RAGEvidenceSnippet
 from core.round_orchestrator import RoundOrchestrator
@@ -36,7 +36,9 @@ class StubLLMGateway:
         user_prompt,
         response_model,
         fallback_factory=None,
+        payload_fixer=None,
         temperature=None,
+        image_paths=None,
     ):
         return response_model.model_validate(
             {
@@ -65,7 +67,9 @@ class StubScientificInterpreterGateway:
         user_prompt,
         response_model,
         fallback_factory=None,
+        payload_fixer=None,
         temperature=None,
+        image_paths=None,
     ):
         return response_model.model_validate(
             {
@@ -114,6 +118,41 @@ class StubHypothesisProposer:
             focus_features=["Np"],
             guidance_notes=["proposer_focus:Np 条件路径值得补充为下一轮假设。"],
             proposal_summaries=["Np 条件路径可能决定 DeltaDec 增量是否成立。"],
+            proposed_hypotheses=[
+                ProposedHypothesis(
+                    display_hypothesis_id="H1",
+                    statement="宇宙线日影南北偏移对太阳风速度预测提供独立增量信息",
+                    level=1,
+                    activation_condition="always",
+                ),
+                ProposedHypothesis(
+                    display_hypothesis_id="H2",
+                    statement="宇宙线日影南北偏移的预测增益主要来自行星际磁场南北分量的伴随相关",
+                    level=1,
+                    activation_condition="always",
+                ),
+                ProposedHypothesis(
+                    display_hypothesis_id="H3",
+                    statement="宇宙线日影南北偏移在控制行星际磁场后仍保留独立预测信息",
+                    level=2,
+                    parent_id="H1",
+                    activation_condition="父假设支持度>=0.40",
+                ),
+                ProposedHypothesis(
+                    display_hypothesis_id="H4",
+                    statement="宇宙线日影南北偏移的增益仅在特定超前预测窗口成立",
+                    level=2,
+                    parent_id="H1",
+                    activation_condition="父假设支持度>=0.40",
+                ),
+                ProposedHypothesis(
+                    display_hypothesis_id="H5",
+                    statement="宇宙线日影南北偏移的预测结论对评价期选择保持稳健",
+                    level=2,
+                    parent_id="H2",
+                    activation_condition="父假设支持度>=0.40",
+                ),
+            ],
         )
 
 
@@ -131,7 +170,15 @@ class StubScientificQuestioner:
             ],
         )
 
-    def challenge_hypothesis_tree(self, *, planner_input, rag_context, tree, mined_candidates=None):
+    def challenge_hypothesis_tree(
+        self,
+        *,
+        planner_input,
+        rag_context,
+        tree,
+        mined_candidates=None,
+        targeted_hypothesis_ids=None,
+    ):
         return ScientificQuestionerResponse(
             challenge_points=["当前仍需确认 Np 条件路径是否只是伴随相关。"],
             guidance_notes=["questioner_gap:需要把 Np 条件路径显式提升为科学不确定性。"],
@@ -151,6 +198,8 @@ class StubScientificQuestioner:
                     rationale="质询认为当前证据仍偏向支持该假设。",
                 )
                 for node in tree.nodes
+                if targeted_hypothesis_ids is None
+                or node.hypothesis_id in targeted_hypothesis_ids
             ],
         )
 
@@ -168,7 +217,7 @@ class StubExperimentPlanner:
         return ProtocolRefinementSuggestion(
             suggestion_id="EPL_STUB_001",
             target_candidate_id=candidate.experiment_id,
-            refinement_type="llm_experiment_planner",
+            refinement_type="实验规划者llm",
             rationale=f"为 {candidate.experiment_id} 增加协议级焦点检查。",
             suggested_model_parameters={"alpha": 0.19},
             suggested_feature_focus=candidate.design.treatment[:1],
@@ -348,7 +397,7 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             any("Np 条件下成立" in record.question for record in uncertainties.records)
         )
 
-    def test_llm_experiment_planner_refines_protocol_at_approval_time(self) -> None:
+    def test_experiment_planner_refines_protocol_at_approval_time(self) -> None:
         control = HumanControlService(
             self.repository,
             project_root=self.project_root,
@@ -363,13 +412,13 @@ class LLMPlannerIntegrationTest(unittest.TestCase):
             auto_continue=False,
         )
 
-        self.assertTrue(any(note == "planner_refinement:llm_experiment_planner" for note in protocol.notes))
+        self.assertTrue(any(note == "planner_refinement:实验规划者llm" for note in protocol.notes))
         self.assertIn("stub_experiment_planner_note", protocol.notes)
         self.assertTrue(any(step.action == "planner_hypothesis_focus" for step in protocol.steps))
 
         decision_log = self.repository.load_decision_log()
         self.assertIn(
-            "llm_experiment_planner",
+            "实验规划者llm",
             decision_log.decisions[-1].details["refinement_types"],
         )
 

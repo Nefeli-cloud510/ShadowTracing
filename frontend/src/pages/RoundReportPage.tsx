@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { submitRoundDecision } from '../api/liveWorkflow'
+import { reportExportUrl, submitRoundDecision } from '../api/liveWorkflow'
 import { DataCoverageAudit } from '../components/DataCoverageAudit'
 import { ModelTuningCard } from '../components/ModelTuningCard'
 import { PageTabs } from '../components/PageTabs'
@@ -41,6 +41,8 @@ export function RoundReportPage() {
   const latestRoundReview = [...(data?.snapshot.decisionLog?.decisions ?? [])]
     .reverse()
     .find((item: any) => item.decision_type === 'round_review_requested')
+  const nextRoundSuggestion = report?.threeLayerConclusion?.nextRoundSuggestion
+  const overallSummary = report?.threeLayerConclusion?.overallSummary
   const closureChecklist = Array.isArray(latestRoundReview?.details?.closure_checklist)
     ? latestRoundReview.details.closure_checklist
     : []
@@ -144,6 +146,16 @@ export function RoundReportPage() {
                     <span>Delta RMSE</span>
                     <strong>{(report.summary.deltaRmse ?? 0).toFixed(3)}</strong>
                   </div>
+                  <a
+                    className="detail-link detail-link--button"
+                    href={reportExportUrl('round', report.roundNumber)}
+                    download
+                  >
+                    导出本轮实验报告
+                  </a>
+                  <a className="detail-link detail-link--button" href={reportExportUrl('all')} download>
+                    导出全部轮次报告
+                  </a>
                   {sessionStatus?.status === 'failed' ? (
                     <button type="button" className="detail-link detail-link--button" onClick={() => setFailureOpen(true)}>
                       查看失败原因
@@ -193,13 +205,93 @@ export function RoundReportPage() {
                 />
 
                 {report.threeLayerConclusion ? (
-                  <ThreeLayerConclusionView conclusion={report.threeLayerConclusion} />
+                  <ThreeLayerConclusionView conclusion={report.threeLayerConclusion} roundNumber={report.roundNumber} />
                 ) : null}
 
               {report.iterationEvidence ? (
                 <section className="detail-card detail-card--wide">
                   <span className="detail-card__eyebrow">Iteration Evidence</span>
-                  <h2>上一轮反馈如何驱动下一轮</h2>
+                  <h2>给下一轮的建议</h2>
+                  {nextRoundSuggestion ? (
+                    <div className="next-round-suggestion">
+                      {nextRoundSuggestion.evidenceSummary ? (
+                        <div className="next-round-suggestion__item">
+                          <span>当前证据摘要</span>
+                          <p>{nextRoundSuggestion.evidenceSummary}</p>
+                        </div>
+                      ) : null}
+                      <div className="next-round-suggestion__lists">
+                        {nextRoundSuggestion.resolvedUncertaintiesThisRound.length > 0 ? (
+                          <div className="next-round-suggestion__list next-round-suggestion__list--resolved">
+                            <span>本轮已解决的不确定性</span>
+                            <ul className="detail-list">
+                              {nextRoundSuggestion.resolvedUncertaintiesThisRound.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {nextRoundSuggestion.unresolvedUncertaintiesTodo.length > 0 ? (
+                          <div className="next-round-suggestion__list next-round-suggestion__list--unresolved">
+                            <span>仍需解决的不确定性</span>
+                            <ul className="detail-list">
+                              {nextRoundSuggestion.unresolvedUncertaintiesTodo.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                      {nextRoundSuggestion.remainingUncertaintyAnalysis ? (
+                        <div className="next-round-suggestion__item">
+                          <span>剩余不确定性分析</span>
+                          <p>{nextRoundSuggestion.remainingUncertaintyAnalysis}</p>
+                        </div>
+                      ) : null}
+                      <div className="next-round-suggestion__grid">
+                        {nextRoundSuggestion.hypothesisSpaceAdvice ? (
+                          <div className="next-round-suggestion__item">
+                            <span>假设空间建议</span>
+                            <p>{nextRoundSuggestion.hypothesisSpaceAdvice}</p>
+                          </div>
+                        ) : null}
+                        {nextRoundSuggestion.experimentDesignAdvice ? (
+                          <div className="next-round-suggestion__item">
+                            <span>实验设计建议</span>
+                            <p>{nextRoundSuggestion.experimentDesignAdvice}</p>
+                          </div>
+                        ) : null}
+                        {nextRoundSuggestion.piDecisionAdvice ? (
+                          <div className="next-round-suggestion__item">
+                            <span>对人工 PI 的决策建议</span>
+                            <p>{nextRoundSuggestion.piDecisionAdvice}</p>
+                          </div>
+                        ) : null}
+                      </div>
+                      {nextRoundSuggestion.recommendation ? (
+                        <div className="next-round-suggestion__recommendation">
+                          <span>模型倾向</span>
+                          <strong>
+                            {nextRoundSuggestion.recommendation === 'continue'
+                              ? '进入下一轮'
+                              : nextRoundSuggestion.recommendation === 'adjust'
+                                ? '调整方向'
+                                : '停止实验'}
+                          </strong>
+                        </div>
+                      ) : null}
+                      {nextRoundSuggestion.notes.length > 0 ? (
+                        <div className="next-round-suggestion__item">
+                          <span>注意事项</span>
+                          <ul className="detail-list">
+                            {nextRoundSuggestion.notes.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <p className="detail-card__meta">
                     数据链：Round {report.iterationEvidence.sourceRound} 实验反馈
                     {report.iterationEvidence.previousExperimentId
@@ -301,16 +393,20 @@ export function RoundReportPage() {
                         : ''}
                     </p>
                   ) : null}
-                  <ul className="detail-list">
-                    {report.scientificConclusions.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {overallSummary ? (
+                    <p className="scientific-overall-summary">{overallSummary}</p>
+                  ) : (
+                    <ul className="detail-list">
+                      {report.scientificConclusions.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
 
                 <section className="detail-card">
                   <span className="detail-card__eyebrow">Hypothesis State</span>
-                  <h2>假设树状态</h2>
+                  <h2>假设空间状态</h2>
                   <div className="collection-grid">
                     {report.highlightedHypotheses.map((item, index) => (
                       <article
@@ -371,7 +467,7 @@ export function RoundReportPage() {
                   </div>
                   {decisionBlockedReason ? <p>当前状态提示：{decisionBlockedReason} 但你仍可从此处强制推进新一轮。</p> : null}
                   {submittingDecision ? (
-                    <p>加载中：系统正在汇总当前科学解释、假设树状态与轮次日志，并同步下一步页面。</p>
+                    <p>加载中：系统正在汇总当前科学解释、假设空间状态与轮次日志，并同步下一步页面。</p>
                   ) : null}
                   {!gatingReady && closureChecklist.length > 0 ? (
                     <ul className="detail-list">

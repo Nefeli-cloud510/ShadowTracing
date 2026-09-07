@@ -32,7 +32,7 @@ from core.hypothesis_proposer_llm import (
     HypothesisProposerResponse,
     _display_dictionary_block,
 )
-from core.llm_gateway import LLMGateway, _extract_json_payload
+from core.llm_gateway import LLMGateway, _encode_image, _extract_json_payload
 from core.planner_unified import PlannerOutputBuilder
 from core.rag_service import RAGContextBundle, RAGEvidenceSnippet, RAGService
 from core.runtime_config import (
@@ -98,6 +98,7 @@ class ObservedLLMGateway(LLMGateway):
         fallback_factory: Callable[[], BaseModel | dict[str, Any]] | None = None,
         payload_fixer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         temperature: float | None = None,
+        image_paths: list[str] | None = None,
     ) -> BaseModel:
         event: dict[str, Any] = {
             "role": self.role_name,
@@ -117,11 +118,27 @@ class ObservedLLMGateway(LLMGateway):
             return self._coerce_response(response_model, fallback_factory())
 
         try:
+            user_content: Any = user_prompt
+            if image_paths:
+                content_parts: list[dict[str, Any]] = [
+                    {"type": "text", "text": user_prompt},
+                ]
+                for image_path in image_paths:
+                    encoded, media_type = _encode_image(image_path)
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{encoded}",
+                            },
+                        }
+                    )
+                user_content = content_parts
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": user_content},
                 ],
                 temperature=self.temperature if temperature is None else temperature,
             )
@@ -188,6 +205,21 @@ def _normalize_llm_payload(response_model: type[BaseModel], payload: dict[str, A
         for field in ("related_uncertainty_ids",):
             if isinstance(normalized.get(field), str):
                 normalized[field] = [normalized[field]]
+        suggestion = normalized.get("next_round_suggestion")
+        if isinstance(suggestion, str):
+            suggestion_text = suggestion.strip()
+            try:
+                parsed_suggestion = json.loads(suggestion_text)
+            except Exception:
+                parsed_suggestion = None
+            normalized["next_round_suggestion"] = (
+                parsed_suggestion
+                if isinstance(parsed_suggestion, dict)
+                else {"recommendation": suggestion_text}
+            )
+        chart_analyses = normalized.get("chart_analyses")
+        if isinstance(chart_analyses, dict):
+            normalized["chart_analyses"] = [chart_analyses]
         return normalized
 
     if model_name == "ScientificQuestionerResponse":

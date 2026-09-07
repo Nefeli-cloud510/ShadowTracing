@@ -3,6 +3,7 @@ import unittest
 from core.central_controller_llm import CentralControllerLLM
 from core.control_unified import HumanControlService
 from core.planner_unified import PlannerOutputBuilder
+from core.round_orchestrator import RoundOrchestrator
 from core.scientific_interpreter_llm import ScientificInterpreterLLM
 from tests.test_decision_layer import (
     StubCandidateExperimentDesigner,
@@ -54,6 +55,18 @@ class FullLLMClosedLoopTest(SystemAuditClosureTest):
             data_dictionary=self.dictionary,
         )
 
+        control.confirm_hypothesis_tree()
+        RoundOrchestrator(control).run_next_round_scientific_questioning()
+        control.start_uncertainty_identification()
+        _dbg_candidates = control.repository.load_candidate_experiments().candidates
+        print(
+            "DBG_ROUND2_CANDIDATES",
+            [
+                (c.experiment_id, c.type, c.design.control, c.design.treatment, c.design.design_focus)
+                for c in _dbg_candidates
+            ],
+        )
+
         round2 = control.approve_and_execute_candidate(
             human_notes="round2 llm_mode 批准执行",
             auto_continue=False,
@@ -99,13 +112,13 @@ class FullLLMClosedLoopTest(SystemAuditClosureTest):
         )
 
         self.assertTrue(
-            any(note == "planner_refinement:llm_experiment_planner" for note in payload["round1"]["protocol"].notes)
+            any(note == "planner_refinement:实验规划者llm" for note in payload["round1"]["protocol"].notes)
         )
         self.assertTrue(
             any(step.action == "planner_hypothesis_focus" for step in payload["round1"]["protocol"].steps)
         )
         self.assertTrue(
-            any(note == "planner_refinement:llm_experiment_planner" for note in payload["round2"]["protocol"].notes)
+            any(note == "planner_refinement:实验规划者llm" for note in payload["round2"]["protocol"].notes)
         )
 
         uncertainties = self.repository.load_uncertainties()

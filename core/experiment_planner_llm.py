@@ -6,6 +6,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from core.display_text_cleaner import (
+    DISPLAY_UNCERTAINTY_FALLBACK,
+    clean_llm_text,
+    deep_clean_text,
+)
 from core.llm_gateway import LLMGateway
 from core.prompt_rules import ELASTIC_NET_EXECUTION_RULE
 from core.runtime_config import get_llm_model_for_role
@@ -96,15 +101,18 @@ class CandidateExperimentDesignerLLM:
         hypothesis_lines: list[str] = []
         for hypothesis_id in candidate.tested_hypotheses:
             node = node_index.get(hypothesis_id)
-            statement = (
-                getattr(node, "statement", None) or f"未检索到假设陈述（{hypothesis_id}）"
+            label = (
+                getattr(node, "display_hypothesis_id", None)
+                or (f"H{node.level}" if node is not None and getattr(node, "level", None) else "")
+                or "相关假设"
             )
-            hypothesis_lines.append(f"- {hypothesis_id}：{statement}")
+            statement = getattr(node, "statement", None) or "未检索到假设陈述"
+            hypothesis_lines.append(f"- {label}：{statement}")
 
         user_prompt = (
             f"科研问题={task.payload.research_question.text}\n"
             f"轮次={round_id if round_id is not None else '当前轮'}\n"
-            f"候选实验={candidate.experiment_id}\n"
+            f"候选实验={candidate.purpose or '本轮候选实验'}\n"
             f"实验类型={candidate.type}\n"
             f"因变量展示名={display_target}\n"
             f"科学不确定性问题={uncertainty_question or candidate.scientific_question or '无'}\n"
@@ -272,6 +280,7 @@ class CandidateExperimentWriterLLM:
         semantic_service: VariableSemanticService,
         node_index: dict[str, object],
         round_id: int | None = None,
+        uncertainty_index: dict[str, Any] | None = None,
         max_workers: int = 4,
     ) -> None:
         if not candidates:
@@ -285,6 +294,7 @@ class CandidateExperimentWriterLLM:
                     semantic_service=semantic_service,
                     node_index=node_index,
                     round_id=round_id,
+                    uncertainty_index=uncertainty_index,
                 ),
                 semantic_service,
                 self.gateway,
@@ -349,6 +359,7 @@ class CandidateExperimentWriterLLM:
         semantic_service: VariableSemanticService,
         node_index: dict[str, object],
         round_id: int | None = None,
+        uncertainty_index: dict[str, Any] | None = None,
     ) -> str:
         design = candidate.design
         target = design.display_target or semantic_service.to_display(design.target)
@@ -369,23 +380,23 @@ class CandidateExperimentWriterLLM:
                     getattr(node, "display_hypothesis_id", None)
                     or (f"H{node.level}" if getattr(node, "level", None) else "")
                 )
-            statement = (
-                getattr(node, "statement", None) or f"未检索到假设陈述（{hypothesis_id}）"
-            )
+            statement = getattr(node, "statement", None) or "未检索到假设陈述"
             prediction = candidate.hypothesis_predictions.get(hypothesis_id)
             hypothesis_lines.append(
-                f"- {label or hypothesis_id}：假设陈述={statement}；实验预期={self._format_prediction(prediction)}"
+                f"- {label or '相关假设'}：假设陈述={statement}；实验预期={self._format_prediction(prediction)}"
             )
 
         uncertainty_lines: list[str] = []
         for uncertainty_id in candidate.related_uncertainties:
-            uncertainty_lines.append(f"- {uncertainty_id}：上游科学不确定性")
+            record = (uncertainty_index or {}).get(uncertainty_id)
+            question = getattr(record, "question", None) if record is not None else None
+            uncertainty_lines.append(f"- {question or DISPLAY_UNCERTAINTY_FALLBACK}")
 
         display_block = semantic_service.build_display_block([design.target]) if semantic_service.entries else ""
         return (
             f"科研问题={task.payload.research_question.text}\n"
             f"轮次={round_id if round_id is not None else '当前轮'}\n"
-            f"候选实验={candidate.experiment_id}\n"
+            f"候选实验={candidate.purpose or '本轮候选实验'}\n"
             f"实验类型={candidate.type}\n"
             f"因变量={target}\n"
             f"对照组（不加待验证变量）={ '、'.join(control) or '未配置' }\n"
@@ -564,7 +575,7 @@ class ExperimentPlannerLLM:
         return ProtocolRefinementSuggestion(
             suggestion_id="EPL001",
             target_candidate_id=candidate.experiment_id,
-            refinement_type="llm_experiment_planner",
+            refinement_type="实验规划者llm",
             rationale=response.rationale,
             suggested_model_parameters=_filter_model_parameters(response.suggested_model_parameters),
             suggested_feature_focus=[
@@ -573,7 +584,7 @@ class ExperimentPlannerLLM:
                 if feature in candidate.design.treatment or feature in candidate.design.control
             ],
             suggested_steps=_coerce_steps(response.extra_steps),
-            protocol_notes=["llm_experiment_planner"] + response.protocol_notes,
+            protocol_notes=["实验规划者llm"] + response.protocol_notes,
         )
 
     def _build_user_prompt(
@@ -595,18 +606,16 @@ class ExperimentPlannerLLM:
             )
         return (
             f"scientific_task={task.payload.research_question.text}\n"
-            f"candidate_id={candidate.experiment_id}\n"
             f"candidate_type={candidate.type}\n"
             f"candidate_purpose={candidate.purpose}\n"
-            f"tested_hypotheses={candidate.tested_hypotheses}\n"
-            f"related_uncertainties={candidate.related_uncertainties}\n"
+            "被验证假设与关联不确定性来自当前闭环落盘的候选实验，必须作为规划依据引用；"
+            "输出文本不得复述内部代号。\n"
             f"control={candidate.design.control}\n"
             f"treatment={candidate.design.treatment}\n"
-            f"candidate_notes={candidate.design.notes}\n"
-            f"existing_refinements={[item.model_dump(exclude_none=True) for item in existing_refinements]}\n"
+            f"candidate_notes={ '; '.join(clean_llm_text(note) for note in candidate.design.notes) or '无' }\n"
+            f"existing_refinements={deep_clean_text([item.model_dump(exclude_none=True) for item in existing_refinements])}\n"
             f"history_context={history_context or '无历史轮次'}\n"
             f"{display_block}"
-            "这些 tested_hypotheses 与 related_uncertainties 是上一轮闭环强制落盘产物，必须作为下一轮规划依据引用，不可忽略。\n"
             "history_context 提供了最近实验的指标、结论与失败归因。请据此判断本轮模型参数是否需要调整：\n"
             "若上轮测试集样本过少可小幅降低 test_split_ratio；缺失记录按行剔除后样本偏少时可减小 past_lag_days；"
             "若超参数明显未调优可给出新的 alpha/l1_ratio。\n"
@@ -621,11 +630,11 @@ class ExperimentPlannerLLM:
     ) -> ExperimentPlannerLLMResponse:
         focus = candidate.design.treatment[:2]
         notes = [
-            f"llm_planner_focus_candidate:{candidate.experiment_id}",
+            "实验规划者llm：本轮候选实验",
             "llm_planner_requests_pre_run_review",
         ]
         if candidate.related_uncertainties:
-            notes.append(f"llm_planner_targets:{candidate.related_uncertainties[0]}")
+            notes.append("实验规划者llm：聚焦该候选关联科学不确定性")
         suggested_parameters: dict[str, Any] = {}
         history_text = history_context or ""
         if (
@@ -657,7 +666,7 @@ class ExperimentPlannerLLM:
             }
         ]
         return ExperimentPlannerLLMResponse(
-            rationale=f"针对 {candidate.experiment_id}，优先明确假设焦点和执行前检查，减少协议歧义。",
+            rationale="针对本轮候选实验，优先明确假设焦点和执行前检查，减少协议歧义。",
             suggested_model_parameters=suggested_parameters,
             suggested_feature_focus=focus,
             protocol_notes=notes,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.decision_unified import DecisionLayerService
+from core.display_text_cleaner import clean_llm_text
 from core.multi_source_uncertainty_miner import MIN_UNCERTAINTIES
 from core.planner_output_applier import PlannerOutputApplier
 from core.planner_unified import ReasoningPlannerInputBuilder
@@ -766,6 +767,18 @@ class RoundOrchestrator:
         for entry in memory:
             for trace in entry.get("reasoning_traces", [])[:5]:
                 sources.append(f"reasoning_trace:{trace.get('stage')}:{str(trace.get('summary', ''))[:80]}")
+        try:
+            tree = self.repository.load_hypothesis_tree()
+        except Exception:
+            tree = None
+        try:
+            uncertainty_records = self.repository.load_uncertainties().records
+        except Exception:
+            uncertainty_records = []
+        sources = [
+            clean_llm_text(item, tree=tree, uncertainty_records=uncertainty_records)
+            for item in sources
+        ]
         return sources
 
     @staticmethod

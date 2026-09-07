@@ -213,11 +213,33 @@ type RawThreeLayerConclusion = {
     skill_delta_meaning?: string
     anomalies?: string[]
     next_focus?: string
+    chart_analyses?: Array<{
+      chart_name?: string
+      chart_role?: string
+      chart_image_path?: string
+      description?: string
+      key_observations?: string[]
+      anomaly_or_insight?: string
+    }>
+    comparison_analysis?: string
   }
   tracking_layer?: {
     audit_items?: string[]
     sources?: string[]
     snapshot_refs?: string[]
+  }
+  hypothesis_layer_summary?: string
+  overall_summary?: string
+  next_round_suggestion?: {
+    evidence_summary?: string
+    resolved_uncertainties_this_round?: string[]
+    unresolved_uncertainties_todo?: string[]
+    remaining_uncertainty_analysis?: string
+    recommendation?: string
+    pi_decision_advice?: string
+    experiment_design_advice?: string
+    hypothesis_space_advice?: string
+    notes?: string[]
   }
 }
 
@@ -821,7 +843,7 @@ function getVisualizationLabel(path: string): string {
   return fileName.replace(/\.(png|jpg|jpeg|webp)$/i, '').replace(/_/g, ' ')
 }
 
-function getVisualizationPreviewUrl(path: string, version?: string): string {
+export function getVisualizationPreviewUrl(path: string, version?: string): string {
   const normalizedPath = path.replace(/^\/+/, '')
   const url = API_IMAGE_BASE
     ? `${API_IMAGE_BASE.replace(/\/+$/, '')}/${normalizedPath}`
@@ -2383,6 +2405,42 @@ function buildThreeLayerConclusionViewModel(
   const experiment = raw.experiment_layer
   const scientific = raw.scientific_layer
   const rawRows = raw.hypothesis_layer ?? []
+  const rawChartAnalyses = raw.data_layer?.chart_analyses ?? []
+  const rawSuggestion = raw.next_round_suggestion
+  const rawRecommendation = rawSuggestion?.recommendation
+  const recommendation: 'continue' | 'adjust' | 'stop' | undefined =
+    rawRecommendation === 'continue' || rawRecommendation === 'adjust' || rawRecommendation === 'stop'
+      ? rawRecommendation
+      : undefined
+  const nextRoundSuggestion = rawSuggestion
+    ? {
+        evidenceSummary: rawSuggestion.evidence_summary
+          ? toDisplayText(String(rawSuggestion.evidence_summary), dictionary)
+          : undefined,
+        resolvedUncertaintiesThisRound: (rawSuggestion.resolved_uncertainties_this_round ?? []).map(
+          (item) => toDisplayText(String(item ?? ''), dictionary),
+        ),
+        unresolvedUncertaintiesTodo: (rawSuggestion.unresolved_uncertainties_todo ?? []).map(
+          (item) => toDisplayText(String(item ?? ''), dictionary),
+        ),
+        remainingUncertaintyAnalysis: rawSuggestion.remaining_uncertainty_analysis
+          ? toDisplayText(String(rawSuggestion.remaining_uncertainty_analysis), dictionary)
+          : undefined,
+        recommendation,
+        piDecisionAdvice: rawSuggestion.pi_decision_advice
+          ? toDisplayText(String(rawSuggestion.pi_decision_advice), dictionary)
+          : undefined,
+        experimentDesignAdvice: rawSuggestion.experiment_design_advice
+          ? toDisplayText(String(rawSuggestion.experiment_design_advice), dictionary)
+          : undefined,
+        hypothesisSpaceAdvice: rawSuggestion.hypothesis_space_advice
+          ? toDisplayText(String(rawSuggestion.hypothesis_space_advice), dictionary)
+          : undefined,
+        notes: (rawSuggestion.notes ?? []).map((item) =>
+          toDisplayText(String(item ?? ''), dictionary),
+        ),
+      }
+    : undefined
   const usedIds = new Set<string>()
   const hypothesisLayer = rawRows.map((row, index) => {
     const rawId = String(row.hypothesis_id ?? '')
@@ -2466,6 +2524,23 @@ function buildThreeLayerConclusionViewModel(
           nextFocus: raw.data_layer.next_focus
             ? toDisplayText(String(raw.data_layer.next_focus), dictionary)
             : undefined,
+          chartAnalyses: rawChartAnalyses.map((item) => ({
+            chartName: toDisplayText(String(item.chart_name ?? ''), dictionary),
+            chartRole: String(item.chart_role ?? ''),
+            chartImagePath: item.chart_image_path,
+            description: toDisplayText(String(item.description ?? ''), dictionary),
+            keyObservations: (item.key_observations ?? []).map((obs) =>
+              toDisplayText(String(obs ?? ''), dictionary),
+            ),
+            anomalyOrInsight: item.anomaly_or_insight
+              ? toDisplayText(String(item.anomaly_or_insight), dictionary)
+              : undefined,
+          })),
+          comparisonAnalysis: raw.data_layer.comparison_analysis
+            ? normalizeArmTerms(
+                toDisplayText(String(raw.data_layer.comparison_analysis), dictionary),
+              )
+            : undefined,
         }
       : undefined,
     trackingLayer: raw.tracking_layer
@@ -2481,6 +2556,15 @@ function buildThreeLayerConclusionViewModel(
           ),
         }
       : undefined,
+    hypothesisLayerSummary: raw.hypothesis_layer_summary
+      ? normalizeArmTerms(
+          toDisplayText(String(raw.hypothesis_layer_summary), dictionary),
+        )
+      : undefined,
+    overallSummary: raw.overall_summary
+      ? normalizeArmTerms(toDisplayText(String(raw.overall_summary), dictionary))
+      : undefined,
+    nextRoundSuggestion,
   }
 }
 

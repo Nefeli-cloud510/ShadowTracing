@@ -59,6 +59,14 @@ export interface ManualUncertaintyItem {
   features?: string[]
 }
 
+export function reportExportUrl(scope: 'round' | 'all', roundNumber?: number): string {
+  if (!API_ROOT) {
+    return ''
+  }
+  const query = scope === 'all' ? 'scope=all' : `scope=round&round=${roundNumber ?? 1}`
+  return `${API_ROOT}/report/export?${query}`
+}
+
 export interface QuestionAnalysis {
   x_variable?: string
   y_variable?: string

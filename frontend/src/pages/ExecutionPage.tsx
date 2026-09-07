@@ -251,18 +251,18 @@ export function ExecutionPage() {
 
               <section className="detail-card detail-card--wide">
                 <span className="detail-card__eyebrow">Key Visuals</span>
-                <h2>关键结果图：对照组 / 实验组时间轴散点 + 线性散点对照</h2>
+                <h2>实验图像</h2>
                 <div className="execution-visual-comparison execution-visual-comparison--three-rows">
                   <div className="execution-visual-row execution-visual-row--timeseries">
                     <div className="execution-visual-row__header">
-                      <strong>对照组实验 · {executedExperimentId} · 真实值 / 预测值散点（时间轴对齐）</strong>
+                      <strong>对照组实验 · {executedExperimentId} · 真实值 / 预测值对比图</strong>
                       <span>对照组 Pearson r {experiment.metricComparison?.baselinePearsonR?.toFixed(4) ?? '--'}</span>
                     </div>
                     {visualCharts.baselineTimeseries ? (
                       <VisualCard
                         key={visualCharts.baselineTimeseries.path}
                         item={visualCharts.baselineTimeseries}
-                        title="真实值 / 预测值散点图（完整数据范围）"
+                        title="真实值 / 预测值对比图"
                         experimentLabel={executedExperimentId}
                       />
                     ) : (
@@ -274,14 +274,14 @@ export function ExecutionPage() {
 
                   <div className="execution-visual-row execution-visual-row--timeseries">
                     <div className="execution-visual-row__header">
-                      <strong>实验组实验 · {executedExperimentId} · 真实值 / 预测值散点（时间轴对齐）</strong>
+                      <strong>实验组实验 · {executedExperimentId} · 真实值 / 预测值对比图</strong>
                       <span>实验组 Pearson r {experiment.metricComparison?.treatmentPearsonR?.toFixed(4) ?? '--'}</span>
                     </div>
                     {visualCharts.treatmentTimeseries ? (
                       <VisualCard
                         key={visualCharts.treatmentTimeseries.path}
                         item={visualCharts.treatmentTimeseries}
-                        title="真实值 / 预测值散点图（完整数据范围）"
+                        title="真实值 / 预测值对比图"
                         experimentLabel={executedExperimentId}
                       />
                     ) : (
@@ -293,7 +293,7 @@ export function ExecutionPage() {
 
                   <div className="execution-visual-row execution-visual-row--scatter-pair">
                     <div className="execution-visual-row__header">
-                      <strong>线性散点对比（y=x 参考线）</strong>
+                      <strong>线性散点图</strong>
                       <span>左：对照组实验 · 右：实验组实验</span>
                     </div>
                     <div className="execution-visual-row__pair">
@@ -327,7 +327,7 @@ export function ExecutionPage() {
               </section>
 
               {report?.threeLayerConclusion && experiment.executedExperimentId ? (
-                <ThreeLayerConclusionView conclusion={report.threeLayerConclusion} />
+                <ThreeLayerConclusionView conclusion={report.threeLayerConclusion} roundNumber={report.roundNumber} />
               ) : null}
 
               <div className="workspace-page__grid">

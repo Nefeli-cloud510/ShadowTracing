@@ -43,6 +43,9 @@ class CentralControllerLLM:
 输出下一轮规划的结构化裁决。你不能发明不存在的 candidate_id、hypothesis_id、
 uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化。
 
+解释性文本和 protocol_notes 禁止出现 H_*、U_*、status=、narrowed= 等内部机器标识；
+提及假设用 H1..H5 或自然语言名称，内部 ID 只允许出现在指定 id 字段。
+
 输出必须是严格 JSON，且字段必须完整。""" + "\n\n" + ELASTIC_NET_EXECUTION_RULE
 
     def __init__(
@@ -220,9 +223,13 @@ uncertainty_id；你只能在给定候选计划范围内聚焦、解释与细化
             focused_candidates = [candidate.model_copy(deep=True) for candidate in focused_candidates[:2]]
 
         primary_x = (
-            planner_input.data_dictionary_summary.feature_candidates[0]
-            if planner_input.data_dictionary_summary.feature_candidates
-            else None
+            focused_candidates[0].design.design_focus
+            if focused_candidates
+            else (
+                planner_input.data_dictionary_summary.feature_candidates[0]
+                if planner_input.data_dictionary_summary.feature_candidates
+                else None
+            )
         )
         candidate_supplements: list[PlannerCandidateSupplement] = []
         for index, candidate in enumerate(focused_candidates, start=1):
@@ -333,6 +340,30 @@ def _rewrite_candidate_design_focus(
     old_focus = design.design_focus
     if old_focus == new_focus:
         return False
+
+    if primary_x and old_focus == primary_x:
+        # feature_focus selects a control-conditioning variable here, not the
+        # variable under test; keep the primary tested variable in both arms.
+        control = list(design.control)
+        treatment = list(design.treatment)
+        if new_focus not in control:
+            control.append(new_focus)
+        if primary_x not in treatment:
+            treatment.insert(0, primary_x)
+        if new_focus not in treatment:
+            treatment.append(new_focus)
+        design.control = control
+        design.treatment = treatment
+        design.design_focus = old_focus
+        design.display_design_focus = semantic.to_display(old_focus)
+        design.display_control = semantic.display_list(design.control)
+        design.display_treatment = semantic.display_list(design.treatment)
+        design.notes = [
+            note for note in design.notes if not note.startswith("design_focus:")
+        ]
+        design.notes.append(f"design_focus:{old_focus}")
+        design.notes.append(f"llm_controller_focus_rewrite:primary->{new_focus}")
+        return True
 
     control = [
         feature

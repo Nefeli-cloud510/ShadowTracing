@@ -1,4 +1,5 @@
 import type { ThreeLayerConclusionViewModel } from '../types/timeline'
+import { getVisualizationPreviewUrl } from '../data/realStateLoader'
 
 function formatNumber(value?: number, digits = 4): string {
   if (value === undefined || value === null || !Number.isFinite(value)) {
@@ -41,6 +42,16 @@ function matchLabel(value?: boolean | string): string {
     return '偏离'
   }
   return '--'
+}
+
+function chartRoleLabel(role: string): string {
+  const labels: Record<string, string> = {
+    baseline_timeseries: '对照组时序',
+    treatment_timeseries: '实验组时序',
+    baseline_scatter: '对照组散点',
+    treatment_scatter: '实验组散点',
+  }
+  return labels[role] ?? role
 }
 
 function classForMatch(value?: boolean | string): string {
@@ -100,13 +111,16 @@ const GROUP_META: Record<
 
 export function ThreeLayerConclusionView({
   conclusion,
+  roundNumber,
 }: {
   conclusion: ThreeLayerConclusionViewModel
+  roundNumber?: number
 }) {
   const experiment = conclusion.experimentLayer
   const scientific = conclusion.scientificLayer
   const dataLayer = conclusion.dataLayer
   const trackingLayer = conclusion.trackingLayer
+  const chartAnalyses = dataLayer?.chartAnalyses ?? []
   const groupedRows = conclusion.hypothesisLayer.reduce<
     Record<'supported' | 'partial' | 'weakened' | 'untested', typeof conclusion.hypothesisLayer>
   >(
@@ -119,8 +133,8 @@ export function ThreeLayerConclusionView({
 
   return (
     <section className="detail-card detail-card--wide three-layer-conclusion">
-      <span className="detail-card__eyebrow">Four-Layer Conclusion</span>
-      <h2>实验结论四层分析</h2>
+      <span className="detail-card__eyebrow">Round {roundNumber ?? 1} Result</span>
+      <h2>第{roundNumber ?? 1}轮实验结果报告</h2>
 
       <div className="four-layer-conclusion">
         <div className="four-layer-conclusion__main">
@@ -151,10 +165,6 @@ export function ThreeLayerConclusionView({
                   <span>实验组 Pearson-r</span>
                   <strong>{formatNumber(experiment.treatmentPearsonR)}</strong>
                 </div>
-                <div className="three-layer-conclusion__metric">
-                  <span>ΔSkill</span>
-                  <strong>{formatNumber(experiment.skillDelta)}</strong>
-                </div>
                 <div
                   className={
                     experiment.decisive
@@ -163,7 +173,7 @@ export function ThreeLayerConclusionView({
                   }
                 >
                   <span>判定</span>
-                  <strong>{experiment.decisive ? '可区分' : '未区分'}</strong>
+                  <strong>{experiment.decisive ? '假设可区分' : '无法区分假设'}</strong>
                 </div>
               </div>
             </div>
@@ -171,7 +181,7 @@ export function ThreeLayerConclusionView({
 
           <div className="three-layer-conclusion__block">
             <h3>第一层 · 数据层：数值分析与归因</h3>
-            <div className="three-layer-conclusion__data">
+              <div className="three-layer-conclusion__data">
               <div className="three-layer-conclusion__data-item">
                 <span>RMSE 变化归因</span>
                 <p>{dataLayer?.rmseAttribution ?? '本轮暂未生成 RMSE 数值归因，由程序指标回退展示。'}</p>
@@ -179,10 +189,6 @@ export function ThreeLayerConclusionView({
               <div className="three-layer-conclusion__data-item">
                 <span>Pearson-r 变化归因</span>
                 <p>{dataLayer?.pearsonAttribution ?? '本轮暂未生成 Pearson-r 数值归因，由程序指标回退展示。'}</p>
-              </div>
-              <div className="three-layer-conclusion__data-item">
-                <span>ΔSkill 含义</span>
-                <p>{dataLayer?.skillDeltaMeaning ?? '本轮暂未生成 ΔSkill 含义说明。'}</p>
               </div>
               <div className="three-layer-conclusion__data-item">
                 <span>异常 / 不一致识别</span>
@@ -196,7 +202,48 @@ export function ThreeLayerConclusionView({
                 <span>推荐后续关注方向</span>
                 <p>{dataLayer?.nextFocus ?? '下一轮先围绕数据覆盖与路径控制实验继续收敛。'}</p>
               </div>
+              {dataLayer?.comparisonAnalysis ? (
+                <div className="three-layer-conclusion__data-item three-layer-conclusion__data-item--full">
+                  <span>两组实验对比分析</span>
+                  <p>{dataLayer.comparisonAnalysis}</p>
+                </div>
+              ) : null}
             </div>
+            {chartAnalyses.length > 0 ? (
+              <div className="three-layer-conclusion__charts">
+                <span className="three-layer-conclusion__charts-title">四张图表分析（本轮真实图像）</span>
+                <div className="three-layer-conclusion__chart-grid">
+                  {chartAnalyses.map((chart) => (
+                    <article className="three-layer-conclusion__chart" key={chart.chartRole}>
+                      <div className="three-layer-conclusion__chart-head">
+                        <strong>{chart.chartName || chartRoleLabel(chart.chartRole)}</strong>
+                        <span>{chartRoleLabel(chart.chartRole)}</span>
+                      </div>
+                      {chart.chartImagePath ? (
+                        <img
+                          className="three-layer-conclusion__chart-image"
+                          src={getVisualizationPreviewUrl(chart.chartImagePath)}
+                          alt={chart.chartName || chartRoleLabel(chart.chartRole)}
+                        />
+                      ) : null}
+                      <p>{chart.description}</p>
+                      {chart.keyObservations.length > 0 ? (
+                        <ul className="detail-list">
+                          {chart.keyObservations.map((obs) => (
+                            <li key={obs}>{obs}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {chart.anomalyOrInsight ? (
+                        <p className="three-layer-conclusion__chart-insight">
+                          洞察 / 异常：{chart.anomalyOrInsight}
+                        </p>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="three-layer-conclusion__block">
@@ -213,6 +260,12 @@ export function ThreeLayerConclusionView({
                 )
               })}
             </div>
+            {conclusion.hypothesisLayerSummary ? (
+              <div className="three-layer-conclusion__llm-summary">
+                <span>假设层综合分析（科学解释者 LLM）</span>
+                <p>{conclusion.hypothesisLayerSummary}</p>
+              </div>
+            ) : null}
             {conclusion.hypothesisLayer.length > 0 ? (
               <div className="three-layer-conclusion__table-wrap">
                 <table className="three-layer-conclusion__table">

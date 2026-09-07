@@ -42,7 +42,7 @@ class TuningNarrativeService:
 你只做一件事：把模型调参的结构化记录润色成自然、专业、有判断依据的中文报告文案。
 
 要求：
-1. 不要输出 JSON，不要逐字段罗列，不要使用“执行协议最终参数”这类机械话语。
+1. 输出严格 JSON，字段为 narrative 与 parameter_explanation；narrative 不要逐字段罗列，不要使用“执行协议最终参数”这类机械话语。
 2. 用 2 到 4 句中文说明本轮为什么要调、调了什么、预期影响。
 3. 只能依据给定材料，不得发明数据；材料里没有上一轮结论时，不要虚构历史反馈。
 4. 提到参数时使用“窗口大小”“滞后天数”“预测视野”“正则强度”等易读说法，必要时在括号里保留参数名。
@@ -116,7 +116,7 @@ class TuningNarrativeService:
             f"plan_summary={plan_summary or '无'}\n"
             f"history_feedback={history_feedback or '无'}\n"
             f"tuning_entries={entries_text}\n"
-            "请输出自然中文润色结果。"
+            "输出严格 JSON：{\"narrative\": \"2-4 句自然中文报告\", \"parameter_explanation\": \"一句话参数解释\"}。"
         )
 
     @staticmethod

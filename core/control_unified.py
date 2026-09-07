@@ -8,6 +8,7 @@ from typing import Any
 from core.central_controller_llm import CentralControllerLLM
 from core.decision_unified import DIFFERENTIATING_EXPERIMENT_ERROR
 from core.decision_unified import DecisionLayerService
+from core.display_text_cleaner import clean_llm_text, deep_clean_text
 from core.evaluation_unified import evaluate_experiment, export_evaluation_result
 from core.experiment_planner_llm import (
     CandidateExperimentDesignerLLM,
@@ -21,7 +22,11 @@ from core.hypothesis_linkage import (
     related_hypotheses_for_uncertainty,
 )
 from core.hypothesis_proposer_llm import HypothesisProposerLLM
-from core.hypothesis_generation import HypothesisGenerationService, refresh_tree_metadata
+from core.hypothesis_generation import (
+    HypothesisGenerationService,
+    compute_targeted_interrogation_scope,
+    refresh_tree_metadata,
+)
 from core.hypothesis_state_machine import ACTIVE_LIKE
 from core.llm_gateway import LLMGateway
 from core.multi_source_uncertainty_miner import (
@@ -87,6 +92,8 @@ class CandidateProtocolMapper:
         model_name: str = "ElasticNet",
         model_parameters: dict[str, Any] | None = None,
         protocol_refinements: list[ProtocolRefinementSuggestion] | None = None,
+        tree=None,
+        uncertainty_records=None,
     ) -> ExperimentProtocol:
         is_baseline_experiment = candidate.type == "baseline_benchmark"
         control_features = [item for item in candidate.design.control if item]
@@ -223,7 +230,13 @@ class CandidateProtocolMapper:
         ]
         if is_baseline_experiment:
             protocol_notes.append("experiment_mode:baseline_single_arm")
-        protocol_notes.extend(_disagreement_notes(candidate))
+        protocol_notes.extend(
+            _disagreement_notes(
+                candidate,
+                tree=tree,
+                uncertainty_records=uncertainty_records,
+            )
+        )
 
         return ExperimentProtocol(
             experiment_id=candidate.experiment_id,
@@ -250,7 +263,11 @@ class CandidateProtocolMapper:
             ),
             source_candidate_id=candidate.experiment_id,
             requires_human_review=candidate.requires_human_review,
-            notes=protocol_notes + refinement_notes,
+            notes=deep_clean_text(
+                protocol_notes + refinement_notes,
+                tree=tree,
+                uncertainty_records=uncertainty_records,
+            ),
         )
 
 
@@ -666,31 +683,47 @@ class HumanControlService:
         data_dictionary = repository.load_data_dictionary()
         planner_input = repository.load_planner_input()
         tree = repository.load_hypothesis_tree()
+        process_state = repository.load_process_state()
+        current_round = int(planner_input.next_round_id)
+        # 重新生成质询时按质询前快照计算作用域，保持与首次运行一致。
+        scope_tree = tree
+        if process_state.current_stage == "awaiting_uncertainty_identification":
+            pre_questioning_tree = repository.load_pre_questioning_tree()
+            if pre_questioning_tree is not None:
+                scope_tree = pre_questioning_tree
+        targeted_ids = compute_targeted_interrogation_scope(
+            scope_tree,
+            current_round=current_round,
+        )
         rag_context = self.rag_service.build_context_bundle(planner_input)
         questioner_output = self.scientific_questioner.challenge_hypothesis_tree(
             planner_input=planner_input,
             rag_context=rag_context,
-            tree=tree,
+            tree=scope_tree,
+            targeted_hypothesis_ids=sorted(targeted_ids),
         )
         questioner_output = self._align_questioner_output_to_dictionary(
             planner_input=planner_input,
             questioner_output=questioner_output,
+            tree=tree,
+            uncertainty_records=repository.load_uncertainties().records,
         )
         self._apply_hypothesis_updates_to_tree(
             tree=tree,
             updates=questioner_output.hypothesis_updates,
-            round_id=planner_input.next_round_id,
+            round_id=current_round,
+            targeted_hypothesis_ids=targeted_ids,
         )
         min_active = int(task.payload.constraints.min_active_hypotheses or 3)
         self._propagate_tree_state_for_round(
             tree=tree,
-            round_id=planner_input.next_round_id,
+            round_id=current_round,
             min_active_hypotheses=min_active,
         )
         refresh_tree_metadata(tree)
         self._sync_questioning_record_statuses(
             tree=tree,
-            round_id=planner_input.next_round_id,
+            round_id=current_round,
         )
         supplemental = self._supplement_active_hypotheses_if_needed(
             tree=tree,
@@ -701,10 +734,13 @@ class HumanControlService:
             min_active_hypotheses=min_active,
         )
         tree.latest_update = LatestTreeUpdate(
-            round=planner_input.next_round_id,
+            round=current_round,
             event="scientific_questioning_completed",
             description=(
-                "科学质询完成，已按 LLM 逐假设结论更新支持度与状态"
+                (
+                    f"科学质询完成，本轮定向质询 {len(targeted_ids)} 条假设，"
+                    "已按 LLM 结论更新支持度与状态；继承节点保留上一轮质询痕迹"
+                )
                 + (
                     f"；活跃假设不足下限，已由真实 LLM 补充生成 {supplemental.display_hypothesis_id}。"
                     if supplemental is not None
@@ -729,7 +765,7 @@ class HumanControlService:
         planner_input.recent_reasoning_traces = planner_input.recent_reasoning_traces[-10:]
         repository.save_planner_input(planner_input)
         self._log_scientific_questioning_completed(
-            round_id=planner_input.next_round_id,
+            round_id=current_round,
             tree=tree,
             updates=questioner_output.hypothesis_updates,
             supplemental_hypothesis=supplemental,
@@ -840,16 +876,44 @@ class HumanControlService:
             "next_review": review,
         }
 
-    def _apply_hypothesis_updates_to_tree(self, *, tree, updates, round_id: int) -> None:
+    def _apply_hypothesis_updates_to_tree(
+        self,
+        *,
+        tree,
+        updates,
+        round_id: int,
+        targeted_hypothesis_ids: set[str] | list[str] | None = None,
+    ) -> None:
         from core.scientific_questioner_llm import HypothesisQuestioningUpdate
 
+        try:
+            uncertainty_records = self.repository.load_uncertainties().records
+        except Exception:
+            uncertainty_records = []
+
+        def clean_questioning_text(value: str | None) -> str:
+            return clean_llm_text(
+                value or "",
+                tree=tree,
+                uncertainty_records=uncertainty_records,
+            ).strip()
+
+        targeted = (
+            set(targeted_hypothesis_ids)
+            if targeted_hypothesis_ids is not None
+            else None
+        )
         updates_by_id: dict[str, HypothesisQuestioningUpdate] = {}
         for update in updates:
             if not update.hypothesis_id:
                 continue
+            if targeted is not None and update.hypothesis_id not in targeted:
+                continue
             updates_by_id[update.hypothesis_id] = update
         node_index = tree.node_index()
         for node in tree.nodes:
+            if targeted is not None and node.hypothesis_id not in targeted:
+                continue
             update = updates_by_id.get(node.hypothesis_id)
             if update is None:
                 update = HypothesisQuestioningUpdate(
@@ -862,9 +926,8 @@ class HumanControlService:
             node.questioning_records = [
                 record
                 for record in node.questioning_records
-                if record.round < round_id
+                if record.round != round_id
             ]
-            node.critiques = []
             parent_support = None
             if node.parent_id:
                 parent_node = node_index.get(node.parent_id)
@@ -904,20 +967,19 @@ class HumanControlService:
                     impact_strength=update.impact_strength,
                     confidence=update.confidence,
                     rationale=(
-                        update.rationale.strip()
-                        if update.rationale and update.rationale.strip()
-                        else "科学质询未给出明确理由。"
+                        clean_questioning_text(update.rationale)
+                        or "科学质询未给出明确理由。"
                     ),
                     support_before=outcome.support_before,
                     support_after=outcome.support_after,
                     status=outcome.status,
                     source_type="advisory",
-                    falsification_basis=(update.falsification_basis or "").strip(),
+                    falsification_basis=clean_questioning_text(update.falsification_basis),
                 )
             )
             if node.status == "pruned":
                 node.pruned_at_round = node.pruned_at_round or round_id
-                node.prune_reason = f"科学质询：{(update.rationale or '证据不足，假设被剪枝。')[:180]}"
+                node.prune_reason = f"科学质询：{(clean_questioning_text(update.rationale) or '证据不足，假设被剪枝。')[:180]}"
 
     def _propagate_tree_state_for_round(
         self,
@@ -1151,6 +1213,14 @@ class HumanControlService:
         candidate_set = self.repository.load_candidate_experiments()
         candidate = self._select_candidate(candidate_set, candidate_id)
         self._repair_candidate_hypothesis_links(candidate)
+        try:
+            tree_for_display = self.repository.load_hypothesis_tree()
+        except Exception:
+            tree_for_display = None
+        try:
+            uncertainty_records = self.repository.load_uncertainties().records
+        except Exception:
+            uncertainty_records = []
         protocol_refinements = self._build_protocol_refinements(
             task=task,
             candidate=candidate,
@@ -1162,6 +1232,8 @@ class HumanControlService:
             round_id=candidate_set.round,
             model_parameters=model_parameters,
             protocol_refinements=protocol_refinements,
+            tree=tree_for_display,
+            uncertainty_records=uncertainty_records,
         )
         self._repair_protocol_hypothesis_links(protocol)
         plan_summary = self._build_execution_plan_summary(
@@ -1170,7 +1242,14 @@ class HumanControlService:
             protocol=protocol,
             protocol_refinements=protocol_refinements,
         )
-        protocol.notes.append(f"execution_plan_summary:{plan_summary}")
+        protocol.notes.append(
+            "execution_plan_summary:"
+            + clean_llm_text(
+                plan_summary,
+                tree=tree_for_display,
+                uncertainty_records=uncertainty_records,
+            )
+        )
         tuning_entries = [
             {
                 "refinement_type": item.refinement_type,
@@ -1393,14 +1472,33 @@ class HumanControlService:
                 },
                 "failure": str(exc),
             }
+        return self._run_result_analysis(
+            protocol=protocol,
+            result=result,
+            remaining_uncertainties=remaining_uncertainties,
+        )
+
+    def _run_result_analysis(
+        self,
+        *,
+        protocol: ExperimentProtocol,
+        result: ExperimentResult,
+        remaining_uncertainties: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         process_state = self.repository.load_process_state()
+        execution_phase = process_state.phases.get("experiment_execution")
+        result_analysis_phase = process_state.phases.get("result_analysis")
         process_state.current_phase = "result_analysis"
         process_state.current_step = "evaluation"
         process_state.current_stage = "evaluating_results"
         process_state.progress_percentage = 72
         process_state.phases["experiment_execution"] = ProcessPhase(
             status="completed",
-            completed_at=datetime.now(),
+            completed_at=(
+                execution_phase.completed_at
+                if execution_phase is not None and execution_phase.completed_at is not None
+                else datetime.now()
+            ),
             steps={
                 "dispatch_execution": ProcessStep(name="下发实验任务", status="completed"),
                 "core_execution": ProcessStep(name="执行实验与训练", status="completed"),
@@ -1409,13 +1507,18 @@ class HumanControlService:
         )
         process_state.phases["result_analysis"] = ProcessPhase(
             status="in_progress",
-            started_at=datetime.now(),
+            started_at=(
+                result_analysis_phase.started_at
+                if result_analysis_phase is not None and result_analysis_phase.started_at is not None
+                else datetime.now()
+            ),
             steps={
                 "evaluation": ProcessStep(name="计算指标与稳健性分析", status="in_progress"),
                 "scientific_interpretation": ProcessStep(name="生成科学解释", status="pending"),
             },
         )
         self.repository.save_process_state(process_state)
+
         unresolved = remaining_uncertainties or self._remaining_uncertainties_for_review(protocol)
         task = self.repository.load_task()
         main_question = task.payload.research_question.text or (
@@ -1462,6 +1565,20 @@ class HumanControlService:
                 interpreter_analysis.enhancements if interpreter_analysis is not None else []
             ),
         )
+
+        process_state = self.repository.load_process_state()
+        analysis_phase = process_state.phases.get("result_analysis")
+        if analysis_phase is not None:
+            analysis_phase.status = "completed"
+            analysis_phase.completed_at = datetime.now()
+            evaluation_step = analysis_phase.steps.get("evaluation")
+            if evaluation_step is not None:
+                evaluation_step.status = "completed"
+            interpretation_step = analysis_phase.steps.get("scientific_interpretation")
+            if interpretation_step is not None:
+                interpretation_step.status = "completed"
+            self.repository.save_process_state(process_state)
+
         review_payload = self.request_round_review(
             round_id=protocol.round_id,
             experiment_id=protocol.experiment_id,
@@ -1482,6 +1599,61 @@ class HumanControlService:
             "evaluation": evaluation,
             "review": review_payload,
         }
+
+    def resume_evaluation_from_persisted_run(
+        self,
+        *,
+        round_id: int | None = None,
+        experiment_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Resume result analysis from already persisted protocol/result artifacts."""
+        process_state = self.repository.load_process_state()
+        if process_state.current_stage == "awaiting_round_decision":
+            return {"status": "already_awaits_review", "round_id": process_state.current_round}
+        if process_state.current_phase not in {"result_analysis", "experiment_execution"}:
+            raise ValueError("当前状态不需要恢复结果分析，不能调用恢复接口。")
+
+        target_round = round_id or process_state.current_round
+        round_dir = self.project_root / "results" / f"round_{target_round:02d}"
+        protocol_path = round_dir / "protocol.json"
+        result_path = round_dir / "result_unified.json"
+        evaluation_path = round_dir / "evaluation_unified.json"
+        if not protocol_path.exists() or not result_path.exists():
+            raise ValueError("未找到已完成的实验协议与结果，无法恢复分析；请不要重复批准实验。")
+
+        protocol = ExperimentProtocol.model_validate(json.loads(protocol_path.read_text(encoding="utf-8")))
+        result = ExperimentResult.model_validate(json.loads(result_path.read_text(encoding="utf-8")))
+        if experiment_id is not None and protocol.experiment_id != experiment_id:
+            raise ValueError(
+                f"指定实验 {experiment_id} 与第 {target_round} 轮已落盘协议 {protocol.experiment_id} 不一致。"
+            )
+        if result.status != "completed":
+            raise ValueError("已落盘实验结果不是 completed 状态，不能恢复结果分析。")
+        if evaluation_path.exists():
+            evaluation = EvaluationResult.model_validate(json.loads(evaluation_path.read_text(encoding="utf-8")))
+            review_payload = self.request_round_review(
+                round_id=protocol.round_id,
+                experiment_id=protocol.experiment_id,
+                evaluation_summary=self._build_evaluation_summary(evaluation),
+                hypothesis_assessments=[
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in evaluation.scientific.hypothesis_assessments
+                ],
+                disagreement_updates=[
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in evaluation.scientific.disagreement_updates
+                ],
+                reasoning_traces=self._recent_reasoning_traces_for_experiment(protocol.experiment_id),
+            )
+            return {
+                "status": "resumed_from_existing_evaluation",
+                "protocol": protocol,
+                "result": result,
+                "evaluation": evaluation,
+                "review": review_payload,
+            }
+
+        return self._run_result_analysis(protocol=protocol, result=result)
 
     def request_stop(self, *, phase: str, reason: str, pause: bool = True) -> None:
         process_state = self.repository.load_process_state()
@@ -2272,6 +2444,7 @@ class HumanControlService:
         return self.scientific_interpreter.build_round_analysis(
             planner_input=planner_input,
             candidate_plan=candidate_plan,
+            evaluation=evaluation,
         )
 
     @staticmethod
@@ -2286,6 +2459,14 @@ class HumanControlService:
             conclusion.data_layer = analysis.data_layer
         if analysis.conclusion_text:
             conclusion.scientific_layer.answer = analysis.conclusion_text
+        if analysis.path_answer:
+            conclusion.scientific_layer.path_answer = analysis.path_answer
+        if analysis.hypothesis_layer_summary:
+            conclusion.hypothesis_layer_summary = analysis.hypothesis_layer_summary
+        if analysis.overall_summary:
+            conclusion.overall_summary = analysis.overall_summary
+        if analysis.next_round_suggestion is not None:
+            conclusion.next_round_suggestion = analysis.next_round_suggestion
 
     def _build_interpreter_input(
         self,
@@ -2542,6 +2723,8 @@ class HumanControlService:
         questioner_output = self._align_questioner_output_to_dictionary(
             planner_input=planner_input,
             questioner_output=questioner_output,
+            tree=hypothesis_tree,
+            uncertainty_records=uncertainties.records,
         )
         planner_input.planner_guidance.extend(
             note for note in questioner_output.guidance_notes if note not in planner_input.planner_guidance
@@ -2587,15 +2770,25 @@ class HumanControlService:
         *,
         planner_input: ReasoningPlannerInput,
         questioner_output,
+        tree=None,
+        uncertainty_records=None,
     ):
         """Map LLM uncertainty text to display names without rewriting its wording."""
         semantic = VariableSemanticService.from_summary(planner_input.data_dictionary_summary)
+
+        def clean_prose(value: str) -> str:
+            return clean_llm_text(
+                value or "",
+                tree=tree,
+                uncertainty_records=uncertainty_records,
+            ).strip()
+
         aligned_uncertainties = [
             item.model_copy(
                 update={
-                    "question": semantic.display_text(item.question or "").strip(),
+                    "question": clean_prose(semantic.display_text(item.question or "")),
                     "description": (
-                        semantic.display_text(item.description or "").strip()
+                        clean_prose(semantic.display_text(item.description or ""))
                         or f"仍需验证：{item.question or '当前科学不确定性问题。'}"
                     ),
                     "features": semantic.raw_list(item.features),
@@ -2607,14 +2800,23 @@ class HumanControlService:
             for item in questioner_output.proposed_uncertainties[:10]
         ]
         questioner_output.challenge_points = [
-            semantic.display_text(item or "").strip()
+            clean_prose(semantic.display_text(item or ""))
             for item in questioner_output.challenge_points
             if str(item or "").strip()
         ]
         questioner_output.guidance_notes = [
-            semantic.display_text(item or "").strip()
+            clean_prose(semantic.display_text(item or ""))
             for item in questioner_output.guidance_notes
             if str(item or "").strip()
+        ]
+        questioner_output.hypothesis_updates = [
+            item.model_copy(
+                update={
+                    "rationale": clean_prose(item.rationale) or "科学质询未给出明确理由。",
+                    "falsification_basis": clean_prose(item.falsification_basis),
+                }
+            )
+            for item in questioner_output.hypothesis_updates
         ]
         questioner_output.proposed_uncertainties = aligned_uncertainties
         return questioner_output
@@ -2788,9 +2990,20 @@ class HumanControlService:
                     context_bits.append(f"linked_traces={','.join(item.get('trace_id', '') for item in traces[:3] if item.get('trace_id'))}")
                 if assessments:
                     top = assessments[0]
-                    context_bits.append(
-                        f"assessment:{top.get('hypothesis_id')}->{top.get('status')}"
+                    try:
+                        tree = self.repository.load_hypothesis_tree()
+                    except Exception:
+                        tree = None
+                    try:
+                        uncertainty_records = self.repository.load_uncertainties().records
+                    except Exception:
+                        uncertainty_records = []
+                    assessment_text = clean_llm_text(
+                        f"assessment:{top.get('hypothesis_id')}->{top.get('status')}",
+                        tree=tree,
+                        uncertainty_records=uncertainty_records,
                     )
+                    context_bits.append(assessment_text)
                 return {
                     "experiment_id": details.get("experiment_id"),
                     "reasoning_trace_ids": [item.get("trace_id") for item in traces if item.get("trace_id")],
@@ -2852,6 +3065,14 @@ class HumanControlService:
             history = self.repository.load_round_history()
         except Exception:
             return None
+        try:
+            tree = self.repository.load_hypothesis_tree()
+        except Exception:
+            tree = None
+        try:
+            uncertainty_records = self.repository.load_uncertainties().records
+        except Exception:
+            uncertainty_records = []
         if source_round is None:
             return None
         current_round = source_round
@@ -2874,9 +3095,43 @@ class HumanControlService:
                 ]
             )
         if latest.failure_reason:
-            parts.append(f"failure_reason={latest.failure_reason}")
+            parts.append(
+                "failure_reason="
+                + clean_llm_text(
+                    latest.failure_reason,
+                    tree=tree,
+                    uncertainty_records=uncertainty_records,
+                )
+            )
         if latest.scientific_findings:
-            parts.append("findings=" + " | ".join(latest.scientific_findings[:4]))
+            parts.append(
+                "findings="
+                + " | ".join(
+                    clean_llm_text(
+                        item,
+                        tree=tree,
+                        uncertainty_records=uncertainty_records,
+                    )
+                    for item in latest.scientific_findings[:4]
+                )
+            )
+        if (
+            latest.three_layer_conclusion is not None
+            and latest.three_layer_conclusion.next_round_suggestion is not None
+        ):
+            parts.append(
+                "next_round_suggestion="
+                + json.dumps(
+                    deep_clean_text(
+                        latest.three_layer_conclusion.next_round_suggestion.model_dump(
+                            mode="json", exclude_none=True
+                        ),
+                        tree=tree,
+                        uncertainty_records=uncertainty_records,
+                    ),
+                    ensure_ascii=False,
+                )
+            )
         return "; ".join(parts)
 
     def _semantic_service(self) -> VariableSemanticService:
@@ -2928,14 +3183,33 @@ def _build_disagreement_steps(candidate: CandidateExperiment) -> list[Experiment
     return steps
 
 
-def _disagreement_notes(candidate: CandidateExperiment) -> list[str]:
+def _disagreement_notes(
+    candidate: CandidateExperiment,
+    *,
+    tree=None,
+    uncertainty_records=None,
+) -> list[str]:
     notes: list[str] = []
     for uncertainty_id in candidate.related_uncertainties:
         disagreement = candidate.disagreement_context.get(uncertainty_id, {})
         if not disagreement:
             continue
-        notes.append(f"targets_uncertainty:{uncertainty_id}")
-        notes.append(f"compared_hypotheses:{uncertainty_id}:{','.join(disagreement.keys())}")
+        record = None
+        for item in uncertainty_records or []:
+            if getattr(item, "uncertainty_id", None) == uncertainty_id:
+                record = item
+                break
+        question = getattr(record, "question", None) if record is not None else None
+        notes.append(f"目标不确定性：{question or '相关科学不确定性'}")
+        labels: list[str] = []
+        for hypothesis_id in disagreement.keys():
+            node = tree.node_index().get(hypothesis_id) if tree is not None else None
+            labels.append(
+                getattr(node, "display_hypothesis_id", None)
+                or (f"H{node.level}" if node is not None and getattr(node, "level", None) else "")
+                or "相关假设"
+            )
+        notes.append(f"待区分假设：{','.join(labels) or '相关假设'}")
         trigger_set = sorted(
             {
                 item.rationale_trigger
@@ -2944,5 +3218,5 @@ def _disagreement_notes(candidate: CandidateExperiment) -> list[str]:
             }
         )
         if trigger_set:
-            notes.append(f"disagreement_triggers:{uncertainty_id}:{','.join(trigger_set)}")
+            notes.append(f"分歧触发来源：{','.join(trigger_set)}")
     return notes

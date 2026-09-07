@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.display_text_cleaner import clean_llm_text
 from core.state_repository import UnifiedStateRepository
 from core.support_update_rules import compute_support_update_from_reasoning, priority_after_action
 from core.hypothesis_linkage import build_predictions_for_nodes
@@ -74,6 +75,11 @@ def translate_three_layer_conclusion(
     except Exception:
         tree = None
 
+    try:
+        uncertainty_records = repository.load_uncertainties().records
+    except Exception:
+        uncertainty_records = []
+
     tree = tree or HypothesisTreeState(
         tree_id="empty",
         task_id="empty",
@@ -81,25 +87,59 @@ def translate_three_layer_conclusion(
         nodes=[],
     )
 
-    conclusion.experiment_layer.design_summary = semantic.display_text(
+    def _clean(text: str | None) -> str:
+        return clean_llm_text(
+            semantic.display_text(text),
+            tree=tree,
+            uncertainty_records=uncertainty_records,
+        )
+
+    conclusion.experiment_layer.design_summary = _clean(
         conclusion.experiment_layer.design_summary
     )
     scientific = conclusion.scientific_layer
-    scientific.main_question = semantic.display_text(scientific.main_question)
-    scientific.answer = semantic.display_text(scientific.answer)
-    scientific.path_question = semantic.display_text(scientific.path_question)
-    scientific.path_answer = semantic.display_text(scientific.path_answer)
-    scientific.evidence_text = semantic.display_text(scientific.evidence_text)
+    scientific.main_question = _clean(scientific.main_question)
+    scientific.answer = _clean(scientific.answer)
+    scientific.path_question = _clean(scientific.path_question)
+    scientific.path_answer = _clean(scientific.path_answer)
+    scientific.evidence_text = _clean(scientific.evidence_text)
     if conclusion.data_layer is not None:
         data = conclusion.data_layer
-        data.rmse_attribution = semantic.display_text(data.rmse_attribution)
-        data.pearson_attribution = semantic.display_text(data.pearson_attribution)
-        data.skill_delta_meaning = semantic.display_text(data.skill_delta_meaning)
+        data.rmse_attribution = _clean(data.rmse_attribution)
+        data.pearson_attribution = _clean(data.pearson_attribution)
+        data.skill_delta_meaning = _clean(data.skill_delta_meaning)
         data.anomalies = [
-            semantic.display_text(item)
+            _clean(item)
             for item in data.anomalies
         ]
-        data.next_focus = semantic.display_text(data.next_focus)
+        data.next_focus = _clean(data.next_focus)
+        data.comparison_analysis = _clean(data.comparison_analysis)
+        for chart in data.chart_analyses:
+            chart.description = _clean(chart.description)
+            chart.key_observations = [
+                _clean(item) for item in chart.key_observations
+            ]
+            chart.anomaly_or_insight = _clean(chart.anomaly_or_insight)
+    conclusion.hypothesis_layer_summary = _clean(conclusion.hypothesis_layer_summary)
+    conclusion.overall_summary = _clean(conclusion.overall_summary)
+    if conclusion.next_round_suggestion is not None:
+        suggestion = conclusion.next_round_suggestion
+        suggestion.evidence_summary = _clean(suggestion.evidence_summary)
+        suggestion.remaining_uncertainty_analysis = _clean(
+            suggestion.remaining_uncertainty_analysis
+        )
+        suggestion.pi_decision_advice = _clean(suggestion.pi_decision_advice)
+        suggestion.experiment_design_advice = _clean(
+            suggestion.experiment_design_advice
+        )
+        suggestion.hypothesis_space_advice = _clean(
+            suggestion.hypothesis_space_advice
+        )
+        suggestion.notes = [_clean(item) for item in suggestion.notes]
+    if conclusion.tracking_layer is not None:
+        conclusion.tracking_layer.audit_items = [
+            _clean(item) for item in conclusion.tracking_layer.audit_items
+        ]
     from core.hypothesis_identity import remap_hypothesis_id, resolve_hypothesis_display
 
     for row in conclusion.hypothesis_layer:
@@ -109,10 +149,19 @@ def translate_three_layer_conclusion(
         display_label, canonical_statement = resolved
         row.hypothesis_id = remap_hypothesis_id(tree, row.hypothesis_id, row.statement)
         row.display_hypothesis_id = display_label
-        row.statement = canonical_statement
+        row.statement = clean_llm_text(
+            canonical_statement,
+            tree=tree,
+            uncertainty_records=uncertainty_records,
+        )
         original_prefix = row.conclusion.split(" ")[0].strip("：:：")
         if original_prefix and row.conclusion.startswith(original_prefix):
             row.conclusion = row.conclusion.replace(original_prefix, row.display_hypothesis_id, 1)
+        row.conclusion = clean_llm_text(
+            row.conclusion,
+            tree=tree,
+            uncertainty_records=uncertainty_records,
+        )
 
 
 class UnifiedStateUpdater:
@@ -376,6 +425,16 @@ class UnifiedStateUpdater:
         now = datetime.now()
 
         for enhancement in interpretation_enhancements:
+            cleaned_interpretation = clean_llm_text(
+                enhancement.interpretation,
+                tree=tree,
+                uncertainty_records=uncertainties.records,
+            )
+            cleaned_state_note = clean_llm_text(
+                enhancement.suggested_state_note,
+                tree=tree,
+                uncertainty_records=uncertainties.records,
+            )
             target_node = (
                 node_index.get(enhancement.target_hypothesis_id)
                 if enhancement.target_hypothesis_id and enhancement.target_hypothesis_id in node_index
@@ -407,7 +466,7 @@ class UnifiedStateUpdater:
                         EvidenceItem(
                             id=enhancement.enhancement_id,
                             type="expert_judgment",
-                            description=enhancement.interpretation,
+                            description=cleaned_interpretation,
                             source=interpreter_source,
                             added_at_round=protocol.round_id,
                             support_weight=min(max(abs(support_outcome.support_delta), 0.03), 0.2),
@@ -416,13 +475,13 @@ class UnifiedStateUpdater:
                     node.critiques.append(
                         CritiqueRecord(
                             id=f"{enhancement.enhancement_id}_critique",
-                            content=enhancement.interpretation,
+                            content=cleaned_interpretation,
                             from_role="scientific_interpreter",
                             added_at_round=protocol.round_id,
                         )
                     )
                     if enhancement.suggested_state_note:
-                        node.alternative_explanations.append(enhancement.suggested_state_note)
+                        node.alternative_explanations.append(cleaned_state_note)
 
             total_priority_delta = 0.0
             for uncertainty_id in enhancement.related_uncertainties:
@@ -435,16 +494,16 @@ class UnifiedStateUpdater:
                     enhancement.uncertainty_priority_action,
                 )
                 record.notes = (
-                    f"{record.notes} | {enhancement.interpretation}"
-                    if record.notes and enhancement.interpretation not in record.notes
-                    else (record.notes or enhancement.interpretation)
+                    f"{record.notes} | {cleaned_interpretation}"
+                    if record.notes and cleaned_interpretation not in record.notes
+                    else (record.notes or cleaned_interpretation)
                 )
                 record.history.append(
                     UncertaintyHistoryEntry(
                         round=protocol.round_id,
                         event="scientific_interpreter",
                         source=interpreter_source,
-                        description=enhancement.interpretation,
+                        description=cleaned_interpretation,
                     )
                 )
                 total_priority_delta += _priority_to_score(record.priority) - _priority_to_score(before_priority)
@@ -456,7 +515,7 @@ class UnifiedStateUpdater:
                         round_id=protocol.round_id,
                         source=interpreter_source,
                         stage="scientific_interpreter",
-                        summary=enhancement.interpretation,
+                        summary=cleaned_interpretation,
                         related_hypotheses=[enhancement.target_hypothesis_id] if enhancement.target_hypothesis_id else [],
                         related_uncertainties=enhancement.related_uncertainties,
                         support_delta=support_outcome.support_delta if enhancement.target_hypothesis_id else None,
@@ -825,12 +884,28 @@ class UnifiedStateUpdater:
             ),
         ]
         semantic = self._display_service()
+        try:
+            tree = self.repository.load_hypothesis_tree()
+        except Exception:
+            tree = None
+        try:
+            uncertainty_records = self.repository.load_uncertainties().records
+        except Exception:
+            uncertainty_records = []
+
+        def _clean(text: str | None) -> str:
+            return clean_llm_text(
+                semantic.display_text(text or ""),
+                tree=tree,
+                uncertainty_records=uncertainty_records,
+            )
+
         closure = [
             _closure_item(
                 item.item_id,
                 item.label,
                 item.completed,
-                semantic.display_text(item.detail or ""),
+                _clean(item.detail),
             )
             for item in closure
         ]
@@ -845,7 +920,7 @@ class UnifiedStateUpdater:
         entry.unresolved_uncertainties = list(target_uncertainties[:5])
         entry.highlighted_hypotheses = list(tested_hypotheses[:5])
         entry.scientific_findings = [
-            semantic.display_text(str(item))
+            _clean(str(item))
             for item in (findings or ([failure_reason] if failure_reason else []))
         ]
         entry.three_layer_conclusion = (
@@ -853,7 +928,7 @@ class UnifiedStateUpdater:
             if evaluation is not None and evaluation.scientific.three_layer_conclusion is not None
             else None
         )
-        entry.failure_reason = failure_reason
+        entry.failure_reason = _clean(failure_reason) if failure_reason else None
         entry.metrics_snapshot = evaluation.metrics if evaluation is not None else None
         entry.updated_at = now
 
