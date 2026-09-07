@@ -253,7 +253,10 @@ export function UncertaintyPage() {
                       : 'uncertainty-recovery-bar__message candidate-regen-note'
                   }
                 >
-                  {candidateRegenError ?? candidateRegenMessage}
+                  {candidateRegenError ??
+                    (candidateRegenPending || generationActive
+                      ? `${candidateRegenMessage} 生成大约需要5-15分钟，请耐心等待。`
+                      : candidateRegenMessage)}
                 </p>
               )}
 

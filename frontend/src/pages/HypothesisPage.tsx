@@ -86,7 +86,9 @@ export function HypothesisPage() {
     sessionStatus.status === 'running' &&
     sessionStatus.stage !== 'scientific_questioning'
   const nextRoundGeneratingMessage =
-    sessionStatus?.message ?? '正在生成新的假设空间，请稍候刷新页面查看最新结果。'
+    sessionStatus?.message
+      ? `${sessionStatus.message} 生成大约需要5-15分钟，请耐心等待。`
+      : '正在生成新的假设空间，请稍候刷新页面查看最新结果。生成大约需要5-15分钟，请耐心等待。'
   const questioningCompleted =
     data?.snapshot.hypothesisTree?.latest_update?.event === 'scientific_questioning_completed' ||
     processStage === 'awaiting_uncertainty_identification'
@@ -882,6 +884,9 @@ export function HypothesisPage() {
                       >
                         {regenerating ? '重新生成中…' : '重新生成假设'}
                       </button>
+                      {regenerating && !regenerateError ? (
+                        <p className="timeline-empty-state">生成大约需要5-15分钟，请耐心等待。</p>
+                      ) : null}
                       {regenerateError ? (
                         <p className="timeline-empty-state timeline-empty-state--error">{regenerateError}</p>
                       ) : null}

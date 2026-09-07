@@ -467,7 +467,7 @@ export function RoundReportPage() {
                   </div>
                   {decisionBlockedReason ? <p>当前状态提示：{decisionBlockedReason} 但你仍可从此处强制推进新一轮。</p> : null}
                   {submittingDecision ? (
-                    <p>加载中：系统正在汇总当前科学解释、假设空间状态与轮次日志，并同步下一步页面。</p>
+                    <p>加载中：系统正在汇总当前科学解释、假设空间状态与轮次日志，并同步下一步页面。生成大约需要5-15分钟，请耐心等待。</p>
                   ) : null}
                   {!gatingReady && closureChecklist.length > 0 ? (
                     <ul className="detail-list">
